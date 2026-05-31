@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+node_modules/
+apps/*/node_modules/
+dist/
+build/
+coverage/
+.vite/
+logs/
+*.log
+*.tmp
+apps/web/dist/

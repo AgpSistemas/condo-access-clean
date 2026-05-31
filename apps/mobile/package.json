@@ -1,0 +1,8 @@
+{
+  "name": "@condo-clean/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node --check src/softphone-native.js"
+  }
+}

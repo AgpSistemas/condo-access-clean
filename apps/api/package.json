@@ -1,0 +1,13 @@
+{
+  "name": "@condo-clean/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.js",
+    "build": "node --check src/server.js"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}
