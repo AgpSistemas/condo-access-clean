@@ -76,266 +76,13 @@ const showroomTenant = {
   updatedAt: now()
 };
 
-const units = new Map([
-  ["unit-101", {
-    tenantId: tenant.id,
-    unitId: "unit-101",
-    unitNumber: "101",
-    blockName: "Torre A",
-    residentName: "Alan Gomes",
-    responsibleName: "Master Administrador",
-    extension: "9001",
-    telephony: {
-      enabled: true,
-      provider: "DIRECT_SIP",
-      sipDomain: tenant.sipDomain,
-      sipWebSocketUrl: tenant.sipWebSocketUrl,
-      sipTransport: "UDP",
-      extension: "9001",
-      extensionPassword: "change-me-9001",
-      porterExtension: tenant.sipPorterExtension
-    }
-  }],
-  ["unit-102", {
-    tenantId: tenant.id,
-    unitId: "unit-102",
-    unitNumber: "102",
-    blockName: "Torre A",
-    residentName: "Morador Unidade 102",
-    responsibleName: "Responsavel",
-    extension: "9002",
-    telephony: {
-      enabled: true,
-      provider: "DIRECT_SIP",
-      sipDomain: tenant.sipDomain,
-      sipWebSocketUrl: tenant.sipWebSocketUrl,
-      sipTransport: "UDP",
-      extension: "9002",
-      extensionPassword: "change-me-9002",
-      porterExtension: tenant.sipPorterExtension
-    }
-  }]
-]);
+const units = new Map();
 
-units.set("unit-27298", {
-  tenantId: showroomTenant.id,
-  unitId: "unit-27298",
-  unitNumber: "11",
-  blockName: "Bloco unico",
-  residentName: "Morador Demonstracao",
-  responsibleName: "Responsavel",
-  extension: "9101",
-  telephony: {
-    enabled: true,
-    provider: "DIRECT_SIP",
-    sipDomain: showroomTenant.sipDomain,
-    sipWebSocketUrl: showroomTenant.sipWebSocketUrl,
-    sipTransport: "UDP",
-    extension: "9101",
-    extensionPassword: "change-me-9101",
-    porterExtension: showroomTenant.sipPorterExtension
-  }
-});
+const residents = [];
 
-const residents = [
-  {
-    id: "person-master",
-    tenantId: tenant.id,
-    unitId: "unit-101",
-    name: "Master Administrador",
-    email: "agpsistemascorp@gmail.com",
-    cpf: "05525427923",
-    rg: "3233616",
-    phone: "44991180904",
-    role: "CONDO_ADMIN",
-    relation: "Responsavel financeiro",
-    kind: "RESIDENT",
-    isSyndic: true
-  },
-  {
-    id: "person-101",
-    tenantId: tenant.id,
-    unitId: "unit-101",
-    name: "Alan Gomes",
-    email: "alangomesdepaula8@gmail.com",
-    cpf: "",
-    rg: "",
-    phone: "",
-    role: "RESIDENT",
-    relation: "Responsavel",
-    kind: "RESIDENT",
-    isSyndic: false
-  }
-];
+const devices = [];
 
-residents.push({
-  id: "person-114410",
-  tenantId: showroomTenant.id,
-  unitId: "unit-27298",
-  name: "Morador Demonstracao",
-  email: "morador@example.com",
-  cpf: "",
-  rg: "",
-  phone: "",
-  role: "RESIDENT",
-  relation: "Responsavel",
-  kind: "RESIDENT",
-  isSyndic: false,
-  birthDate: "",
-  commercialPhone: "",
-  description: "",
-  notes: "",
-  notifyAccess: true,
-  createdAt: now()
-});
-
-residents.push({
-  id: "visitor-101-01",
-  tenantId: tenant.id,
-  unitId: "unit-101",
-  name: "Visitante Demonstracao",
-  email: "",
-  cpf: "",
-  rg: "",
-  phone: "",
-  role: "VISITOR",
-  relation: "Visitante",
-  kind: "VISITOR",
-  authorizedBy: "Alan Gomes",
-  company: "",
-  vehiclePlate: "",
-  accessReason: "Visita",
-  validFrom: now(),
-  validUntil: now(),
-  credentialType: "QR_CODE",
-  accessRouteId: "route-9",
-  notes: ""
-});
-
-residents.push({
-  id: "provider-101-01",
-  tenantId: tenant.id,
-  unitId: "unit-101",
-  name: "Prestador Demonstracao",
-  email: "",
-  cpf: "",
-  rg: "",
-  phone: "",
-  role: "PROVIDER",
-  relation: "Prestador",
-  kind: "PROVIDER",
-  company: "Empresa de manutencao",
-  cnpj: "",
-  serviceType: "Manutencao",
-  validFrom: now(),
-  validUntil: now(),
-  allowedDays: "Segunda a sexta",
-  allowedHours: "08:00-18:00",
-  credentialType: "APP",
-  accessRouteId: "route-3",
-  notes: ""
-});
-
-const devices = [
-  {
-    id: "device-facial-01",
-    tenantId: tenant.id,
-    name: "Facial Portaria",
-    category: "access-control",
-    manufacturer: "Hikvision",
-    model: "Facial/IP",
-    ipAddress: process.env.HIKVISION_FACIAL_HOST || "granportalresidency.ddns.net",
-    apiHost: process.env.HIKVISION_FACIAL_HOST || "granportalresidency.ddns.net",
-    apiPort: Number(process.env.HIKVISION_FACIAL_HTTP_PORT || 8090),
-    username: process.env.HIKVISION_FACIAL_USER || "admin",
-    password: process.env.HIKVISION_FACIAL_PASSWORD || process.env.CAMERA_FACIAL_PASSWORD || "",
-    authMode: process.env.HIKVISION_AUTH_MODE || "DIGEST",
-    openDoorAction: "ISAPI_REMOTE_CONTROL",
-    doorRelay: 1,
-    intercomEnabled: true,
-    intercomType: "FACIAL",
-    intercomExtension: "9005",
-    status: "ONLINE",
-    doors: [{ id: "door-facial-portaria", name: "Porta Facial Portaria", relay: 1 }]
-  },
-  {
-    id: "device-nvr-granportal",
-    tenantId: tenant.id,
-    name: "NVR Gran Portal",
-    category: "cameras",
-    manufacturer: "Hikvision",
-    model: "NVR",
-    ipAddress: "granportalresidency.ddns.net",
-    apiPort: 1026,
-    intercomEnabled: false,
-    intercomType: "NVR",
-    intercomExtension: "",
-    status: "ONLINE"
-  }
-];
-
-const defaultCameraPassword = process.env.CAMERA_FACIAL_PASSWORD || process.env.HIKVISION_FACIAL_PASSWORD || "";
-const cameras = [
-  {
-    id: "camera-facial-portaria",
-    tenantId: tenant.id,
-    deviceId: "device-facial-01",
-    groupId: "camera-group-facial-portaria",
-    groupName: "Facial Portaria",
-    name: "Facial Portaria",
-    description: "Facial Portaria",
-    type: "FACIAL",
-    deviceType: "FACIAL",
-    manufacturer: "Hikvision",
-    model: "Facial/IP",
-    protocol: "64",
-    stream: "MAIN",
-    host: process.env.HIKVISION_FACIAL_RTSP_HOST || process.env.HIKVISION_FACIAL_HOST || "granportalresidency.ddns.net",
-    ipAddress: process.env.HIKVISION_FACIAL_RTSP_HOST || process.env.HIKVISION_FACIAL_HOST || "granportalresidency.ddns.net",
-    rtspPort: Number(process.env.HIKVISION_FACIAL_RTSP_PORT || 554),
-    httpPort: Number(process.env.HIKVISION_FACIAL_HTTP_PORT || 8090),
-    username: process.env.HIKVISION_FACIAL_USER || "admin",
-    password: defaultCameraPassword,
-    passwordSet: Boolean(defaultCameraPassword),
-    aspectRatio: "WIDESCREEN",
-    loadMethod: "HLS_GATEWAY",
-    photoCaptureEnabled: false,
-    channel: 1,
-    status: "ONLINE",
-    activeChannels: [{ channel: 1, description: "Facial Portaria" }]
-  },
-  {
-    id: "camera-nvr-granportal",
-    tenantId: tenant.id,
-    deviceId: "device-nvr-granportal",
-    groupId: "camera-group-nvr-granportal",
-    groupName: "NVR Gran Portal",
-    name: "NVR Gran Portal",
-    description: "NVR Gran Portal",
-    type: "NVR",
-    deviceType: "NVR",
-    manufacturer: "Hikvision",
-    model: "NVR",
-    protocol: "64",
-    stream: "SUB",
-    host: process.env.HIKVISION_NVR_HOST || "granportalresidency.ddns.net",
-    ipAddress: process.env.HIKVISION_NVR_HOST || "granportalresidency.ddns.net",
-    rtspPort: Number(process.env.HIKVISION_NVR_RTSP_PORT || 1026),
-    httpPort: Number(process.env.HIKVISION_NVR_HTTP_PORT || 8086),
-    username: process.env.HIKVISION_NVR_USER || "admin",
-    password: process.env.HIKVISION_NVR_PASSWORD || defaultCameraPassword,
-    passwordSet: Boolean(process.env.HIKVISION_NVR_PASSWORD || defaultCameraPassword),
-    aspectRatio: "WIDESCREEN",
-    loadMethod: "HLS_GATEWAY",
-    photoCaptureEnabled: false,
-    channel: 1,
-    status: "ONLINE",
-    activeChannels: Array.from({ length: 9 }, (_, index) => ({
-      channel: index + 1,
-      description: `Canal ${index + 1}`
-    }))
-  }
-];
+const cameras = [];
 
 const deviceCategories = [
   {
@@ -428,134 +175,21 @@ const manufacturerProfiles = [
 ];
 
 
-const actions = [
-  { id: "action-entrada", tenantId: tenant.id, deviceId: "device-facial-01", name: "Porta Entrada", manufacturer: "Hikvision", status: "ACTIVE", route: "Entrada principal", relay: 1, openDoorAction: "ISAPI_REMOTE_CONTROL" },
-  { id: "action-eclusa", tenantId: tenant.id, name: "Porta Eclusa", manufacturer: "Moni Software", status: "DISABLED", route: "Eclusa" },
-  { id: "action-veicular", tenantId: tenant.id, name: "Portao Veicular", manufacturer: "Moni Software", status: "DISABLED", route: "Garagem" }
-];
+const actions = [];
 
-const credentials = [
-  { id: "cred-master-app", tenantId: tenant.id, unitId: "unit-101", personId: "person-master", type: "APP", valueLabel: "Login app", status: "ACTIVE", syncStatus: "SYNCED" },
-  { id: "cred-master-face", tenantId: tenant.id, unitId: "unit-101", personId: "person-master", type: "FACE", valueLabel: "Face principal", status: "ACTIVE", syncStatus: "PENDING" },
-  { id: "cred-101-qr", tenantId: tenant.id, unitId: "unit-101", personId: "person-101", type: "QR", valueLabel: "QR convidado", status: "ACTIVE", syncStatus: "SYNCED" }
-];
+const credentials = [];
 
-const credentialSyncJobs = [
-  {
-    id: "sync-face-hikvision",
-    tenantId: tenant.id,
-    manufacturer: "Hikvision",
-    target: "Facial Portaria",
-    direction: "SEND",
-    credentialType: "FACE",
-    status: "PENDING",
-    total: 2,
-    synced: 1,
-    errors: 0,
-    lastRunAt: now()
-  },
-  {
-    id: "sync-control-id-events",
-    tenantId: tenant.id,
-    manufacturer: "Control iD",
-    target: "Fila de eventos",
-    direction: "READ",
-    credentialType: "EVENTS",
-    status: "READY",
-    total: 0,
-    synced: 0,
-    errors: 0,
-    lastRunAt: now()
-  }
-];
+const credentialSyncJobs = [];
 
-const unitLogins = [
-  { id: "login-master", tenantId: tenant.id, unitId: "unit-101", personId: "person-master", guest: "Master Administrador", profile: "Administrador", sentTo: "agpsistemascorp@gmail.com", invitedBy: "Sistema", status: "Usuario criado", sentAt: now() },
-  { id: "login-101", tenantId: tenant.id, unitId: "unit-101", personId: "person-101", guest: "Alan Gomes", profile: "Morador", sentTo: "alangomesdepaula8@gmail.com", invitedBy: "Master Administrador", status: "Usuario criado", sentAt: now() },
-  { id: "login-demo", tenantId: showroomTenant.id, unitId: "unit-27298", personId: "person-114410", guest: "Morador Demonstracao", profile: "Morador", sentTo: "morador@example.com", invitedBy: "Portaria", status: "Expirado", sentAt: now() }
-];
+const unitLogins = [];
 
-const unitInvites = [
-  { id: "invite-qr-101", tenantId: tenant.id, unitId: "unit-101", guest: "Visitante QR", identification: "QR Code", invitedBy: "Alan Gomes", status: "Ativo", type: "QR_CODE", validUntil: now() },
-  { id: "invite-key-101", tenantId: tenant.id, unitId: "unit-101", guest: "Chave Virtual", identification: "Link app", invitedBy: "Master Administrador", status: "Pendente", type: "VIRTUAL_KEY", validUntil: now() },
-  { id: "invite-demo", tenantId: showroomTenant.id, unitId: "unit-27298", guest: "Convidado Demonstracao", identification: "QR Code", invitedBy: "Morador", status: "Ativo", type: "QR_CODE", validUntil: now() }
-];
+const unitInvites = [];
 
-const accessRoutes = [
-  "Morador",
-  "Morador nao responsavel",
-  "Prestador",
-  "Proprietario",
-  "Temporario (Acesso autonomo)",
-  "Temporario (Convite)",
-  "Temporario (Portaria)",
-  "Veiculo",
-  "Visitante"
-].map((name, index) => ({ id: `route-${index + 1}`, tenantId: tenant.id, name, enabled: true }));
+const accessRoutes = [];
 
-const permissionProfiles = [
-  {
-    id: "perm-master",
-    tenantId: tenant.id,
-    role: "MASTER",
-    label: "Master",
-    description: "Acesso total ao sistema e configuracoes tecnicas.",
-    permissions: ["dashboard.view", "condominiums.manage", "units.manage", "people.manage", "visitors.manage", "providers.manage", "syndic.manage", "devices.manage", "credentials.manage", "resources.manage", "licenses.manage", "permissions.manage", "telephony.manage"]
-  },
-  {
-    id: "perm-admin",
-    tenantId: tenant.id,
-    role: "CONDO_ADMIN",
-    label: "Administrador/Sindico",
-    description: "Gestao do condominio, pessoas, recursos e relatorios.",
-    permissions: ["dashboard.view", "units.manage", "people.manage", "visitors.manage", "providers.manage", "credentials.manage", "resources.view", "telephony.view"]
-  },
-  {
-    id: "perm-porter",
-    tenantId: tenant.id,
-    role: "PORTER",
-    label: "Porteiro",
-    description: "Atendimento, portaria, eventos, convites e abertura autorizada.",
-    permissions: ["dashboard.view", "visitors.manage", "providers.manage", "credentials.view", "portaria.answer", "actions.trigger", "cameras.view"]
-  },
-  {
-    id: "perm-resident",
-    tenantId: tenant.id,
-    role: "RESIDENT",
-    label: "Usuario normal",
-    description: "Uso do app, convites, cameras liberadas e chamada da portaria.",
-    permissions: ["mobile.use", "invites.manage", "telephony.call", "cameras.view.allowed"]
-  }
-];
+const permissionProfiles = [];
 
-const licenses = [
-  {
-    id: "license-861",
-    code: "861",
-    tenantId: tenant.id,
-    name: "Condominio Gran Portal Residence",
-    type: "Condominio",
-    city: "Maringa - PR",
-    plan: "Full",
-    residents: 1227,
-    contractor: "DINAMUS SERVICOS DE SEGURANCA PRIVADA",
-    visible: true,
-    active: true
-  },
-  {
-    id: "license-612",
-    code: "612",
-    tenantId: "tenant-showroom",
-    name: "Condominio Dinamus",
-    type: "Condominio",
-    city: "Maringa - PR",
-    plan: "Showroom",
-    residents: 2,
-    contractor: "DINAMUS SERVICOS DE SEGURANCA PRIVADA",
-    visible: true,
-    active: true
-  }
-];
+const licenses = [];
 
 const resources = [
   { id: "actions", name: "Acionamentos", enabled: false, group: "Essenciais", configurable: true, description: "Envie acionamentos remotos via App ou Web e cadastre leitoras para eventos de acesso." },
@@ -569,28 +203,7 @@ const resources = [
   { id: "nomenclatures", name: "Nomenclaturas", enabled: true, group: "Personalizacoes", configurable: true, description: "Nomes de agentes e unidades para ambientes residenciais, corporativos e educacionais." }
 ];
 
-const accessLogs = [
-  {
-    id: "access-log-demo-1",
-    tenantId: tenant.id,
-    unitId: "unit-101",
-    decision: "ALLOW",
-    reason: "Evento inicial da portaria",
-    createdAt: now(),
-    user: { name: "Master Administrador" },
-    door: { name: "Porta Entrada" }
-  },
-  {
-    id: "access-log-demo-2",
-    tenantId: showroomTenant.id,
-    unitId: "unit-27298",
-    decision: "ALLOW",
-    reason: "Convite QR Code validado",
-    createdAt: now(),
-    user: { name: "Morador Demonstracao" },
-    door: { name: "Entrada Social" }
-  }
-];
+const accessLogs = [];
 
 const intercomCalls = [];
 const extraTenants = [];
@@ -600,24 +213,28 @@ function unitList() {
   return Array.from(units.values());
 }
 
-function extensionStatus() {
-  const start = Number(tenant.sipExtensionStart || 9000);
-  const max = Math.min(Number(tenant.sipExtensionEnd || start + 5), start + 9);
-  const used = new Map(unitList().map((unit) => [unit.telephony.extension, unit]));
+function extensionStatus(tenantId = "") {
+  const targetTenant = tenantId ? findTenant(tenantId) : allTenants()[0];
+  if (!targetTenant) return [];
+  const start = Number(targetTenant.sipExtensionStart || 9000);
+  const max = Math.min(Number(targetTenant.sipExtensionEnd || start + 5), start + 9);
+  const used = new Map(unitList()
+    .filter((unit) => unit.tenantId === targetTenant.id)
+    .map((unit) => [unit.telephony.extension, unit]));
   const intercomByExtension = new Map(devices
-    .filter((device) => device.intercomEnabled && device.intercomExtension)
+    .filter((device) => device.tenantId === targetTenant.id && device.intercomEnabled && device.intercomExtension)
     .map((device) => [String(device.intercomExtension), device]));
   return Array.from({ length: Math.max(0, max - start + 1) }, (_, index) => {
     const extension = String(start + index);
     const unit = used.get(extension);
     const device = intercomByExtension.get(extension);
-    const isPorter = extension === tenant.sipPorterExtension;
+    const isPorter = extension === targetTenant.sipPorterExtension;
     return {
       extension,
       label: isPorter ? "Portaria" : unit ? `Unidade ${unit.unitNumber}` : device ? device.name : "Livre",
       type: isPorter ? "PORTER" : unit ? "UNIT" : device ? device.intercomType || "DEVICE" : "FREE",
       status: unit || device || isPorter ? "Configurado" : "Livre",
-      tenantId: unit?.tenantId || device?.tenantId || tenant.id,
+      tenantId: unit?.tenantId || device?.tenantId || targetTenant.id,
       deviceId: device?.id || "",
       unitId: unit?.unitId || "",
       updatedAt: now()
@@ -819,7 +436,7 @@ function toMobileInvite(invite, origin) {
 }
 
 function allTenants() {
-  return [tenant, showroomTenant, ...extraTenants].filter((item) => !deletedTenantIds.has(item.id));
+  return extraTenants.filter((item) => !deletedTenantIds.has(item.id));
 }
 
 function findTenant(tenantId = tenant.id) {
@@ -1932,7 +1549,7 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/extensions/status") {
     const tenantId = url.searchParams.get("tenantId");
-    const statuses = extensionStatus().filter((item) => !tenantId || item.tenantId === tenantId);
+    const statuses = extensionStatus(tenantId || "");
     return json(response, 200, { generatedAt: now(), extensions: statuses });
   }
 

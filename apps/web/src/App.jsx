@@ -541,8 +541,8 @@ function App() {
   const [activeSection, setActiveSection] = useState("dashboard");
   const [data, setData] = useState(emptyData);
   const [syncState, setSyncState] = useState({ status: "idle", error: "", lastSyncAt: null });
-  const [selectedTenantId, setSelectedTenantId] = useState("tenant-agp");
-  const [selectedUnitId, setSelectedUnitId] = useState("unit-101");
+  const [selectedTenantId, setSelectedTenantId] = useState("");
+  const [selectedUnitId, setSelectedUnitId] = useState("");
   const [condoFormMode, setCondoFormMode] = useState("edit");
   const [unitFormMode, setUnitFormMode] = useState("edit");
   const [search, setSearch] = useState("");
@@ -678,7 +678,9 @@ function App() {
       const response = await fetch(`${apiUrl}/api/bootstrap`);
       if (!response.ok) throw new Error(`API ${response.status}`);
       const payload = await response.json();
-      const currentTenantId = selectedTenantId || payload.condominiums[0]?.id || "";
+      const currentTenantId = payload.condominiums.some((item) => item.id === selectedTenantId)
+        ? selectedTenantId
+        : payload.condominiums[0]?.id || "";
       const extensionResponse = currentTenantId
         ? await fetch(`${apiUrl}/api/extensions/status?tenantId=${encodeURIComponent(currentTenantId)}`).catch(() => null)
         : null;
@@ -687,8 +689,8 @@ function App() {
       setData(payload);
       const nextTenant = payload.condominiums[0];
       const nextUnit = payload.units[0];
-      setSelectedTenantId((current) => current || nextTenant?.id || "");
-      setSelectedUnitId((current) => current || nextUnit?.unitId || "");
+      setSelectedTenantId((current) => payload.condominiums.some((item) => item.id === current) ? current : nextTenant?.id || "");
+      setSelectedUnitId((current) => payload.units.some((item) => item.unitId === current) ? current : nextUnit?.unitId || "");
       setTenantTelephony(nextTenant || {});
       setTelephony(nextUnit?.telephony || emptyTelephony);
       setSyncState({ status: "synced", error: "", lastSyncAt: new Date() });
