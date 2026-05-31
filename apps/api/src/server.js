@@ -8,8 +8,13 @@ import path from "node:path";
 import QRCode from "qrcode";
 
 function loadLocalEnv() {
-  const envPath = path.join(process.cwd(), ".env.local");
-  if (!fs.existsSync(envPath)) return;
+  const envCandidates = [
+    path.join(process.cwd(), ".env.local"),
+    path.join(process.cwd(), "apps", "api", ".env.local"),
+    path.resolve("apps", "api", ".env.local")
+  ];
+  const envPath = envCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!envPath) return;
 
   const lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/);
   for (const line of lines) {
@@ -1028,7 +1033,13 @@ function ensureStream(camera) {
     "-use_wallclock_as_timestamps", "1",
     "-i", cameraRtspUrl(camera),
     "-an",
-    "-c:v", "copy",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-tune", "zerolatency",
+    "-profile:v", "baseline",
+    "-level", "4.2",
+    "-pix_fmt", "yuv420p",
+    "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
     "-f", "hls",
     "-hls_time", "1",
     "-hls_list_size", "8",
