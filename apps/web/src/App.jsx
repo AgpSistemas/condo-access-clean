@@ -442,21 +442,21 @@ function CameraConfig({ cameras, form, setForm, showForm, onSave, onEdit, onNew,
         </div>
         <div className="form-hint">Cadastre Camera IP como canal unico, ou DVR/NVR multicanal como um equipamento com lista de canais. A API entrega HLS por canal para Web/APK e mantem RTSP sob demanda.</div>
         <div className="form-grid">
-          <Field label="Descricao"><input value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></Field>
-          <Field label="Fabricante"><select value={form.manufacturer} onChange={(event) => setForm((current) => ({ ...current, manufacturer: event.target.value }))}><option>Hikvision</option><option>Intelbras</option><option>Control iD</option><option>Linear HCS</option><option>Bravas</option><option>SIM Next Cloud</option><option>Generico</option></select></Field>
-          <Field label="Tipo"><select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value, channelCount: event.target.value === "CAMERA_IP" ? "1" : current.channelCount || "16" }))}><option value="CAMERA_IP">Camera IP</option><option value="DVR">DVR multicanal</option><option value="NVR">NVR multicanal</option><option value="VIDEO_PORTEIRO">Video porteiro</option><option value="FACIAL">Facial</option><option value="CLOUD">Cloud</option></select></Field>
-          <Field label="IP / DDNS"><input value={form.host} onChange={(event) => setForm((current) => ({ ...current, host: event.target.value }))} /></Field>
-          <Field label="Porta RTSP"><input value={form.rtspPort} onChange={(event) => setForm((current) => ({ ...current, rtspPort: event.target.value }))} /></Field>
-          <Field label="Porta HTTP"><input value={form.httpPort} onChange={(event) => setForm((current) => ({ ...current, httpPort: event.target.value }))} /></Field>
-          <Field label="Usuario"><input value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} /></Field>
-          <Field label="Senha"><input type="password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} /></Field>
-          <Field label="Canal inicial"><input value={form.channel} onChange={(event) => setForm((current) => ({ ...current, channel: event.target.value }))} /></Field>
-          <Field label="Quantidade de canais"><input disabled={form.id || !isMultiChannel} value={isMultiChannel ? form.channelCount : "1"} onChange={(event) => setForm((current) => ({ ...current, channelCount: event.target.value }))} /></Field>
-          <Field label="Descricao base"><input value={form.channelDescription} onChange={(event) => setForm((current) => ({ ...current, channelDescription: event.target.value }))} placeholder="Ex.: NVR portaria, garagem, torre A" /></Field>
-          <Field label="Stream"><select value={form.stream} onChange={(event) => setForm((current) => ({ ...current, stream: event.target.value }))}><option value="MAIN">Principal</option><option value="SUB">Substream</option></select></Field>
-          <Field label="Proporcao"><select value={form.aspectRatio} onChange={(event) => setForm((current) => ({ ...current, aspectRatio: event.target.value }))}><option value="WIDESCREEN">16:9</option><option value="STANDARD">4:3</option><option value="PORTRAIT">Vertical</option></select></Field>
-          <Field label="Metodo no app"><select value={form.loadMethod} onChange={(event) => setForm((current) => ({ ...current, loadMethod: event.target.value }))}><option value="SNAPSHOT_TEMPO_REAL">RTSP tempo real</option><option value="HLS_GATEWAY">HLS pela API</option><option value="CLOUD">Cloud/fabricante</option></select></Field>
-          <Field label="Captura de foto"><select value={form.photoCaptureEnabled ? "true" : "false"} onChange={(event) => setForm((current) => ({ ...current, photoCaptureEnabled: event.target.value === "true" }))}><option value="false">Desativada</option><option value="true">Ativada</option></select></Field>
+          <Field label="Descricao"><input name="description" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></Field>
+          <Field label="Fabricante"><select name="manufacturer" value={form.manufacturer} onChange={(event) => setForm((current) => ({ ...current, manufacturer: event.target.value }))}><option>Hikvision</option><option>Intelbras</option><option>Control iD</option><option>Linear HCS</option><option>Bravas</option><option>SIM Next Cloud</option><option>Generico</option></select></Field>
+          <Field label="Tipo"><select name="type" value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value, channelCount: event.target.value === "CAMERA_IP" ? "1" : current.channelCount || "16" }))}><option value="CAMERA_IP">Camera IP</option><option value="DVR">DVR multicanal</option><option value="NVR">NVR multicanal</option><option value="VIDEO_PORTEIRO">Video porteiro</option><option value="FACIAL">Facial</option><option value="CLOUD">Cloud</option></select></Field>
+          <Field label="IP / DDNS"><input name="host" value={form.host} onChange={(event) => setForm((current) => ({ ...current, host: event.target.value }))} /></Field>
+          <Field label="Porta RTSP"><input name="rtspPort" value={form.rtspPort} onChange={(event) => setForm((current) => ({ ...current, rtspPort: event.target.value }))} /></Field>
+          <Field label="Porta HTTP"><input name="httpPort" value={form.httpPort} onChange={(event) => setForm((current) => ({ ...current, httpPort: event.target.value }))} /></Field>
+          <Field label="Usuario"><input name="username" value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} /></Field>
+          <Field label="Senha"><input name="password" type="password" autoComplete="new-password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} /></Field>
+          <Field label="Canal inicial"><input name="channel" value={form.channel} onChange={(event) => setForm((current) => ({ ...current, channel: event.target.value }))} /></Field>
+          <Field label="Quantidade de canais"><input name="channelCount" disabled={form.id || !isMultiChannel} value={isMultiChannel ? form.channelCount : "1"} onChange={(event) => setForm((current) => ({ ...current, channelCount: event.target.value }))} /></Field>
+          <Field label="Descricao base"><input name="channelDescription" value={form.channelDescription} onChange={(event) => setForm((current) => ({ ...current, channelDescription: event.target.value }))} placeholder="Ex.: NVR portaria, garagem, torre A" /></Field>
+          <Field label="Stream"><select name="stream" value={form.stream} onChange={(event) => setForm((current) => ({ ...current, stream: event.target.value }))}><option value="MAIN">Principal</option><option value="SUB">Substream</option></select></Field>
+          <Field label="Proporcao"><select name="aspectRatio" value={form.aspectRatio} onChange={(event) => setForm((current) => ({ ...current, aspectRatio: event.target.value }))}><option value="WIDESCREEN">16:9</option><option value="STANDARD">4:3</option><option value="PORTRAIT">Vertical</option></select></Field>
+          <Field label="Metodo no app"><select name="loadMethod" value={form.loadMethod} onChange={(event) => setForm((current) => ({ ...current, loadMethod: event.target.value }))}><option value="SNAPSHOT_TEMPO_REAL">RTSP tempo real</option><option value="HLS_GATEWAY">HLS pela API</option><option value="CLOUD">Cloud/fabricante</option></select></Field>
+          <Field label="Captura de foto"><select name="photoCaptureEnabled" value={form.photoCaptureEnabled ? "true" : "false"} onChange={(event) => setForm((current) => ({ ...current, photoCaptureEnabled: event.target.value === "true" }))}><option value="false">Desativada</option><option value="true">Ativada</option></select></Field>
         </div>
       </form>}
       {cameras.length ? (
@@ -1030,18 +1030,30 @@ function App() {
 
   async function saveCameraForm(event) {
     event.preventDefault();
+    const formValues = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const payload = {
+      ...cameraForm,
+      ...formValues,
+      channelCount: formValues.channelCount || cameraForm.channelCount,
+      photoCaptureEnabled: formValues.photoCaptureEnabled === "true",
+      tenantId: cameraForm.tenantId || selectedTenant?.id || ""
+    };
     const response = await fetch(`${apiUrl}/api/cameras`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...cameraForm, tenantId: cameraForm.tenantId || selectedTenant?.id })
+      body: JSON.stringify(payload)
     });
+    const result = await response.json().catch(() => null);
     if (!response.ok) {
       setMessage("Falha ao salvar camera.");
       return;
     }
+    const saved = Array.isArray(result) ? result[0] : result;
     setCameraForm({ ...emptyCameraForm, tenantId: selectedTenant?.id || "" });
     setShowCameraForm(false);
-    setMessage(cameraForm.id ? "Camera salva." : "Camera(s) salva(s). DVR/NVR multicanal gera um item por canal.");
+    setMessage(saved?.passwordSet
+      ? "Camera(s) salva(s) com senha RTSP."
+      : "Camera(s) salva(s). Informe a senha RTSP para liberar HLS/APK.");
     await syncNow();
   }
 
