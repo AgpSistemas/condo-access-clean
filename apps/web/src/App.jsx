@@ -100,6 +100,8 @@ const emptyDeviceForm = {
   name: "",
   model: "",
   ipAddress: "",
+  username: "admin",
+  password: "",
   apiPort: "80",
   intercomExtension: "",
   intercomType: "FACIAL",
@@ -509,7 +511,6 @@ function ActionConfig({ actions, devices, form, setForm, onSave, onEdit, onTrigg
         </div>
         <div className="form-grid">
           <Field label="Nome"><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} /></Field>
-          <Field label="Fabricante"><select value={form.manufacturer} onChange={(event) => setForm((current) => ({ ...current, manufacturer: event.target.value }))}><option>Hikvision</option><option>Moni Software</option><option>Control iD</option><option>Intelbras</option><option>Nice Guarita</option><option>Generico</option></select></Field>
           <Field label="Equipamento"><select value={form.deviceId} onChange={(event) => {
             const device = devices.find((item) => item.id === event.target.value);
             setForm((current) => ({ ...current, deviceId: event.target.value, manufacturer: device?.manufacturer || current.manufacturer }));
@@ -519,11 +520,24 @@ function ActionConfig({ actions, devices, form, setForm, onSave, onEdit, onTrigg
           <Field label="Status"><select value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value }))}><option>ACTIVE</option><option>DISABLED</option></select></Field>
         </div>
       </form>
+      <div className="equipment-choice-list">
+        {devices.length ? devices.map((device) => (
+          <button
+            key={device.id}
+            className={form.deviceId === device.id ? "" : "secondary-button"}
+            type="button"
+            onClick={() => setForm((current) => ({ ...current, deviceId: device.id, manufacturer: device.manufacturer || current.manufacturer }))}
+          >
+            <RadioTower size={16} />
+            <span><strong>{device.name}</strong><small>{device.manufacturer} - {device.ipAddress || "sem IP"} - {device.passwordSet ? "senha salva" : "sem senha"}</small></span>
+          </button>
+        )) : <div className="empty-state">Cadastre primeiro os equipamentos do condominio.</div>}
+      </div>
       {actions.map((action) => (
         <article className="action-row" key={action.id}>
           <button className="secondary-button" disabled={action.status === "DISABLED"} onClick={() => onTrigger(action)}>Acionar</button>
           <span><strong>{action.name}</strong><small>{action.route}</small></span>
-          <span>{action.manufacturer}{action.relay ? ` / rele ${action.relay}` : ""}</span>
+          <span>{devices.find((device) => device.id === action.deviceId)?.name || action.manufacturer}{action.relay ? ` / rele ${action.relay}` : ""}</span>
           <span className="status offline">{action.status === "DISABLED" ? "Desabilitado" : "Ativo"}</span>
           <button className="secondary-button" onClick={() => onEdit(action)}>Editar</button>
           <button className="danger-button" type="button" onClick={() => onDelete(action)}><Trash2 size={16} /> Excluir</button>
@@ -931,7 +945,7 @@ function App() {
       return;
     }
     setSelectedUnitId("");
-    setUnitFormMode("new");
+    setUnitFormMode("edit");
     setMessage("Unidade excluida.");
     await syncNow();
   }
@@ -998,17 +1012,24 @@ function App() {
 
   async function saveDeviceForm(event) {
     event.preventDefault();
+    const payload = {
+      ...deviceForm,
+      tenantId: deviceForm.tenantId || selectedTenant?.id || ""
+    };
     const response = await fetch(`${apiUrl}/api/devices`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(deviceForm)
+      body: JSON.stringify(payload)
     });
     if (!response.ok) {
       setMessage("Falha ao salvar equipamento.");
       return;
     }
-    setDeviceForm(emptyDeviceForm);
-    setMessage("Equipamento salvo. Use o Painel de controle para acompanhar conexao/status.");
+    const saved = await response.json().catch(() => null);
+    setDeviceForm({ ...emptyDeviceForm, tenantId: selectedTenant?.id || "" });
+    setMessage(saved?.passwordSet
+      ? "Equipamento salvo com senha de integracao."
+      : "Equipamento salvo. Informe usuario/senha para testes e acionamentos Hikvision.");
     await syncNow();
   }
 
@@ -1527,7 +1548,7 @@ function App() {
                 {unitPager.pageItems.length === 0 && <div className="empty-state">Nenhuma unidade encontrada para essa busca.</div>}
                 <Pagination page={unitPager.page} totalPages={unitPager.totalPages} onPage={unitPager.setPage} />
               </article>
-              <form className="panel form-panel" key={`${unitFormMode}-${unitFormUnit?.unitId || "new"}`} onSubmit={saveUnitForm}>
+              {unitFormMode === "new" && <form className="panel form-panel" key={`${unitFormMode}-${unitFormUnit?.unitId || "new"}`} onSubmit={saveUnitForm}>
                 <div className="panel-heading"><h2>{unitFormMode === "new" ? "Nova unidade" : `Geral da unidade ${unitFormUnit?.unitNumber || "-"}`}</h2><Home size={20} /></div>
                 <div className="form-grid">
                   <input type="hidden" name="unitId" value={unitFormUnit?.unitId || ""} />
@@ -1547,9 +1568,10 @@ function App() {
                   <button className="secondary-button" type="button" onClick={() => navigateTo(`/unidades/${selectedUnit?.unitId || selectedUnitId}/logins`)}>Logins</button>
                   <button className="secondary-button" type="button" onClick={() => navigateTo(`/unidades/${selectedUnit?.unitId || selectedUnitId}/convites/qrCodes`)}>Convites</button>
                   <button type="button" onClick={() => setUnitTab("telefonia")}><Save size={16} /> SIP</button>
+                  <button className="secondary-button" type="button" onClick={() => setUnitFormMode("edit")}>Cancelar</button>
                   {unitFormUnit?.unitId && <button className="danger-button" type="button" onClick={() => void deleteUnit(unitFormUnit)}><Trash2 size={16} /> Excluir unidade</button>}
                 </div>
-              </form>
+              </form>}
             </section>
           )}
         </section>
@@ -1617,6 +1639,8 @@ function App() {
                   <Field label="Modelo"><input value={deviceForm.model} onChange={(event) => setDeviceForm((current) => ({ ...current, model: event.target.value }))} /></Field>
                   <Field label="IP / DDNS"><input value={deviceForm.ipAddress} onChange={(event) => setDeviceForm((current) => ({ ...current, ipAddress: event.target.value }))} /></Field>
                   <Field label="Porta API"><input value={deviceForm.apiPort} onChange={(event) => setDeviceForm((current) => ({ ...current, apiPort: event.target.value }))} /></Field>
+                  <Field label="Usuario"><input value={deviceForm.username} onChange={(event) => setDeviceForm((current) => ({ ...current, username: event.target.value }))} /></Field>
+                  <Field label="Senha"><input type="password" autoComplete="new-password" value={deviceForm.password} onChange={(event) => setDeviceForm((current) => ({ ...current, password: event.target.value }))} placeholder={deviceForm.id ? "Preencha para alterar" : ""} /></Field>
                   <Field label="Ramal interfone"><input value={deviceForm.intercomExtension} onChange={(event) => setDeviceForm((current) => ({ ...current, intercomExtension: event.target.value }))} /></Field>
                   <Field label="Tipo interfone"><select value={deviceForm.intercomType} onChange={(event) => setDeviceForm((current) => ({ ...current, intercomType: event.target.value }))}><option>FACIAL</option><option>TELEFONE_IP</option><option>ATA_VOIP</option></select></Field>
                   <button type="submit"><Save size={16} /> Salvar equipamento</button>
@@ -1625,31 +1649,30 @@ function App() {
               <article className="panel">
                 <div className="panel-heading"><h2>Equipamentos cadastrados</h2><Camera size={20} /></div>
                 <div className="simple-list">
-                  {data.devices.map((device) => (
+                  {tenantDevices.map((device) => (
                     <div className="simple-row device-row" key={device.id}>
                       <RadioTower size={18} />
                       <div><strong>{device.name}</strong><span>{device.manufacturer} {device.model}</span></div>
                       <span>{device.ipAddress}</span>
                       <span>Ramal {device.intercomExtension}</span>
+                      <span>{device.passwordSet ? "Senha salva" : "Sem senha"}</span>
                       <span className="status">{device.status}</span>
                       <button className="secondary-button" onClick={() => setDeviceForm({
                         id: device.id,
+                        tenantId: device.tenantId || selectedTenant?.id || "",
                         category: device.category || "access-control",
                         manufacturer: device.manufacturer || "Hikvision",
                         name: device.name || "",
                         model: device.model || "",
                         ipAddress: device.ipAddress || "",
+                        username: device.username || "admin",
+                        password: "",
                         apiPort: String(device.apiPort || 80),
                         intercomExtension: device.intercomExtension || "",
                         intercomType: device.intercomType || "FACIAL",
                         intercomEnabled: Boolean(device.intercomEnabled)
                       })}>Editar</button>
                     </div>
-                  ))}
-                </div>
-                <div className="manufacturer-strip">
-                  {data.manufacturerProfiles.map((profile) => (
-                    <button className="secondary-button" key={profile.id} onClick={() => setDeviceForm((current) => ({ ...current, manufacturer: profile.name }))}>{profile.name}</button>
                   ))}
                 </div>
               </article>

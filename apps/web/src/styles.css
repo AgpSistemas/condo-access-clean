@@ -1219,6 +1219,27 @@ nav button:hover {
   font-size: 13px;
 }
 
+.equipment-choice-list {
+  display: grid;
+  gap: 8px;
+}
+
+.equipment-choice-list button {
+  justify-content: flex-start;
+  min-height: 54px;
+  text-align: left;
+}
+
+.equipment-choice-list button span {
+  display: grid;
+  gap: 2px;
+}
+
+.equipment-choice-list button small {
+  color: #5d7075;
+  font-size: 12px;
+}
+
 .manufacturer-grid,
 .sync-job-grid,
 .permission-grid {

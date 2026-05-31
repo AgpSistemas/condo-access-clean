@@ -247,6 +247,14 @@ function publicCamera(camera) {
   return safeCamera;
 }
 
+function publicDevice(device) {
+  const { password: _password, ...safeDevice } = device;
+  return {
+    ...safeDevice,
+    passwordSet: Boolean(device.password || device.passwordSet)
+  };
+}
+
 function bootstrap() {
   return {
     generatedAt: now(),
@@ -261,7 +269,7 @@ function bootstrap() {
     condominiums: allTenants(),
     units: unitList(),
     residents,
-    devices,
+    devices: devices.map(publicDevice),
     cameras: cameras.map(publicCamera),
     actions,
     credentials,
@@ -538,8 +546,13 @@ function toMobileDevice(device) {
     manufacturer: device.manufacturer,
     model: device.model,
     ipAddress: device.ipAddress,
+    username: device.username,
+    passwordSet: Boolean(device.password || device.passwordSet),
     apiPort: device.apiPort,
     category: device.category,
+    intercomEnabled: device.intercomEnabled,
+    intercomType: device.intercomType,
+    intercomExtension: device.intercomExtension,
     status: device.status,
     latencyMs: device.latencyMs,
     lastCheckedAt: device.lastCheckedAt,
@@ -1241,6 +1254,7 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === "POST" && url.pathname === "/api/devices") {
     const body = await readBody(request);
+    const existingDevice = body.id ? devices.find((item) => item.id === body.id) : null;
     const device = {
       id: body.id || makeId("device"),
       tenantId: body.tenantId || tenant.id,
@@ -1249,7 +1263,12 @@ const server = http.createServer(async (request, response) => {
       manufacturer: body.manufacturer || "Generico",
       model: body.model || "",
       ipAddress: body.ipAddress || body.host || "",
+      apiHost: body.apiHost || body.ipAddress || body.host || "",
       apiPort: Number(body.apiPort || 80),
+      username: body.username || existingDevice?.username || "admin",
+      password: body.password || existingDevice?.password || "",
+      passwordSet: Boolean(body.password || existingDevice?.password || body.passwordSet),
+      authMode: body.authMode || existingDevice?.authMode || "DIGEST",
       intercomEnabled: Boolean(body.intercomEnabled),
       intercomType: body.intercomType || "FACIAL",
       intercomExtension: body.intercomExtension || "",
@@ -1257,7 +1276,7 @@ const server = http.createServer(async (request, response) => {
     };
     const updated = body.id ? updateById(devices, body.id, device) : null;
     if (!updated) devices.unshift(device);
-    return json(response, body.id ? 200 : 201, updated || device);
+    return json(response, body.id ? 200 : 201, publicDevice(updated || device));
   }
 
   if (request.method === "POST" && url.pathname === "/api/cameras") {
