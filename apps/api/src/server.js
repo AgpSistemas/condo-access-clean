@@ -74,6 +74,7 @@ const postgresPool = databaseUrl
     ssl: postgresSslMode === "require" ? { rejectUnauthorized: false } : undefined
   })
   : null;
+const CONTROL_ID_ACCESS_ADAPTER = "CONTROL_ID_ACCESS";
 let postgresStateReady = false;
 let postgresSaveQueue = Promise.resolve();
 const defaultMobileCameraStreamsFile = process.platform === "win32"
@@ -794,6 +795,9 @@ function manufacturerKey(item = {}) {
 
 function deviceAdapter(device) {
   const manufacturer = manufacturerKey(device);
+  if (manufacturer.includes("control") || manufacturer.includes("control id") || manufacturer.includes("controlid")) {
+    return CONTROL_ID_ACCESS_ADAPTER;
+  }
   if (manufacturer.includes("hikvision")) return "HIKVISION_ISAPI";
   if (manufacturer.includes("intelbras")) {
     if (matchesSs3532Mfw(device)) return INTELBRAS_SS_3532_MF_W_ADAPTER;
@@ -826,6 +830,164 @@ async function authenticatedDeviceRequest(device, targetPath, { method = "GET", 
   } finally {
     request.done();
   }
+}
+
+async function controlIdLogin(device, { timeoutMs = 9000 } = {}) {
+  if (!device.password) {
+    throw new Error("Senha Control iD nao cadastrada para este equipamento");
+  }
+
+  const request = withTimeout(timeoutMs);
+  try {
+    const response = await fetch(`${deviceBaseUrl(device)}/login.fcgi`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({
+        login: device.username || "admin",
+        password: device.password
+      }),
+      signal: request.signal
+    });
+    const text = await response.text();
+    const payload = tryParseJson(text) || {};
+    if (!response.ok || !payload.session) {
+      throw new Error(`Control iD login respondeu ${response.status}: ${text.slice(0, 240)}`);
+    }
+    return payload.session;
+  } finally {
+    request.done();
+  }
+}
+
+async function controlIdPost(device, session, pathName, body = {}, { timeoutMs = 9000 } = {}) {
+  const separator = pathName.includes("?") ? "&" : "?";
+  const request = withTimeout(timeoutMs);
+  try {
+    const response = await fetch(`${deviceBaseUrl(device)}${pathName}${separator}session=${encodeURIComponent(session)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify(body),
+      signal: request.signal
+    });
+    const text = await response.text();
+    const payload = tryParseJson(text);
+    if (!response.ok) {
+      throw new Error(`Control iD ${pathName} respondeu ${response.status}: ${text.slice(0, 240)}`);
+    }
+    return { ok: true, status: response.status, body: text, payload: payload || {} };
+  } finally {
+    request.done();
+  }
+}
+
+async function controlIdLoadObjects(device, session, object, { limit = 1000, timeoutMs = 9000 } = {}) {
+  const result = await controlIdPost(device, session, "/load_objects.fcgi", { object, limit }, { timeoutMs });
+  return Array.isArray(result.payload?.[object]) ? result.payload[object] : [];
+}
+
+async function readControlIdSnapshot(device, { includeOptional = true } = {}) {
+  const session = await controlIdLogin(device);
+  const specs = [
+    { object: "users", label: "Control iD usuarios", required: true },
+    { object: "cards", label: "Control iD cards/tags", required: false },
+    { object: "uhf_tags", label: "Control iD UHF tags", required: false },
+    { object: "qrcodes", label: "Control iD QR Codes", required: false },
+    { object: "pins", label: "Control iD PINs", required: false },
+    { object: "time_zones", label: "Control iD horarios", required: false },
+    { object: "time_spans", label: "Control iD intervalos", required: false },
+    { object: "access_logs", label: "Control iD eventos", required: false, limit: 80 },
+    { object: "face_templates", label: "Control iD faces", required: false, optional: true }
+  ].filter((spec) => includeOptional || !spec.optional);
+  const objects = {};
+  const attempts = [];
+
+  for (const spec of specs) {
+    try {
+      const records = await controlIdLoadObjects(device, session, spec.object, { limit: spec.limit || 1000 });
+      objects[spec.object] = records;
+      attempts.push({
+        label: spec.label,
+        path: `/load_objects.fcgi:${spec.object}`,
+        ok: true,
+        records: records.length
+      });
+    } catch (error) {
+      attempts.push({
+        label: spec.label,
+        path: `/load_objects.fcgi:${spec.object}`,
+        ok: false,
+        optional: !spec.required,
+        error: error instanceof Error ? error.message : "Falha ao ler objeto Control iD"
+      });
+      if (spec.required) throw error;
+      objects[spec.object] = [];
+    }
+  }
+
+  return { session, objects, attempts };
+}
+
+function controlIdUserMap(users = []) {
+  return new Map(users.map((user) => [String(user.id), user]));
+}
+
+function controlIdCredentialRecords(snapshot = {}) {
+  const objects = snapshot.objects || {};
+  const users = objects.users || [];
+  const userMap = controlIdUserMap(users);
+  const userFaceIds = new Set((objects.face_templates || []).map((face) => String(face.user_id || face.userId || "")));
+  users
+    .filter((user) => Number(user.image_timestamp || 0) > 0)
+    .forEach((user) => userFaceIds.add(String(user.id)));
+
+  const recordFromObject = (objectName, row = {}, type) => {
+    const user = userMap.get(String(row.user_id || row.userId || ""));
+    const value = String(row.value ?? row.card_value ?? row.id ?? "").trim();
+    if (!value) return null;
+    return {
+      id: `CONTROLID-${objectName}-${normalizeLookup(row.id || value).slice(0, 32)}`,
+      type,
+      value,
+      valueLabel: type === "RFID" ? `Tag ${value}` : value,
+      personName: user?.name || "",
+      personExternalId: user?.registration || String(user?.id || row.user_id || ""),
+      source: "CONTROL_ID",
+      sourceKind: objectName,
+      devicePath: `/load_objects.fcgi:${objectName}`,
+      raw: row
+    };
+  };
+
+  const records = [
+    ...(objects.cards || []).map((row) => recordFromObject("cards", row, "RFID")),
+    ...(objects.uhf_tags || []).map((row) => recordFromObject("uhf_tags", row, "RFID")),
+    ...(objects.qrcodes || []).map((row) => recordFromObject("qrcodes", row, "QR_CODE")),
+    ...(objects.pins || []).map((row) => recordFromObject("pins", row, "PIN")),
+    ...Array.from(userFaceIds).map((userId) => {
+      const user = userMap.get(String(userId));
+      if (!user) return null;
+      return {
+        id: `CONTROLID-face-${normalizeLookup(user.id).slice(0, 32)}`,
+        type: "FACE",
+        value: `CONTROLID-FACE-${user.id}`,
+        valueLabel: `Face - ${user.name || user.registration || user.id}`,
+        personName: user.name || "",
+        personExternalId: user.registration || String(user.id),
+        source: "CONTROL_ID",
+        sourceKind: "face_templates",
+        devicePath: "/load_objects.fcgi:face_templates",
+        raw: user
+      };
+    })
+  ].filter(Boolean);
+
+  const seen = new Set();
+  return records.filter((record) => {
+    const key = credentialKey("", record.type, record.value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function hikvisionRequest(device, targetPath, options = {}) {
@@ -1301,6 +1463,21 @@ async function readDeviceCredentialsFromDevice(device) {
   const adapter = deviceAdapter(device);
   const attempts = [];
   const records = [];
+  if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
+    const snapshot = await readControlIdSnapshot(device);
+    const uniqueRecords = controlIdCredentialRecords(snapshot);
+    return {
+      ok: uniqueRecords.length > 0,
+      adapter,
+      source: "CONTROL_ID_API",
+      records: uniqueRecords,
+      attempts: snapshot.attempts,
+      message: uniqueRecords.length
+        ? `${uniqueRecords.length} credencial(is) lida(s) do Control iD`
+        : "Control iD respondeu, mas nao retornou cards, tags, QR, PIN ou faces"
+    };
+  }
+
   const hikvisionBody = (rootName) => JSON.stringify({
     [rootName]: {
       searchID: `condo-${Date.now()}`,
@@ -1384,15 +1561,7 @@ async function readDeviceCredentialsFromDevice(device) {
 }
 
 function matchResidentForDeviceCredential(record = {}, device = {}) {
-  const externalId = normalizeLookup(record.personExternalId || "");
-  const name = normalizeLookup(record.personName || "");
-  return residents.find((person) =>
-    person.tenantId === device.tenantId &&
-    (
-      (externalId && [person.id, person.cpf, person.rg, person.phone, person.email].some((value) => normalizeLookup(value) === externalId)) ||
-      (name && normalizeLookup(person.name) === name)
-    )
-  ) || null;
+  return findPersonForDeviceCredential(record, device);
 }
 
 async function importDeviceCredentials(device, { dryRun = true } = {}) {
@@ -1406,6 +1575,8 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
     total: readResult.records.length,
     valid: 0,
     duplicates: 0,
+    peopleCreated: 0,
+    peopleUpdated: 0,
     credentialsCreated: 0,
     credentialsUpdated: 0,
     invalid: 0,
@@ -1422,7 +1593,10 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
       return;
     }
 
-    const person = matchResidentForDeviceCredential(record, device);
+    const existingPerson = matchResidentForDeviceCredential(record, device);
+    const person = (record.personName || record.personExternalId)
+      ? upsertDeviceImportPerson(record, device, dryRun)
+      : existingPerson;
     const unit = unitForId(person?.unitId);
     const existingCredential = credentials.find((credential) =>
       credentialKey(credential.tenantId, credential.type, credential.value) === credentialKey(device.tenantId, record.type, record.value)
@@ -1461,6 +1635,10 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
     }
 
     report.valid += 1;
+    if (record.personName || record.personExternalId) {
+      if (existingPerson) report.peopleUpdated += dryRun ? 0 : 1;
+      else report.peopleCreated += dryRun ? 0 : 1;
+    }
     if (existingCredential) report.credentialsUpdated += dryRun ? 0 : 1;
     else report.credentialsCreated += dryRun ? 0 : 1;
     report.items.push({
@@ -1634,15 +1812,152 @@ function integrationEventRecords(device, limit = 50) {
   }));
 }
 
-function deviceIntegrationPayload(device, resource = "summary", { limit = 50 } = {}) {
+function secondsToClock(value = 0) {
+  const seconds = Math.max(0, Number(value) || 0);
+  const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor((seconds % 3600) / 60)).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function controlIdDeviceUsers(snapshot = {}, device = {}) {
+  const objects = snapshot.objects || {};
+  const credentialRecords = controlIdCredentialRecords(snapshot);
+  return (objects.users || []).map((user) => {
+    const person = matchResidentForDeviceCredential({
+      personName: user.name,
+      personExternalId: user.registration || String(user.id)
+    }, device);
+    const unit = unitForId(person?.unitId);
+    const userCredentials = credentialRecords.filter((credential) =>
+      String(credential.raw?.user_id || credential.raw?.userId || credential.raw?.id || "") === String(user.id)
+    );
+    return {
+      id: `controlid-user-${user.id}`,
+      name: user.name || user.registration || `Usuario ${user.id}`,
+      kind: Number(user.user_type_id || 0) === 1 ? "VISITOR" : "USER",
+      role: Number(user.user_type_id || 0) === 1 ? "Visitante" : "Usuario",
+      unitId: unit?.unitId || "",
+      unitNumber: unit?.unitNumber || "",
+      blockName: unit?.blockName || "",
+      cpf: person?.cpf || "",
+      rg: person?.rg || "",
+      phone: person?.phone || "",
+      email: person?.email || "",
+      vehiclePlate: person?.vehiclePlate || "",
+      allowedDays: "",
+      allowedHours: "",
+      externalId: user.registration || String(user.id),
+      source: "CONTROL_ID",
+      credentials: userCredentials.map((credential) => ({
+        id: credential.id,
+        type: credential.type,
+        valueLabel: credential.valueLabel,
+        syncStatus: "DEVICE"
+      })),
+      raw: user
+    };
+  });
+}
+
+function controlIdDeviceCredentials(snapshot = {}, device = {}) {
+  return controlIdCredentialRecords(snapshot).map((credential) => {
+    const person = matchResidentForDeviceCredential(credential, device);
+    const unit = unitForId(person?.unitId);
+    return {
+      id: credential.id,
+      personId: person?.id || "",
+      personName: person?.name || credential.personName || "Sem vinculo local",
+      unitId: unit?.unitId || "",
+      unitNumber: unit?.unitNumber || "",
+      type: credential.type,
+      valueLabel: credential.valueLabel || credential.value,
+      syncStatus: "DEVICE",
+      deviceId: device.id,
+      validFrom: "",
+      validUntil: "",
+      source: "CONTROL_ID",
+      raw: credential.raw
+    };
+  });
+}
+
+function controlIdDeviceSchedules(snapshot = {}) {
+  const objects = snapshot.objects || {};
+  const zones = new Map((objects.time_zones || []).map((zone) => [String(zone.id), zone]));
+  return (objects.time_spans || []).map((span) => {
+    const zone = zones.get(String(span.time_zone_id)) || {};
+    const days = [
+      ["sun", "Dom"],
+      ["mon", "Seg"],
+      ["tue", "Ter"],
+      ["wed", "Qua"],
+      ["thu", "Qui"],
+      ["fri", "Sex"],
+      ["sat", "Sab"]
+    ].filter(([key]) => Number(span[key] || 0) === 1).map(([, label]) => label).join(", ");
+    return {
+      id: `controlid-time-span-${span.id}`,
+      name: zone.name || `Horario ${span.time_zone_id}`,
+      type: "CONTROL_ID_TIME_SPAN",
+      origin: "Control iD",
+      target: zone.name || `Time zone ${span.time_zone_id}`,
+      validFrom: "",
+      validUntil: "",
+      allowedDays: days || "Sem dias",
+      allowedHours: `${secondsToClock(span.start)}-${secondsToClock(span.end)}`,
+      raw: span
+    };
+  });
+}
+
+function controlIdDeviceEvents(snapshot = {}, device = {}, limit = 50) {
+  const users = controlIdUserMap(snapshot.objects?.users || []);
+  return (snapshot.objects?.access_logs || []).slice(0, limit).map((event) => {
+    const user = users.get(String(event.user_id || ""));
+    return {
+      id: `controlid-event-${event.id}`,
+      decision: Number(event.event) === 7 ? "ALLOW" : Number(event.event) === 6 ? "DENY" : "INFO",
+      reason: `Evento Control iD ${event.event ?? ""}`.trim(),
+      createdAt: event.time ? new Date(Number(event.time) * 1000).toISOString() : "",
+      userName: user?.name || "",
+      userId: String(event.user_id || ""),
+      unitId: "",
+      doorName: device.name || "",
+      doorId: device.id,
+      deviceId: device.id,
+      manufacturer: device.manufacturer || "Control iD",
+      rawEvent: event,
+      scope: "DEVICE"
+    };
+  });
+}
+
+async function deviceIntegrationPayload(device, resource = "summary", { limit = 50 } = {}) {
   const adapter = deviceAdapter(device);
-  const credentialRecords = tenantCredentialsForDevice(device).map(integrationCredentialRecord);
+  let directPayload = null;
+  let directAttempts = [];
+
+  if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
+    const snapshot = await readControlIdSnapshot(device);
+    directAttempts = snapshot.attempts;
+    const credentialRecords = controlIdDeviceCredentials(snapshot, device);
+    directPayload = {
+      source: "CONTROL_ID_API",
+      credentials: credentialRecords,
+      schedules: controlIdDeviceSchedules(snapshot),
+      faces: credentialRecords.filter((credential) => credential.type === "FACE"),
+      users: controlIdDeviceUsers(snapshot, device),
+      events: controlIdDeviceEvents(snapshot, device, limit)
+    };
+  }
+
+  const credentialRecords = directPayload?.credentials || tenantCredentialsForDevice(device).map(integrationCredentialRecord);
   const faceRecords = credentialRecords.filter((credential) => credential.type === "FACE");
-  const userRecords = residents
+  const userRecords = directPayload?.users || residents
     .filter((person) => person.tenantId === device.tenantId)
     .map(integrationUserRecord);
-  const scheduleRecords = integrationScheduleRecords(device);
-  const eventRecords = integrationEventRecords(device, limit);
+  const scheduleRecords = directPayload?.schedules || integrationScheduleRecords(device);
+  const eventRecords = directPayload?.events || integrationEventRecords(device, limit);
   const resourcesPayload = {
     events: eventRecords,
     credentials: credentialRecords,
@@ -1651,20 +1966,23 @@ function deviceIntegrationPayload(device, resource = "summary", { limit = 50 } =
     users: userRecords
   };
   const summary = Object.fromEntries(Object.entries(resourcesPayload).map(([key, records]) => [key, records.length]));
-  const hasDeviceApi = ["HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter);
+  const hasDeviceApi = ["HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, CONTROL_ID_ACCESS_ADAPTER].includes(adapter);
 
   return {
     ok: true,
     generatedAt: now(),
-    source: "LOCAL_STATE",
+    source: directPayload?.source || "LOCAL_STATE",
     message: hasDeviceApi
-      ? "Dados consolidados do banco local; leitura direta do fabricante pronta para homologacao por endpoint."
+      ? directPayload
+        ? "Dados lidos diretamente do equipamento para homologacao."
+        : "Dados consolidados do banco local; leitura direta do fabricante disponivel pela importacao."
       : "Dados consolidados do banco local; equipamento usa adapter generico.",
     resource,
     summary,
+    attempts: directAttempts,
     capabilities: {
       adapter,
-      directDeviceRead: false,
+      directDeviceRead: Boolean(directPayload),
       webhookEvents: adapter === INTELBRAS_SS_3532_MF_W_ADAPTER,
       localCredentials: true,
       localSchedules: true,
@@ -1765,6 +2083,63 @@ function upsertImportPerson(payload, unit, dryRun) {
     credentialType: normalizeCredentialType(payload.credentialType),
     allowedDays: existing?.allowedDays || "",
     allowedHours: existing?.allowedHours || "",
+    createdAt: existing?.createdAt || now(),
+    updatedAt: now()
+  };
+  const updated = updateById(residents, person.id, person);
+  if (!updated) residents.unshift(person);
+  return updated || person;
+}
+
+function findPersonForDeviceCredential(record = {}, device = {}) {
+  const externalId = normalizeLookup(record.personExternalId || "");
+  const name = normalizeLookup(record.personName || "");
+  return residents.find((person) =>
+    person.tenantId === device.tenantId &&
+    (
+      (externalId && normalizeLookup(person.controlIdUserId || person.externalId || "") === externalId) ||
+      (externalId && [person.id, person.cpf, person.rg, person.phone, person.email].some((value) => normalizeLookup(value) === externalId)) ||
+      (name && normalizeLookup(person.name) === name)
+    )
+  ) || null;
+}
+
+function upsertDeviceImportPerson(record = {}, device = {}, dryRun = true) {
+  const existing = findPersonForDeviceCredential(record, device);
+  if (dryRun) {
+    return existing || {
+      id: "",
+      tenantId: device.tenantId,
+      unitId: "",
+      name: record.personName || `Usuario ${record.personExternalId || ""}`.trim()
+    };
+  }
+
+  const person = {
+    id: existing?.id || makeId("person"),
+    tenantId: device.tenantId,
+    unitId: existing?.unitId || "",
+    name: record.personName || existing?.name || `Usuario ${record.personExternalId || ""}`.trim(),
+    email: existing?.email || "",
+    cpf: existing?.cpf || "",
+    rg: existing?.rg || "",
+    phone: existing?.phone || "",
+    role: existing?.role || "RESIDENT",
+    relation: existing?.relation || "Morador",
+    kind: existing?.kind || "RESIDENT",
+    isSyndic: Boolean(existing?.isSyndic),
+    authorizedBy: existing?.authorizedBy || "",
+    company: existing?.company || "",
+    cnpj: existing?.cnpj || "",
+    serviceType: existing?.serviceType || "",
+    vehiclePlate: existing?.vehiclePlate || "",
+    accessReason: existing?.accessReason || "",
+    credentialType: existing?.credentialType || record.type || "FACE",
+    allowedDays: existing?.allowedDays || "",
+    allowedHours: existing?.allowedHours || "",
+    source: existing?.source || "DEVICE_IMPORT",
+    externalId: existing?.externalId || record.personExternalId || "",
+    controlIdUserId: existing?.controlIdUserId || record.personExternalId || "",
     createdAt: existing?.createdAt || now(),
     updatedAt: now()
   };
@@ -2219,6 +2594,19 @@ async function testDeviceIntegration(device) {
       matchedEndpoint: result.matched?.path || "",
       attempts: result.attempts || [],
       bodyPreview: result.body.slice(0, 240)
+    };
+  }
+
+  if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
+    const session = await controlIdLogin(device);
+    const users = await controlIdLoadObjects(device, session, "users", { limit: 1 });
+    return {
+      ...base,
+      ok: true,
+      status: 200,
+      message: "Conexao Control iD OK",
+      matchedEndpoint: "/login.fcgi + /load_objects.fcgi:users",
+      usersSample: users.length
     };
   }
 
@@ -3012,9 +3400,19 @@ const server = http.createServer(async (request, response) => {
         resources: Array.from(equipmentIntegrationResources)
       });
     }
-    return json(response, 200, deviceIntegrationPayload(device, resource, {
-      limit: Number(url.searchParams.get("limit") || 50)
-    }));
+    try {
+      const payload = await deviceIntegrationPayload(device, resource, {
+        limit: Number(url.searchParams.get("limit") || 50)
+      });
+      return json(response, 200, payload);
+    } catch (error) {
+      return json(response, 502, {
+        ok: false,
+        device: publicDevice(device),
+        adapter: deviceAdapter(device),
+        message: error instanceof Error ? error.message : "Falha ao ler integracao do equipamento"
+      });
+    }
   }
 
   const deviceCredentialImportMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/integration\/credentials\/import$/);
