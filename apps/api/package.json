@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node src/server.js",
     "dev": "node src/server.js",
     "build": "node --check src/server.js"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "pg": "^8.21.0",
     "qrcode": "^1.5.4"
   }
 }

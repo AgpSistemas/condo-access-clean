@@ -24,9 +24,13 @@ export function mapApiTelephonyToNativeAccount(unitTelephony) {
   };
 }
 
-export function selectUnitTelephony(units, unitId) {
+export function selectUnitTelephony(units, unitId, tenantId = "") {
   if (!Array.isArray(units) || units.length === 0) return null;
-  return units.find((unit) => unit.unitId === unitId || unit.unitNumber === unitId) || units[0];
+  const scopedUnits = tenantId ? units.filter((unit) => unit.tenantId === tenantId) : units;
+  const candidates = scopedUnits.length ? scopedUnits : units;
+  return candidates.find((unit) => unit.unitId === unitId) ||
+    candidates.find((unit) => unit.unitNumber === unitId) ||
+    candidates[0];
 }
 
 export class NativeSoftphone {
@@ -38,8 +42,8 @@ export class NativeSoftphone {
     return this.nativeModule.registerAccount(mapApiTelephonyToNativeAccount(unitTelephony));
   }
 
-  registerSelectedUnit(units, unitId) {
-    const selectedUnit = selectUnitTelephony(units, unitId);
+  registerSelectedUnit(units, unitId, tenantId = "") {
+    const selectedUnit = selectUnitTelephony(units, unitId, tenantId);
     if (!selectedUnit) return Promise.reject(new Error("Nenhuma unidade disponivel para registro SIP"));
     return this.register(selectedUnit);
   }

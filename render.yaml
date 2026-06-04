@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: condo-access-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: PGSSLMODE
+        value: require
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: EXPOSE_CAMERA_RTSP
+        value: "false"
+      - key: PUBLIC_HOST
+        sync: false
+      - key: SIP_DOMAIN
+        value: granportalresidency.ddns.net
+      - key: ASTERISK_PUBLIC_HOST
+        value: granportalresidency.ddns.net
+      - key: ASTERISK_WS_URL
+        value: wss://granportalresidency.ddns.net:8089/ws
+      - key: SIP_DEFAULT_PASSWORD
+        sync: false
