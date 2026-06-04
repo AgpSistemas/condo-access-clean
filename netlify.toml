@@ -4,7 +4,7 @@
 
 [build.environment]
   NODE_VERSION = "20"
-  VITE_API_URL = "https://api-production-441f.up.railway.app"
+  VITE_API_URL = "https://condo-access-clean.onrender.com"
 
 [[redirects]]
   from = "/*"

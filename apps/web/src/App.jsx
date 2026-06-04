@@ -36,8 +36,8 @@ import {
 import Logo from "./logo.png";
 import "./styles.css";
 
-const railwayApiUrl = "https://api-production-441f.up.railway.app";
-const apiUrl = import.meta.env.VITE_API_URL || railwayApiUrl;
+const renderApiUrl = "https://condo-access-clean.onrender.com";
+const apiUrl = import.meta.env.VITE_API_URL || renderApiUrl;
 const WEB_PORTER_EXTENSION = "9199";
 const WEB_PORTER_PASSWORD = "CondoAccess@2026";
 
