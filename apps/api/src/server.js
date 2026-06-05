@@ -2768,6 +2768,12 @@ function snapshotFile(cameraId) {
   return path.join(streamDir(cameraId), "snapshot.jpg");
 }
 
+function snapshotVideoFilter(settings = {}) {
+  const scale = String(settings.snapshotScale || "640:-2").trim();
+  if (!scale) return "scale=640:-2";
+  return scale.includes("=") ? scale : `scale=${scale}`;
+}
+
 async function ensureSnapshot(camera, maxAgeMs = 15000) {
   const filePath = snapshotFile(camera.id);
   const cached = snapshotCache.get(camera.id);
@@ -2801,7 +2807,7 @@ async function ensureSnapshot(camera, maxAgeMs = 15000) {
       "-an",
       "-frames:v", "1",
       "-q:v", "5",
-      "-vf", settings.snapshotScale,
+      "-vf", snapshotVideoFilter(settings),
       "-y",
       filePath
     ];
