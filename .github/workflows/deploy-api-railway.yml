@@ -38,16 +38,15 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Check Railway token
-        if: ${{ secrets.RAILWAY_API_TOKEN == '' }}
+      - name: Deploy API to Railway
         shell: bash
         run: |
-          echo "GitHub secret RAILWAY_API_TOKEN is missing."
-          echo "Create it in https://github.com/AgpSistemas/condo-access-clean/settings/secrets/actions to enable automatic deploys."
+          if [ -z "$RAILWAY_API_TOKEN" ]; then
+            echo "GitHub secret RAILWAY_API_TOKEN is missing."
+            echo "Create it in https://github.com/AgpSistemas/condo-access-clean/settings/secrets/actions to enable automatic deploys."
+            exit 0
+          fi
 
-      - name: Deploy API to Railway
-        if: ${{ secrets.RAILWAY_API_TOKEN != '' }}
-        run: |
           railway up \
             --project "$RAILWAY_PROJECT_ID" \
             --environment "$RAILWAY_ENVIRONMENT" \
