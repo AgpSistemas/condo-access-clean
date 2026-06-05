@@ -2296,6 +2296,64 @@ function nextAvailableUnitExtension(targetTenant = tenant) {
   return "";
 }
 
+function parsePositiveInteger(value, fallback = 0) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function generatedUnitNumber(structureType, groupIndex, itemIndex) {
+  if (structureType === "HORIZONTAL") return `${groupIndex}-${String(itemIndex).padStart(2, "0")}`;
+  return `${groupIndex}${String(itemIndex).padStart(2, "0")}`;
+}
+
+function ensureTenantUnitsFromStructure(targetTenant, body = {}) {
+  const shouldGenerate = Boolean(body.generateUnits || body.autoGenerateUnits);
+  if (!shouldGenerate) return [];
+
+  const structureType = String(body.structureType || targetTenant.structureType || "VERTICAL").toUpperCase();
+  const groupCount = parsePositiveInteger(body.structureGroupCount ?? body.floorCount ?? body.blockCount, 0);
+  const unitsPerGroup = parsePositiveInteger(body.unitsPerGroup ?? body.unitsPerFloor ?? body.unitsPerBlock, 0);
+  if (!groupCount || !unitsPerGroup) return [];
+
+  const created = [];
+  for (let groupIndex = 1; groupIndex <= groupCount; groupIndex += 1) {
+    for (let itemIndex = 1; itemIndex <= unitsPerGroup; itemIndex += 1) {
+      const unitNumber = generatedUnitNumber(structureType, groupIndex, itemIndex);
+      const blockName = structureType === "HORIZONTAL" ? `Quadra ${groupIndex}` : `Andar ${groupIndex}`;
+      const existing = findUnitByNumber(targetTenant.id, unitNumber, blockName);
+      if (existing) continue;
+
+      const extension = nextAvailableUnitExtension(targetTenant);
+      const unitId = makeId("unit");
+      const unit = {
+        tenantId: targetTenant.id,
+        unitId,
+        unitNumber,
+        blockName,
+        residentName: "",
+        responsibleName: "",
+        ownerName: "",
+        ownerDocument: "",
+        documents: "",
+        extension,
+        telephony: {
+          enabled: true,
+          provider: targetTenant.telephonyProvider,
+          sipDomain: targetTenant.sipDomain,
+          sipWebSocketUrl: targetTenant.sipWebSocketUrl,
+          sipTransport: "UDP",
+          extension,
+          extensionPassword: standardSipPassword,
+          porterExtension: targetTenant.sipPorterExtension
+        }
+      };
+      units.set(unitId, unit);
+      created.push(unit);
+    }
+  }
+  return created;
+}
+
 function upsertImportUnit(payload, dryRun) {
   const existing = findUnitByNumber(payload.tenantId, payload.unitNumber, payload.blockName);
   const targetTenant = findTenant(payload.tenantId);
@@ -3515,7 +3573,23 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
-const server = http.createServer(async (request, response) => {
+function isRequestAbortError(error) {
+  return error?.code === "ECONNRESET" || error?.code === "ECONNABORTED" || error?.message === "aborted";
+}
+
+const server = http.createServer((request, response) => {
+  void handleRequest(request, response).catch((error) => {
+    if (isRequestAbortError(error)) return;
+
+    console.error("Falha ao processar requisicao HTTP", error);
+    if (!response.headersSent && !response.destroyed) {
+      return json(response, 500, { message: "Falha interna da API" });
+    }
+    if (!response.destroyed) response.destroy();
+  });
+});
+
+async function handleRequest(request, response) {
   if (request.method === "OPTIONS") return json(response, 204, {});
 
   const url = new URL(request.url || "/", `http://${request.headers.host}`);
@@ -4187,6 +4261,16 @@ const server = http.createServer(async (request, response) => {
       name: body.name || "Novo condominio",
       document: body.document || "",
       status: body.status || "ACTIVE",
+      structureType: body.structureType || "VERTICAL",
+      structureGroupCount: parsePositiveInteger(body.structureGroupCount ?? body.floorCount ?? body.blockCount, 0),
+      unitsPerGroup: parsePositiveInteger(body.unitsPerGroup ?? body.unitsPerFloor ?? body.unitsPerBlock, 0),
+      totalUnits: parsePositiveInteger(body.totalUnits, 0),
+      address: body.address || "",
+      addressNumber: body.addressNumber || "",
+      city: body.city || "",
+      state: body.state || "",
+      latitude: body.latitude || "",
+      longitude: body.longitude || "",
       telephonyEnabled: true,
       telephonyProvider: body.telephonyProvider || "DIRECT_SIP",
       sipDomain: normalizeSipDomain(body.sipDomain || asteriskHost),
@@ -4203,11 +4287,22 @@ const server = http.createServer(async (request, response) => {
     targetTenant.name = body.name || targetTenant.name;
     targetTenant.document = body.document ?? targetTenant.document;
     targetTenant.status = body.status || targetTenant.status;
+    targetTenant.structureType = body.structureType || targetTenant.structureType || "VERTICAL";
+    targetTenant.structureGroupCount = parsePositiveInteger(body.structureGroupCount ?? body.floorCount ?? body.blockCount, targetTenant.structureGroupCount || 0);
+    targetTenant.unitsPerGroup = parsePositiveInteger(body.unitsPerGroup ?? body.unitsPerFloor ?? body.unitsPerBlock, targetTenant.unitsPerGroup || 0);
+    targetTenant.totalUnits = parsePositiveInteger(body.totalUnits, targetTenant.totalUnits || (targetTenant.structureGroupCount || 0) * (targetTenant.unitsPerGroup || 0));
+    targetTenant.address = body.address ?? targetTenant.address ?? "";
+    targetTenant.addressNumber = body.addressNumber ?? targetTenant.addressNumber ?? "";
+    targetTenant.city = body.city ?? targetTenant.city ?? "";
+    targetTenant.state = body.state ?? targetTenant.state ?? "";
+    targetTenant.latitude = body.latitude ?? targetTenant.latitude ?? "";
+    targetTenant.longitude = body.longitude ?? targetTenant.longitude ?? "";
     syncTenantTelephony(body, targetTenant);
+    const generatedUnits = ensureTenantUnitsFromStructure(targetTenant, body);
     targetTenant.updatedAt = now();
     if (isNewTenant) extraTenants.unshift(targetTenant);
-    savePersistentState("tenant-saved");
-    return json(response, 201, targetTenant);
+    savePersistentState(generatedUnits.length ? "tenant-saved-units-generated" : "tenant-saved");
+    return json(response, isNewTenant ? 201 : 200, { ...targetTenant, generatedUnits: generatedUnits.length });
   }
 
   const deleteTenantMatch = url.pathname.match(/^\/api\/condominiums\/([^/]+)$/);
@@ -4768,6 +4863,8 @@ const server = http.createServer(async (request, response) => {
       email: body.email || "",
       cpf: body.cpf || "",
       rg: body.rg || "",
+      birthDate: body.birthDate || "",
+      photoUrl: body.photoUrl || "",
       phone: body.phone || "",
       role: body.role || (body.kind === "RESIDENT" ? "RESIDENT" : body.kind || "VISITOR"),
       relation: body.relation || body.accessReason || "",
@@ -4881,7 +4978,7 @@ const server = http.createServer(async (request, response) => {
   }
 
   return json(response, 404, { message: "Rota nao encontrada" });
-});
+}
 
 server.listen(port, "0.0.0.0", () => {
   console.log(`Condo Access Clean API em http://localhost:${port}`);

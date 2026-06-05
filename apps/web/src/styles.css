@@ -341,6 +341,19 @@ nav button:hover {
   gap: 14px;
 }
 
+.checkbox-row {
+  min-height: 46px;
+  border: 1px solid #d6e1e5;
+  border-radius: 8px;
+  background: #fbfcfd;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  color: #24343b;
+  font-weight: 800;
+}
+
 .form-grid button,
 .form-hint {
   grid-column: 1 / -1;

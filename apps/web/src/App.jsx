@@ -36,8 +36,8 @@ import {
 import Logo from "./logo.png";
 import "./styles.css";
 
-const renderApiUrl = "https://condo-access-clean.onrender.com";
-const apiUrl = import.meta.env.VITE_API_URL || renderApiUrl;
+const railwayApiUrl = "https://api-production-441f.up.railway.app";
+const apiUrl = import.meta.env.VITE_API_URL || railwayApiUrl;
 const WEB_PORTER_EXTENSION = "9000";
 const WEB_PORTER_PASSWORD = "CondoAccess@2026";
 
@@ -105,6 +105,29 @@ function readCachedBootstrap() {
   } catch {
     return emptyData;
   }
+}
+
+function parsePositiveInteger(value, fallback = 0) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function condoTotalUnits(source = {}) {
+  const safeSource = source || {};
+  const groups = parsePositiveInteger(safeSource.structureGroupCount ?? safeSource.floorCount ?? safeSource.blockCount, 0);
+  const perGroup = parsePositiveInteger(safeSource.unitsPerGroup ?? safeSource.unitsPerFloor ?? safeSource.unitsPerBlock, 0);
+  return groups * perGroup;
+}
+
+async function geocodeAddressFields({ address, addressNumber, city, state }) {
+  const query = [address, addressNumber, city, state, "Brasil"].filter(Boolean).join(", ");
+  if (!query.trim()) return null;
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+  const response = await fetch(url, { headers: { "Accept": "application/json" } });
+  const payload = await response.json().catch(() => []);
+  const first = Array.isArray(payload) ? payload[0] : null;
+  if (!first?.lat || !first?.lon) return null;
+  return { latitude: String(first.lat), longitude: String(first.lon) };
 }
 
 const emptyTelephony = {
@@ -1003,6 +1026,7 @@ function App() {
   const [porterSelectedUnitId, setPorterSelectedUnitId] = useState("");
   const [telephony, setTelephony] = useState(emptyTelephony);
   const [tenantTelephony, setTenantTelephony] = useState({});
+  const [condoGeo, setCondoGeo] = useState({ latitude: "", longitude: "" });
   const [message, setMessage] = useState("");
   const [actionFeedback, setActionFeedback] = useState(null);
   const [deviceForm, setDeviceForm] = useState(emptyDeviceForm);
@@ -1035,6 +1059,8 @@ function App() {
   const webPhoneRegistererRef = useRef(null);
   const webPhoneSessionRef = useRef(null);
   const webPhoneTenantRef = useRef("");
+  const webPhoneClientsRef = useRef(new Map());
+  const webPhoneInviteKeysRef = useRef(new Set());
   const webPhoneAutoAttemptRef = useRef("");
   const [webPhone, setWebPhone] = useState({
     status: "DISCONNECTED",
@@ -1066,6 +1092,29 @@ function App() {
   const selectedUnit = units.find((unit) => unit.unitId === selectedUnitId) || units[0];
   const unitFormUnit = unitFormMode === "new" ? null : selectedUnit;
   const selectedPerson = data.residents.find((person) => person.id === selectedPersonId) || data.residents.find((person) => person.unitId === selectedUnit?.unitId);
+
+  useEffect(() => {
+    setCondoGeo({
+      latitude: condoFormTenant?.latitude || "",
+      longitude: condoFormTenant?.longitude || ""
+    });
+  }, [condoFormTenant?.id, condoFormTenant?.latitude, condoFormTenant?.longitude]);
+
+  const resolveSipIncomingContext = useCallback((sourceExtension, targetExtension, fallbackTenant) => {
+    const cleanSource = String(sourceExtension || "").trim();
+    const cleanTarget = String(targetExtension || "").trim();
+    const unit = cleanSource
+      ? data.units.find((item) => unitExtension(item) === cleanSource || String(item.extension || "").trim() === cleanSource)
+      : null;
+    const tenantFromUnit = unit ? data.condominiums.find((item) => item.id === unit.tenantId) : null;
+    const tenantFromPorter = cleanTarget
+      ? data.condominiums.find((item) => String(item.sipPorterExtension || WEB_PORTER_EXTENSION).trim() === cleanTarget)
+      : null;
+    return {
+      tenant: tenantFromUnit || tenantFromPorter || fallbackTenant || selectedTenant,
+      unit
+    };
+  }, [data.condominiums, data.units, selectedTenant]);
 
   const stopWebPhoneRing = useCallback(() => {
     const ring = webPhoneRingRef.current;
@@ -1127,16 +1176,26 @@ function App() {
     }, 250);
   }, []);
 
-  const connectWebPhone = useCallback(async () => {
-    if (webPhoneUserAgentRef.current) {
+  const connectWebPhone = useCallback(async (tenantForPhone = selectedTenant, options = {}) => {
+    const trackPrimary = options.trackPrimary !== false;
+    if (!tenantForPhone?.id) return;
+
+    const domain = tenantForPhone.sipDomain || "granportalresidency.ddns.net";
+    const webSocketUrl = normalizeWebSocketForWebPhone(tenantForPhone.sipWebSocketUrl, domain);
+    const porterExtension = String(tenantForPhone.sipPorterExtension || WEB_PORTER_EXTENSION).trim();
+    const porterPassword = String(tenantForPhone.sipPorterPassword || WEB_PORTER_PASSWORD).trim();
+    const clientKey = `${tenantForPhone.id}:${porterExtension}@${domain}`;
+    const existingClient = webPhoneClientsRef.current.get(clientKey);
+    if (existingClient?.userAgent) {
+      if (trackPrimary) {
+        webPhoneUserAgentRef.current = existingClient.userAgent;
+        webPhoneRegistererRef.current = existingClient.registerer;
+        webPhoneTenantRef.current = tenantForPhone.id;
+      }
       setWebPhone((current) => ({ ...current, diagnostic: "Audio ja conectado" }));
       return;
     }
 
-    const domain = selectedTenant?.sipDomain || "granportalresidency.ddns.net";
-    const webSocketUrl = normalizeWebSocketForWebPhone(selectedTenant?.sipWebSocketUrl, domain);
-    const porterExtension = String(selectedTenant?.sipPorterExtension || WEB_PORTER_EXTENSION).trim();
-    const porterPassword = String(selectedTenant?.sipPorterPassword || WEB_PORTER_PASSWORD).trim();
     const uri = UserAgent.makeURI(`sip:${porterExtension}@${domain}`);
     if (!uri) {
       setWebPhone((current) => ({ ...current, status: "ERROR", diagnostic: "Configuracao de audio invalida" }));
@@ -1163,7 +1222,48 @@ function App() {
         delegate: {
           onInvite(invitation) {
             webPhoneSessionRef.current = invitation;
-            const remoteLabel = invitation.remoteIdentity?.displayName || invitation.remoteIdentity?.uri?.user || "Chamada";
+            const remoteExtension = invitation.remoteIdentity?.uri?.user || "";
+            const targetExtension = invitation.request?.message?.to?.uri?.user || invitation.localIdentity?.uri?.user || porterExtension;
+            const { tenant: callTenant, unit: callUnit } = resolveSipIncomingContext(remoteExtension, targetExtension, tenantForPhone);
+            const remoteLabel = invitation.remoteIdentity?.displayName || remoteExtension || "Chamada";
+            if (callTenant?.id) {
+              setSelectedTenantId(callTenant.id);
+              setActiveSection("remotePorter");
+              setResourceTab("portaria");
+            }
+            if (callUnit) {
+              setPorterSelectedUnitId(callUnit.unitId);
+              setPorterUnitSearch(`${callUnit.blockName || ""} ${callUnit.unitNumber || ""}`.trim());
+            }
+            const inviteKey = invitation.id || `${tenantForPhone.id}:${remoteExtension}:${targetExtension}:${Date.now()}`;
+            if (!webPhoneInviteKeysRef.current.has(inviteKey)) {
+              webPhoneInviteKeysRef.current.add(inviteKey);
+              void fetch(`${apiUrl}/api/telephony/mobile-call`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  tenantId: callTenant?.id || tenantForPhone.id,
+                  unitId: callUnit?.unitId || "",
+                  unitNumber: callUnit?.unitNumber || "",
+                  sourceExtension: remoteExtension,
+                  targetExtension,
+                  targetType: "PORTER",
+                  targetLabel: "Portaria",
+                  visitorLabel: callUnit ? `Unidade ${callUnit.unitNumber || callUnit.unitId}` : `Ramal ${remoteExtension || "-"}`,
+                  sipHandled: true
+                })
+              })
+                .then((response) => response.ok ? response.json() : null)
+                .then((callRecord) => {
+                  if (!callRecord?.id) return;
+                  setSelectedCallId(callRecord.id);
+                  setData((current) => ({
+                    ...current,
+                    intercomCalls: [callRecord, ...current.intercomCalls.filter((item) => item.id !== callRecord.id)]
+                  }));
+                })
+                .catch(() => undefined);
+            }
             startWebPhoneRing();
             setWebPhone({
               status: "RINGING",
@@ -1205,13 +1305,18 @@ function App() {
 
       await userAgent.start();
       await registerer.register();
-      webPhoneUserAgentRef.current = userAgent;
-      webPhoneRegistererRef.current = registerer;
-      webPhoneTenantRef.current = selectedTenant?.id || "";
+      webPhoneClientsRef.current.set(clientKey, { tenantId: tenantForPhone.id, userAgent, registerer });
+      if (trackPrimary) {
+        webPhoneUserAgentRef.current = userAgent;
+        webPhoneRegistererRef.current = registerer;
+        webPhoneTenantRef.current = tenantForPhone.id;
+      }
     } catch (error) {
-      webPhoneUserAgentRef.current = null;
-      webPhoneRegistererRef.current = null;
-      webPhoneTenantRef.current = "";
+      if (trackPrimary) {
+        webPhoneUserAgentRef.current = null;
+        webPhoneRegistererRef.current = null;
+        webPhoneTenantRef.current = "";
+      }
       setWebPhone({
         status: "ERROR",
         diagnostic: error instanceof Error ? error.message : "Falha ao conectar Portaria Web",
@@ -1219,15 +1324,22 @@ function App() {
         remoteIdentity: ""
       });
     }
-  }, [attachWebPhoneAudio, selectedTenant?.sipDomain, selectedTenant?.sipPorterExtension, selectedTenant?.sipPorterPassword, selectedTenant?.sipWebSocketUrl, startWebPhoneRing, stopWebPhoneRing]);
+  }, [attachWebPhoneAudio, resolveSipIncomingContext, selectedTenant, startWebPhoneRing, stopWebPhoneRing]);
 
   const disconnectWebPhone = useCallback(async () => {
     const session = webPhoneSessionRef.current;
     try {
       if (session?.state === SessionState.Established) await session.bye();
       if (session instanceof Invitation && [SessionState.Initial, SessionState.Establishing].includes(session.state)) await session.reject();
-      if (webPhoneRegistererRef.current) await webPhoneRegistererRef.current.unregister();
-      if (webPhoneUserAgentRef.current) await webPhoneUserAgentRef.current.stop();
+      const clients = Array.from(webPhoneClientsRef.current.values());
+      if (!clients.length) {
+        if (webPhoneRegistererRef.current) await webPhoneRegistererRef.current.unregister();
+        if (webPhoneUserAgentRef.current) await webPhoneUserAgentRef.current.stop();
+      }
+      await Promise.allSettled(clients.map(async (client) => {
+        await client.registerer?.unregister().catch(() => undefined);
+        await client.userAgent?.stop().catch(() => undefined);
+      }));
     } catch {
       // Best effort cleanup; the UI state below is authoritative for the operator.
     } finally {
@@ -1235,6 +1347,7 @@ function App() {
       webPhoneRegistererRef.current = null;
       webPhoneUserAgentRef.current = null;
       webPhoneTenantRef.current = "";
+      webPhoneClientsRef.current.clear();
       stopWebPhoneRing();
       if (webPhoneAudioRef.current) webPhoneAudioRef.current.srcObject = null;
       setWebPhone({ status: "DISCONNECTED", diagnostic: "Desconectado", incomingLabel: "", remoteIdentity: "" });
@@ -1280,25 +1393,35 @@ function App() {
   }, [disconnectWebPhone]);
 
   useEffect(() => {
-    if (!session || !selectedTenant?.id) return undefined;
+    if (!session || !data.condominiums.length) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       if (cancelled) return;
       if (webPhone.status === "RINGING" || webPhone.status === "IN_CALL" || webPhone.status === "CALLING") return;
-      const attemptKey = `${session.user?.id || session.email || "session"}:${selectedTenant.id}`;
-      if (webPhoneUserAgentRef.current && webPhoneTenantRef.current === selectedTenant.id) return;
-      if (!webPhoneUserAgentRef.current && webPhoneAutoAttemptRef.current === attemptKey) return;
+      const orderedTenants = [
+        selectedTenant,
+        ...data.condominiums.filter((item) => item.id !== selectedTenant?.id)
+      ].filter(Boolean);
+      const uniqueAccounts = new Map();
+      orderedTenants.forEach((tenantItem) => {
+        const domain = tenantItem.sipDomain || "granportalresidency.ddns.net";
+        const extension = String(tenantItem.sipPorterExtension || WEB_PORTER_EXTENSION).trim();
+        const key = `${extension}@${domain}`;
+        if (!uniqueAccounts.has(key)) uniqueAccounts.set(key, tenantItem);
+      });
+      const attemptKey = `${session.user?.id || session.email || "session"}:${Array.from(uniqueAccounts.keys()).join("|")}`;
+      if (webPhoneAutoAttemptRef.current === attemptKey && webPhoneClientsRef.current.size >= uniqueAccounts.size) return;
       webPhoneAutoAttemptRef.current = attemptKey;
-      if (webPhoneUserAgentRef.current && webPhoneTenantRef.current !== selectedTenant.id) {
-        await disconnectWebPhone();
+      for (const tenantItem of uniqueAccounts.values()) {
+        if (cancelled) return;
+        await connectWebPhone(tenantItem, { trackPrimary: tenantItem.id === selectedTenant?.id });
       }
-      if (!cancelled) await connectWebPhone();
     }, 800);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [connectWebPhone, disconnectWebPhone, selectedTenant?.id, session, webPhone.status]);
+  }, [connectWebPhone, data.condominiums, selectedTenant, session, webPhone.status]);
 
   const normalizeUnitId = useCallback((rawUnitId) => {
     if (!rawUnitId) return "";
@@ -1785,6 +1908,23 @@ function App() {
   async function createOrUpdateCondo(event) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    let latitude = String(form.get("latitude") || condoGeo.latitude || "").trim();
+    let longitude = String(form.get("longitude") || condoGeo.longitude || "").trim();
+    if (!latitude || !longitude) {
+      const geo = await geocodeAddressFields({
+        address: form.get("address"),
+        addressNumber: form.get("addressNumber"),
+        city: form.get("city"),
+        state: form.get("state")
+      }).catch(() => null);
+      if (geo) {
+        latitude = geo.latitude;
+        longitude = geo.longitude;
+        setCondoGeo(geo);
+      }
+    }
+    const structureGroupCount = parsePositiveInteger(form.get("structureGroupCount"), 0);
+    const unitsPerGroup = parsePositiveInteger(form.get("unitsPerGroup"), 0);
     const response = await fetch(`${apiUrl}/api/condominiums`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1793,6 +1933,17 @@ function App() {
         name: form.get("name"),
         document: form.get("document"),
         status: form.get("status"),
+        structureType: form.get("structureType"),
+        structureGroupCount,
+        unitsPerGroup,
+        totalUnits: structureGroupCount * unitsPerGroup,
+        address: form.get("address"),
+        addressNumber: form.get("addressNumber"),
+        city: form.get("city"),
+        state: form.get("state"),
+        latitude,
+        longitude,
+        generateUnits: form.get("generateUnits") === "on",
         telephonyProvider: form.get("telephonyProvider"),
         sipDomain: form.get("sipDomain"),
         sipWebSocketUrl: form.get("sipWebSocketUrl"),
@@ -1801,7 +1952,11 @@ function App() {
         sipExtensionEnd: form.get("sipExtensionEnd")
       })
     });
-    const saved = await response.json();
+    const saved = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(saved.message || "Falha ao salvar condominio.");
+      return;
+    }
     if (saved?.id) {
       setData((current) => {
         const exists = current.condominiums.some((item) => item.id === saved.id);
@@ -1816,8 +1971,35 @@ function App() {
       setCondoFormMode("edit");
       setActiveSection("condoHome");
     }
-    setMessage("Condominio salvo.");
+    setMessage(saved.generatedUnits ? `Condominio salvo. ${saved.generatedUnits} unidade(s) criada(s).` : "Condominio salvo.");
     void refreshApiCache();
+  }
+
+  async function geocodeCondoForm(event) {
+    const form = event.currentTarget.closest("form");
+    if (!form) return;
+    const payload = new FormData(form);
+    setMessage("Buscando latitude e longitude...");
+    const geo = await geocodeAddressFields({
+      address: payload.get("address"),
+      addressNumber: payload.get("addressNumber"),
+      city: payload.get("city"),
+      state: payload.get("state")
+    }).catch(() => null);
+    if (!geo) {
+      setMessage("Nao foi possivel localizar esse endereco.");
+      return;
+    }
+    setCondoGeo(geo);
+    setMessage("Latitude e longitude preenchidas.");
+  }
+
+  function updateCondoTotal(event) {
+    const form = event.currentTarget.form;
+    if (!form) return;
+    const groups = parsePositiveInteger(form.elements.structureGroupCount?.value, 0);
+    const perGroup = parsePositiveInteger(form.elements.unitsPerGroup?.value, 0);
+    if (form.elements.totalUnits) form.elements.totalUnits.value = groups && perGroup ? String(groups * perGroup) : "";
   }
 
   async function deleteCondo(condo) {
@@ -3034,12 +3216,24 @@ function App() {
               <Field label="Nome"><input name="name" defaultValue={condoFormTenant?.name || ""} /></Field>
               <Field label="Documento"><input name="document" defaultValue={condoFormTenant?.document || ""} /></Field>
               <Field label="Status"><select name="status" defaultValue={condoFormTenant?.status || "ACTIVE"}><option>ACTIVE</option><option>INACTIVE</option></select></Field>
+              <Field label="Tipo"><select name="structureType" defaultValue={condoFormTenant?.structureType || "VERTICAL"}><option value="VERTICAL">Vertical</option><option value="HORIZONTAL">Horizontal</option></select></Field>
+              <Field label="Andares / quadras"><input name="structureGroupCount" type="number" min="1" defaultValue={condoFormTenant?.structureGroupCount || ""} onChange={updateCondoTotal} /></Field>
+              <Field label="Aps por andar / quadra"><input name="unitsPerGroup" type="number" min="1" defaultValue={condoFormTenant?.unitsPerGroup || ""} onChange={updateCondoTotal} /></Field>
+              <Field label="Quantidade de unidades"><input name="totalUnits" type="number" min="0" readOnly defaultValue={condoTotalUnits(condoFormTenant) || ""} /></Field>
+              <Field label="Endereco"><input name="address" defaultValue={condoFormTenant?.address || ""} /></Field>
+              <Field label="Numero"><input name="addressNumber" defaultValue={condoFormTenant?.addressNumber || ""} /></Field>
+              <Field label="Cidade"><input name="city" defaultValue={condoFormTenant?.city || ""} /></Field>
+              <Field label="Estado"><input name="state" maxLength="2" defaultValue={condoFormTenant?.state || ""} /></Field>
+              <Field label="Latitude"><input name="latitude" value={condoGeo.latitude} onChange={(event) => setCondoGeo((current) => ({ ...current, latitude: event.target.value }))} /></Field>
+              <Field label="Longitude"><input name="longitude" value={condoGeo.longitude} onChange={(event) => setCondoGeo((current) => ({ ...current, longitude: event.target.value }))} /></Field>
+              <Field label="Gerar unidades"><label className="checkbox-row"><input name="generateUnits" type="checkbox" defaultChecked={condoFormMode === "new"} /> Criar apartamentos/unidades automaticamente</label></Field>
               <input type="hidden" name="telephonyProvider" value={condoFormTenant?.telephonyProvider || "DIRECT_SIP"} />
               <input type="hidden" name="sipDomain" value={condoFormTenant?.sipDomain || ""} />
               <input type="hidden" name="sipWebSocketUrl" value={condoFormTenant?.sipWebSocketUrl || ""} />
               <input type="hidden" name="sipExtensionStart" value={condoFormTenant?.sipExtensionStart || "9100"} />
               <input type="hidden" name="sipExtensionEnd" value={condoFormTenant?.sipExtensionEnd || "9199"} />
-              <Field label="Ramal"><input name="sipPorterExtension" defaultValue={condoFormTenant?.sipPorterExtension || "9000"} /></Field>
+              <Field label="Ramal da portaria"><input name="sipPorterExtension" defaultValue={condoFormTenant?.sipPorterExtension || "9000"} /></Field>
+              <button className="secondary-button" type="button" onClick={geocodeCondoForm}><Search size={16} /> Buscar geolocalizacao</button>
               <button type="submit"><Save size={16} /> Salvar condominio</button>
             </div>
           </form>
