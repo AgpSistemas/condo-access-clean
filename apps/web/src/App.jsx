@@ -38,7 +38,7 @@ import "./styles.css";
 
 const renderApiUrl = "https://condo-access-clean.onrender.com";
 const apiUrl = import.meta.env.VITE_API_URL || renderApiUrl;
-const WEB_PORTER_EXTENSION = "9199";
+const WEB_PORTER_EXTENSION = "9000";
 const WEB_PORTER_PASSWORD = "CondoAccess@2026";
 
 const sections = [
@@ -1135,7 +1135,9 @@ function App() {
 
     const domain = selectedTenant?.sipDomain || "granportalresidency.ddns.net";
     const webSocketUrl = normalizeWebSocketForWebPhone(selectedTenant?.sipWebSocketUrl, domain);
-    const uri = UserAgent.makeURI(`sip:${WEB_PORTER_EXTENSION}@${domain}`);
+    const porterExtension = String(selectedTenant?.sipPorterExtension || WEB_PORTER_EXTENSION).trim();
+    const porterPassword = String(selectedTenant?.sipPorterPassword || WEB_PORTER_PASSWORD).trim();
+    const uri = UserAgent.makeURI(`sip:${porterExtension}@${domain}`);
     if (!uri) {
       setWebPhone((current) => ({ ...current, status: "ERROR", diagnostic: "Configuracao de audio invalida" }));
       return;
@@ -1143,7 +1145,7 @@ function App() {
 
     setWebPhone({
       status: "CONNECTING",
-      diagnostic: `Conectando ramal Web ${WEB_PORTER_EXTENSION} em ${webSocketUrl}`,
+      diagnostic: `Conectando ramal Web ${porterExtension} em ${webSocketUrl}`,
       incomingLabel: "",
       remoteIdentity: ""
     });
@@ -1151,8 +1153,9 @@ function App() {
     try {
       const userAgent = new UserAgent({
         uri,
-        authorizationUsername: WEB_PORTER_EXTENSION,
-        authorizationPassword: WEB_PORTER_PASSWORD,
+        authorizationUsername: porterExtension,
+        authorizationPassword: porterPassword,
+        contactName: porterExtension,
         transportOptions: { server: webSocketUrl },
         sessionDescriptionHandlerFactoryOptions: {
           constraints: { audio: true, video: false }
@@ -1216,7 +1219,7 @@ function App() {
         remoteIdentity: ""
       });
     }
-  }, [attachWebPhoneAudio, selectedTenant?.sipDomain, selectedTenant?.sipWebSocketUrl, startWebPhoneRing, stopWebPhoneRing]);
+  }, [attachWebPhoneAudio, selectedTenant?.sipDomain, selectedTenant?.sipPorterExtension, selectedTenant?.sipPorterPassword, selectedTenant?.sipWebSocketUrl, startWebPhoneRing, stopWebPhoneRing]);
 
   const disconnectWebPhone = useCallback(async () => {
     const session = webPhoneSessionRef.current;
@@ -1519,7 +1522,7 @@ function App() {
   const porterMosaicLayout = porterMosaicItems.length <= 2 ? "two" : porterMosaicItems.length <= 4 ? "four" : porterMosaicItems.length <= 8 ? "eight" : "sixteen";
   const expandedPorterItem = porterMosaicItems.find((item) => item.key === expandedPorterCameraId) || null;
   const incomingCall = useMemo(() => data.intercomCalls
-    .filter((call) => call.status === "RINGING")
+    .filter((call) => call.status === "RINGING" && call.targetType !== "UNIT")
     .sort((left, right) => callTime(right) - callTime(left))[0] || null, [data.intercomCalls]);
   const incomingCallUnit = useMemo(() => resolveCallUnit(incomingCall, data.units, selectedTenant?.id), [data.units, incomingCall, selectedTenant?.id]);
   const incomingCallTenant = useMemo(() => data.condominiums.find((item) => item.id === (incomingCall?.tenantId || incomingCallUnit?.tenantId)), [data.condominiums, incomingCall?.tenantId, incomingCallUnit?.tenantId]);
@@ -1678,9 +1681,11 @@ function App() {
         if (state === SessionState.Established) {
           attachWebPhoneAudio(inviter);
           setWebPhone((current) => ({ ...current, status: "IN_CALL", diagnostic: `Em chamada com unidade ${unit.unitNumber || unit.unitId || "-"}` }));
+          if (callRecord?.id) void markCallAnswered(callRecord);
         }
         if (state === SessionState.Terminated) {
           webPhoneSessionRef.current = null;
+          if (callRecord?.id) void endCall(callRecord, { clearSelection: false, quiet: true });
           setWebPhone((current) => ({
             ...current,
             status: webPhoneRegistererRef.current ? "REGISTERED" : "DISCONNECTED",
@@ -2706,6 +2711,20 @@ function App() {
     }
   }
 
+  async function markCallAnswered(call) {
+    if (!call?.id) return;
+    const response = await fetch(`${apiUrl}/api/telephony/calls/${call.id}/answer`, { method: "POST" });
+    const updated = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(updated?.message || "Falha ao atualizar chamada.");
+    if (updated?.id) {
+      setData((current) => ({
+        ...current,
+        intercomCalls: current.intercomCalls.map((item) => item.id === updated.id ? updated : item)
+      }));
+    }
+    void refreshApiCache();
+  }
+
   async function rejectIncomingCall(call) {
     if (!call) return;
     try {
@@ -2718,7 +2737,7 @@ function App() {
     }
   }
 
-  async function endCall(call) {
+  async function endCall(call, options = {}) {
     if (!call) return;
     const response = await fetch(`${apiUrl}/api/telephony/calls/${call.id}/end`, { method: "POST" });
     const updated = await response.json().catch(() => null);
@@ -2728,8 +2747,8 @@ function App() {
         intercomCalls: current.intercomCalls.map((item) => item.id === updated.id ? updated : item)
       }));
     }
-    setSelectedCallId("");
-    setMessage("Chamada encerrada.");
+    if (options.clearSelection !== false) setSelectedCallId("");
+    if (!options.quiet) setMessage("Chamada encerrada.");
     void refreshApiCache();
   }
 
