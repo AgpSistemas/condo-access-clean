@@ -891,33 +891,115 @@ nav button:hover {
   font-size: 20px;
 }
 
-.call-notification {
+.call-modal-backdrop {
   position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 30;
-  width: min(420px, calc(100vw - 32px));
-  min-height: 72px;
+  inset: 0;
+  z-index: 60;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 12px;
+  place-items: center;
+  padding: 18px;
+  background: rgba(7, 18, 22, 0.44);
+}
+
+.call-notification {
+  width: min(520px, calc(100vw - 36px));
+  min-height: 220px;
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 18px;
   border: 1px solid #b7d7cd;
   border-radius: 8px;
   background: #f0fbf6;
-  box-shadow: 0 14px 34px rgba(10, 36, 31, 0.18);
+  box-shadow: 0 24px 70px rgba(10, 36, 31, 0.32);
 }
 
-.call-notification div {
+.call-modal-icon {
+  width: 54px;
+  height: 54px;
+  border-radius: 8px;
+  background: #0f7b63;
+  color: #ffffff;
   display: grid;
-  gap: 3px;
+  place-items: center;
 }
 
-.call-notification span {
+.call-modal-content {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.call-modal-kicker {
   color: #45605a;
   font-size: 13px;
   font-weight: 800;
+  text-transform: uppercase;
+}
+
+.call-modal-content h2 {
+  margin: 0;
+  color: #10232b;
+  font-size: 26px;
+  line-height: 1.1;
+}
+
+.call-modal-content p {
+  margin: 0;
+  color: #31515b;
+  font-weight: 800;
+}
+
+.call-modal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.call-modal-grid span {
+  display: grid;
+  gap: 3px;
+  min-height: 56px;
+  border: 1px solid #cbe2dc;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 9px 10px;
+  color: #10232b;
+  font-weight: 900;
+}
+
+.call-modal-grid strong {
+  color: #60767f;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.call-modal-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.call-modal-button {
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+  border-radius: 8px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  color: #ffffff;
+}
+
+.call-modal-answer {
+  background: #0f7b63;
+}
+
+.call-modal-reject {
+  background: #c2410c;
 }
 
 .device-alert-notification {
@@ -1157,7 +1239,6 @@ nav button:hover {
 
 .camera-tile-channel,
 .camera-tile-live,
-.camera-tile-play,
 .camera-tile strong {
   position: absolute;
   z-index: 2;
@@ -1197,16 +1278,6 @@ nav button:hover {
   color: #ffffff;
 }
 
-.camera-tile-play {
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: rgba(255,255,255,.9);
-  font-size: 15px;
-  font-weight: 900;
-  text-shadow: 0 2px 8px rgba(0,0,0,.35);
-}
-
 .camera-tile strong {
   left: 8px;
   right: 8px;
@@ -1218,15 +1289,6 @@ nav button:hover {
   text-overflow: ellipsis;
   text-shadow: 0 2px 8px rgba(0,0,0,.5);
   white-space: nowrap;
-}
-
-.camera-tile.selected {
-  box-shadow: 0 0 0 2px rgba(31,122,95,.18);
-}
-
-.camera-tile.selected .camera-tile-video,
-.camera-tile.selected .camera-tile-snapshot {
-  opacity: .55;
 }
 
 .mosaic-selector button {
@@ -1818,7 +1880,7 @@ nav button:hover {
 
 .import-report {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
   margin-top: 12px;
 }
@@ -1893,6 +1955,34 @@ nav button:hover {
 
 .integration-table {
   grid-template-columns: minmax(220px, 1.5fr) minmax(150px, 1fr) minmax(170px, 1fr) minmax(160px, 1fr);
+}
+
+.face-import-review {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+}
+
+.face-review-table {
+  grid-template-columns: 72px minmax(220px, 1.2fr) minmax(160px, 1fr) 130px 130px;
+}
+
+.face-review-table input:not([type="checkbox"]) {
+  min-height: 38px;
+  border: 1px solid #ccd8de;
+  border-radius: 8px;
+  padding: 0 10px;
+}
+
+.check-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.check-cell input {
+  width: 18px;
+  height: 18px;
 }
 
 .manufacturer-card span,

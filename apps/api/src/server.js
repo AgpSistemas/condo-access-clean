@@ -88,6 +88,8 @@ const snapshotCache = new Map();
 const recentFfmpegIssues = new Map();
 const publicSipHost = "granportalresidency.ddns.net";
 const standardSipPassword = process.env.SIP_DEFAULT_PASSWORD || "CondoAccess@2026";
+const oneSignalAppId = String(process.env.ONESIGNAL_APP_ID || "").trim();
+const oneSignalRestApiKey = String(process.env.ONESIGNAL_REST_API_KEY || "").trim();
 
 function resolvePostgresSslMode(connectionString) {
   const explicitSslMode = String(process.env.PGSSLMODE || "").trim().toLowerCase();
@@ -1183,6 +1185,63 @@ function unitExtension(unit = {}) {
   return String(unit.telephony?.extension || unit.extension || "").trim();
 }
 
+function oneSignalUnitExternalId(tenantId = "", unitId = "") {
+  const tenant = String(tenantId || "").trim();
+  const unit = String(unitId || "").trim();
+  if (!tenant || !unit) return "";
+  return `condo:${tenant}:unit:${unit}`;
+}
+
+async function sendOneSignalPushToUnit(unit, payload = {}) {
+  const externalId = oneSignalUnitExternalId(unit?.tenantId, unit?.unitId);
+  if (!oneSignalAppId || !oneSignalRestApiKey || !externalId) {
+    return { ok: false, skipped: true, reason: "ONESIGNAL_NOT_CONFIGURED" };
+  }
+
+  const tenantData = findTenant(unit.tenantId);
+  const messageBody = payload.body || `${tenantData.name} - Unidade ${unit.unitNumber || unit.unitId}`;
+  const body = {
+    app_id: oneSignalAppId,
+    target_channel: "push",
+    include_aliases: { external_id: [externalId] },
+    headings: { pt: payload.title || "Chamada da portaria", en: payload.title || "Porter call" },
+    contents: { pt: messageBody, en: messageBody },
+    priority: 10,
+    ttl: 60,
+    data: {
+      type: "PORTER_CALL",
+      tenantId: unit.tenantId,
+      unitId: unit.unitId,
+      unitNumber: unit.unitNumber || "",
+      callId: payload.callId || "",
+      sourceExtension: payload.sourceExtension || "",
+      targetExtension: payload.targetExtension || ""
+    }
+  };
+
+  try {
+    const pushResponse = await fetch("https://api.onesignal.com/notifications", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Key ${oneSignalRestApiKey}`
+      },
+      body: JSON.stringify(body)
+    });
+    const result = await pushResponse.json().catch(() => ({}));
+    if (!pushResponse.ok) {
+      console.warn("[ONESIGNAL_PUSH_ERROR]", JSON.stringify({ status: pushResponse.status, result }));
+      return { ok: false, status: pushResponse.status, result };
+    }
+    console.log("[ONESIGNAL_PUSH_SENT]", JSON.stringify({ externalId, id: result.id || "", recipients: result.recipients || 0 }));
+    return { ok: true, result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[ONESIGNAL_PUSH_ERROR]", message);
+    return { ok: false, error: message };
+  }
+}
+
 function resolveUnitForTelephonyRequest(source = {}) {
   const tenantId = String(source.tenantId || source.condominiumId || source.condoId || "").trim();
   const rawUnitId = String(source.unitId || source.unit_id || "").trim();
@@ -1683,7 +1742,35 @@ function matchResidentForDeviceCredential(record = {}, device = {}) {
   return findPersonForDeviceCredential(record, device);
 }
 
-async function importDeviceCredentials(device, { dryRun = true } = {}) {
+function faceImportSelectionForRecord(record = {}, index = 0, selections = []) {
+  const row = index + 1;
+  return selections.find((item) =>
+    String(item.recordId || "") === String(record.id || "") ||
+    Number(item.row || 0) === row ||
+    credentialKey("", record.type, record.value) === credentialKey("", item.type || record.type, item.value || "")
+  ) || null;
+}
+
+function unitPayloadFromFaceSelection(record = {}, device = {}, selection = {}) {
+  const unitNumber = String(selection.unitNumber || selection.unit || record.raw?.unitNumber || record.raw?.apartment || record.raw?.roomNo || "").trim();
+  const blockName = String(selection.blockName || selection.block || record.raw?.blockName || record.raw?.floorNo || "").trim();
+  if (!unitNumber) return null;
+  return {
+    tenantId: device.tenantId,
+    unitNumber,
+    blockName,
+    name: record.personName || `Usuario ${record.personExternalId || ""}`.trim(),
+    cpf: "",
+    email: "",
+    phone: "",
+    relation: "Morador",
+    kind: "RESIDENT",
+    credentialType: "FACE",
+    credentialValue: record.value
+  };
+}
+
+async function importDeviceCredentials(device, { dryRun = true, selections = [] } = {}) {
   const readResult = await readDeviceCredentialsFromDevice(device);
   const report = {
     dryRun,
@@ -1696,6 +1783,7 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
     duplicates: 0,
     peopleCreated: 0,
     peopleUpdated: 0,
+    unitsCreated: 0,
     credentialsCreated: 0,
     credentialsUpdated: 0,
     invalid: 0,
@@ -1706,6 +1794,13 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
 
   readResult.records.forEach((record, index) => {
     const rowNumber = index + 1;
+    const selection = faceImportSelectionForRecord(record, index, selections);
+    const hasSelections = selections.length > 0;
+    const selected = !hasSelections || selection?.selected !== false;
+    if (!selected) {
+      report.items.push({ row: rowNumber, status: "SKIPPED", payload: record, errors: ["Nao selecionado para importacao"] });
+      return;
+    }
     if (!record.value || !record.type) {
       report.invalid += 1;
       report.items.push({ row: rowNumber, status: "INVALID", payload: record, errors: ["Credencial sem tipo ou valor"] });
@@ -1713,10 +1808,18 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
     }
 
     const existingPerson = matchResidentForDeviceCredential(record, device);
+    const selectedUnitPayload = record.type === "FACE" ? unitPayloadFromFaceSelection(record, device, selection || {}) : null;
+    if (record.type === "FACE" && !selectedUnitPayload && !existingPerson?.unitId) {
+      report.invalid += 1;
+      report.items.push({ row: rowNumber, status: "INVALID", payload: record, errors: ["Informe a unidade para importar a facial"] });
+      return;
+    }
+    const existingSelectedUnit = selectedUnitPayload ? findUnitByNumber(device.tenantId, selectedUnitPayload.unitNumber, selectedUnitPayload.blockName) : null;
+    const selectedUnit = selectedUnitPayload ? upsertImportUnit(selectedUnitPayload, dryRun) : null;
     const person = (record.personName || record.personExternalId)
-      ? upsertDeviceImportPerson(record, device, dryRun)
+      ? upsertDeviceImportPerson(record, device, dryRun, selectedUnit?.unitId || existingPerson?.unitId || "")
       : existingPerson;
-    const unit = unitForId(person?.unitId);
+    const unit = selectedUnit || unitForId(person?.unitId);
     const existingCredential = credentials.find((credential) =>
       credentialKey(credential.tenantId, credential.type, credential.value) === credentialKey(device.tenantId, record.type, record.value)
     );
@@ -1754,6 +1857,9 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
     }
 
     report.valid += 1;
+    if (selectedUnitPayload && !existingSelectedUnit) {
+      report.unitsCreated += dryRun ? 0 : 1;
+    }
     if (record.personName || record.personExternalId) {
       if (existingPerson) report.peopleUpdated += dryRun ? 0 : 1;
       else report.peopleCreated += dryRun ? 0 : 1;
@@ -1767,12 +1873,16 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
       personId: person?.id || "",
       unitId: unit?.unitId || "",
       payload: {
+        recordId: record.id,
         type: record.type,
         value: record.value,
         valueLabel: record.valueLabel,
         personName: record.personName,
         personExternalId: record.personExternalId,
-        devicePath: record.devicePath
+        devicePath: record.devicePath,
+        unitNumber: selectedUnitPayload?.unitNumber || unit?.unitNumber || "",
+        blockName: selectedUnitPayload?.blockName || unit?.blockName || "",
+        extension: unit?.telephony?.extension || unit?.extension || ""
       }
     });
   });
@@ -2168,11 +2278,30 @@ function findUnitByNumber(tenantId, unitNumber, blockName = "") {
   );
 }
 
+function nextAvailableUnitExtension(targetTenant = tenant) {
+  const start = Number(targetTenant.sipExtensionStart || 9100);
+  const end = Number(targetTenant.sipExtensionEnd || start + 99);
+  const used = new Set(
+    unitList()
+      .filter((unit) => unit.tenantId === targetTenant.id)
+      .flatMap((unit) => [unit.extension, unit.telephony?.extension])
+      .filter(Boolean)
+      .map(String)
+  );
+  if (targetTenant.sipPorterExtension) used.add(String(targetTenant.sipPorterExtension));
+  for (let extension = start; extension <= end; extension += 1) {
+    const value = String(extension);
+    if (!used.has(value)) return value;
+  }
+  return "";
+}
+
 function upsertImportUnit(payload, dryRun) {
   const existing = findUnitByNumber(payload.tenantId, payload.unitNumber, payload.blockName);
-  if (dryRun) return existing || { unitId: "", unitNumber: payload.unitNumber, blockName: payload.blockName };
-  const unitId = existing?.unitId || makeId("unit");
   const targetTenant = findTenant(payload.tenantId);
+  const nextExtension = existing?.telephony?.extension || existing?.extension || nextAvailableUnitExtension(targetTenant);
+  if (dryRun) return existing || { unitId: "", unitNumber: payload.unitNumber, blockName: payload.blockName, extension: nextExtension, telephony: { extension: nextExtension } };
+  const unitId = existing?.unitId || makeId("unit");
   const unit = {
     tenantId: targetTenant.id,
     unitId,
@@ -2180,15 +2309,16 @@ function upsertImportUnit(payload, dryRun) {
     blockName: payload.blockName || existing?.blockName || "Bloco unico",
     residentName: payload.name || existing?.residentName || "",
     responsibleName: payload.name || existing?.responsibleName || "",
-    extension: existing?.extension || "",
-    telephony: existing?.telephony || {
+    extension: nextExtension,
+    telephony: {
+      ...(existing?.telephony || {}),
       enabled: true,
       provider: targetTenant.telephonyProvider,
       sipDomain: targetTenant.sipDomain,
       sipWebSocketUrl: targetTenant.sipWebSocketUrl,
       sipTransport: "UDP",
-      extension: "",
-      extensionPassword: standardSipPassword,
+      extension: nextExtension,
+      extensionPassword: existing?.telephony?.extensionPassword || standardSipPassword,
       porterExtension: targetTenant.sipPorterExtension
     }
   };
@@ -2242,13 +2372,14 @@ function findPersonForDeviceCredential(record = {}, device = {}) {
   ) || null;
 }
 
-function upsertDeviceImportPerson(record = {}, device = {}, dryRun = true) {
+function upsertDeviceImportPerson(record = {}, device = {}, dryRun = true, unitId = "") {
   const existing = findPersonForDeviceCredential(record, device);
+  const targetUnitId = unitId || existing?.unitId || "";
   if (dryRun) {
     return existing || {
       id: "",
       tenantId: device.tenantId,
-      unitId: "",
+      unitId: targetUnitId,
       name: record.personName || `Usuario ${record.personExternalId || ""}`.trim()
     };
   }
@@ -2256,7 +2387,7 @@ function upsertDeviceImportPerson(record = {}, device = {}, dryRun = true) {
   const person = {
     id: existing?.id || makeId("person"),
     tenantId: device.tenantId,
-    unitId: existing?.unitId || "",
+    unitId: targetUnitId,
     name: record.personName || existing?.name || `Usuario ${record.personExternalId || ""}`.trim(),
     email: existing?.email || "",
     cpf: existing?.cpf || "",
@@ -3594,7 +3725,10 @@ const server = http.createServer(async (request, response) => {
     if (!device) return json(response, 404, { message: "Equipamento nao encontrado" });
     const body = await readBody(request);
     try {
-      const report = await importDeviceCredentials(device, { dryRun: body.dryRun !== false });
+      const report = await importDeviceCredentials(device, {
+        dryRun: body.dryRun !== false,
+        selections: Array.isArray(body.selections) ? body.selections : []
+      });
       return json(response, body.dryRun === false ? 201 : 200, report);
     } catch (error) {
       return json(response, 502, {
@@ -3823,6 +3957,52 @@ const server = http.createServer(async (request, response) => {
       door: { name: call.targetType === "FACIAL" ? "Facial/Interfone" : "Portaria" }
     });
     savePersistentState("mobile-call-created");
+    return json(response, 201, call);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/telephony/porter-call") {
+    const body = await readBody(request);
+    const unit = resolveUnitForTelephonyRequest(body);
+    if (!unit) return json(response, 404, { message: "Unidade nao encontrada para chamada." });
+    const callTenant = findTenant(unit.tenantId || body.tenantId || activeMobileTenantId());
+    const sourceExtension = body.sourceExtension || callTenant.sipPorterExtension || "9000";
+    const call = {
+      id: makeId("call"),
+      tenantId: unit.tenantId || callTenant.id,
+      unitId: unit.unitId || "",
+      unitNumber: unit.unitNumber || body.unitNumber || "",
+      targetType: "UNIT",
+      deviceId: "",
+      targetExtension: body.targetExtension || unitExtension(unit),
+      targetLabel: body.targetLabel || `Unidade ${unit.unitNumber || unit.unitId}`,
+      sourceExtension,
+      visitorLabel: body.visitorLabel || "Portaria",
+      status: "RINGING",
+      sipHandled: Boolean(body.sipHandled),
+      createdAt: now(),
+      answeredAt: "",
+      endedAt: ""
+    };
+    intercomCalls.unshift(call);
+    accessLogs.unshift({
+      id: makeId("access"),
+      tenantId: call.tenantId,
+      unitId: call.unitId,
+      decision: "INFO",
+      reason: "Chamada da portaria para unidade",
+      createdAt: call.createdAt,
+      user: { name: call.visitorLabel },
+      door: { name: "Portaria" }
+    });
+    const push = await sendOneSignalPushToUnit(unit, {
+      callId: call.id,
+      sourceExtension,
+      targetExtension: call.targetExtension,
+      title: "Chamada da portaria",
+      body: `${callTenant.name} - Unidade ${unit.unitNumber || unit.unitId}`
+    });
+    call.push = { ok: push.ok, skipped: Boolean(push.skipped), reason: push.reason || "", recipients: push.result?.recipients || 0 };
+    savePersistentState("porter-call-created");
     return json(response, 201, call);
   }
 

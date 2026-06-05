@@ -17,7 +17,7 @@ import {
   LogIn,
   MoreVertical,
   PhoneCall,
-  Play,
+  PhoneOff,
   Plus,
   RadioTower,
   RefreshCw,
@@ -511,6 +511,10 @@ function cameraMosaicLabel(item) {
   return `${base.slice(0, 14)} C${item.channel}`;
 }
 
+function faceImportSelectionKey(item = {}) {
+  return item.payload?.recordId || `${item.row}-${item.payload?.value || ""}`;
+}
+
 function groupCameraDevices(cameras) {
   const groups = new Map();
   cameras.forEach((camera) => {
@@ -676,7 +680,7 @@ function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
   );
 }
 
-function CameraTile({ camera, channel, description, selected, index, onSelect }) {
+function CameraTile({ camera, channel, description, index, onSelect }) {
   const videoRef = useRef(null);
   const selectedChannel = Number(channel || camera?.channel || camera?.activeChannels?.[0]?.channel || index + 1);
   const streamKey = cameraStreamKey(camera, selectedChannel);
@@ -751,12 +755,11 @@ function CameraTile({ camera, channel, description, selected, index, onSelect })
   if (!camera) return null;
 
   return (
-    <button className={`camera-tile live-tile tile-tone-${index % 4} ${selected ? "selected" : ""}`} type="button" onClick={onSelect}>
+    <button className={`camera-tile live-tile tile-tone-${index % 4}`} type="button" onClick={onSelect}>
       <img className="camera-tile-snapshot" src={snapshotUrl} alt={description || camera.description || camera.name || `Camera ${index + 1}`} loading="eager" />
       <video ref={videoRef} className="camera-tile-video" muted playsInline autoPlay />
       <span className="camera-tile-channel">Canal {selectedChannel}</span>
       <span className={`camera-tile-live ${status}`}>{status === "online" ? "AO VIVO" : status === "offline" ? "Falha" : "Carregando"}</span>
-      <span className="camera-tile-play">{selected ? "Selecionada" : <Play size={28} fill="currentColor" />}</span>
       <strong>{description || camera.description || camera.name || `Camera ${index + 1}`}</strong>
     </button>
   );
@@ -1022,6 +1025,7 @@ function App() {
     payload: null,
     importReport: null
   });
+  const [equipmentFaceSelections, setEquipmentFaceSelections] = useState({});
   const selectedTenantIdRef = useRef("");
   const syncInFlightRef = useRef(false);
   const apiCacheRef = useRef(data);
@@ -1030,6 +1034,8 @@ function App() {
   const webPhoneUserAgentRef = useRef(null);
   const webPhoneRegistererRef = useRef(null);
   const webPhoneSessionRef = useRef(null);
+  const webPhoneTenantRef = useRef("");
+  const webPhoneAutoAttemptRef = useRef("");
   const [webPhone, setWebPhone] = useState({
     status: "DISCONNECTED",
     diagnostic: "Desconectado",
@@ -1198,9 +1204,11 @@ function App() {
       await registerer.register();
       webPhoneUserAgentRef.current = userAgent;
       webPhoneRegistererRef.current = registerer;
+      webPhoneTenantRef.current = selectedTenant?.id || "";
     } catch (error) {
       webPhoneUserAgentRef.current = null;
       webPhoneRegistererRef.current = null;
+      webPhoneTenantRef.current = "";
       setWebPhone({
         status: "ERROR",
         diagnostic: error instanceof Error ? error.message : "Falha ao conectar Portaria Web",
@@ -1223,6 +1231,7 @@ function App() {
       webPhoneSessionRef.current = null;
       webPhoneRegistererRef.current = null;
       webPhoneUserAgentRef.current = null;
+      webPhoneTenantRef.current = "";
       stopWebPhoneRing();
       if (webPhoneAudioRef.current) webPhoneAudioRef.current.srcObject = null;
       setWebPhone({ status: "DISCONNECTED", diagnostic: "Desconectado", incomingLabel: "", remoteIdentity: "" });
@@ -1266,6 +1275,27 @@ function App() {
   useEffect(() => () => {
     void disconnectWebPhone();
   }, [disconnectWebPhone]);
+
+  useEffect(() => {
+    if (!session || !selectedTenant?.id) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      if (cancelled) return;
+      if (webPhone.status === "RINGING" || webPhone.status === "IN_CALL" || webPhone.status === "CALLING") return;
+      const attemptKey = `${session.user?.id || session.email || "session"}:${selectedTenant.id}`;
+      if (webPhoneUserAgentRef.current && webPhoneTenantRef.current === selectedTenant.id) return;
+      if (!webPhoneUserAgentRef.current && webPhoneAutoAttemptRef.current === attemptKey) return;
+      webPhoneAutoAttemptRef.current = attemptKey;
+      if (webPhoneUserAgentRef.current && webPhoneTenantRef.current !== selectedTenant.id) {
+        await disconnectWebPhone();
+      }
+      if (!cancelled) await connectWebPhone();
+    }, 800);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [connectWebPhone, disconnectWebPhone, selectedTenant?.id, session, webPhone.status]);
 
   const normalizeUnitId = useCallback((rawUnitId) => {
     if (!rawUnitId) return "";
@@ -1485,7 +1515,6 @@ function App() {
   const tenantEvents = useMemo(() => (data.accessLogs || []).filter((log) => !log.tenantId || log.tenantId === selectedTenant?.id), [data.accessLogs, selectedTenant?.id]);
   const disconnectedDevices = useMemo(() => tenantDevices.filter((device) => device.status && device.status !== "ONLINE"), [tenantDevices]);
   const selectedIntegrationDevice = tenantDevices.find((device) => device.id === equipmentIntegration.deviceId) || tenantDevices[0];
-  const selectedPorterCamera = tenantCameras.find((camera) => camera.id === selectedPorterCameraId) || tenantCameras[0];
   const porterMosaicItems = useMemo(() => tenantMosaicOptions.slice(0, 16), [tenantMosaicOptions]);
   const porterMosaicLayout = porterMosaicItems.length <= 2 ? "two" : porterMosaicItems.length <= 4 ? "four" : porterMosaicItems.length <= 8 ? "eight" : "sixteen";
   const expandedPorterItem = porterMosaicItems.find((item) => item.key === expandedPorterCameraId) || null;
@@ -1598,6 +1627,28 @@ function App() {
     }
 
     try {
+      const callResponse = await fetch(`${apiUrl}/api/telephony/porter-call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenantId: selectedTenant?.id || unit.tenantId,
+          unitId: unit.unitId,
+          unitNumber: unit.unitNumber,
+          targetExtension: extension,
+          targetLabel: unitDisplay(unit),
+          sourceExtension: selectedTenant?.sipPorterExtension || WEB_PORTER_EXTENSION,
+          visitorLabel: "Portaria"
+        })
+      });
+      const callRecord = await callResponse.json().catch(() => null);
+      if (callRecord?.id) {
+        setData((current) => ({
+          ...current,
+          intercomCalls: [callRecord, ...current.intercomCalls.filter((item) => item.id !== callRecord.id)]
+        }));
+        setSelectedCallId(callRecord.id);
+      }
+
       if (!webPhoneUserAgentRef.current) await connectWebPhone();
       const userAgent = webPhoneUserAgentRef.current;
       if (!userAgent) {
@@ -2381,7 +2432,10 @@ function App() {
     const response = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(deviceId)}/integration/credentials/import`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dryRun })
+      body: JSON.stringify({
+        dryRun,
+        selections: dryRun ? [] : Object.values(equipmentFaceSelections)
+      })
     });
     const report = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -2396,6 +2450,25 @@ function App() {
       updatedAt: report.generatedAt || new Date().toISOString(),
       importReport: report
     }));
+    if (dryRun) {
+      const nextSelections = {};
+      (report.items || [])
+        .filter((item) => item.payload?.type === "FACE")
+        .forEach((item) => {
+          const key = faceImportSelectionKey(item);
+          nextSelections[key] = {
+            key,
+            row: item.row,
+            recordId: item.payload?.recordId || "",
+            type: item.payload?.type || "FACE",
+            value: item.payload?.value || "",
+            selected: true,
+            unitNumber: item.payload?.unitNumber || "",
+            blockName: item.payload?.blockName || ""
+          };
+        });
+      setEquipmentFaceSelections(nextSelections);
+    }
     if (!dryRun) {
       const payload = await refreshApiCache();
       if (payload) setData(payload);
@@ -2630,6 +2703,18 @@ function App() {
       void refreshApiCache();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao atender chamada.");
+    }
+  }
+
+  async function rejectIncomingCall(call) {
+    if (!call) return;
+    try {
+      if (webPhone.status === "RINGING") {
+        await hangupWebPhone();
+      }
+      await endCall(call);
+    } catch {
+      setMessage("Falha ao encerrar chamada recebida.");
     }
   }
 
@@ -3298,9 +3383,28 @@ function App() {
                     <span><strong>{equipmentIntegration.importReport.total || 0}</strong>lidas</span>
                     <span><strong>{equipmentIntegration.importReport.valid || 0}</strong>validas</span>
                     <span><strong>{equipmentIntegration.importReport.duplicates || 0}</strong>duplicadas</span>
+                    <span><strong>{equipmentIntegration.importReport.unitsCreated || 0}</strong>unidades novas</span>
                     <span><strong>{equipmentIntegration.importReport.credentialsCreated || 0}</strong>novas</span>
                     <span><strong>{equipmentIntegration.importReport.credentialsUpdated || 0}</strong>atualizadas</span>
                   </div>
+                  {(equipmentIntegration.importReport.items || []).some((item) => item.payload?.type === "FACE") && (
+                    <div className="face-import-review">
+                      <div className="unit-table header face-review-table"><span>Importar</span><span>Facial</span><span>Pessoa</span><span>Unidade</span><span>Bloco</span></div>
+                      {(equipmentIntegration.importReport.items || []).filter((item) => item.payload?.type === "FACE").map((item) => {
+                        const key = faceImportSelectionKey(item);
+                        const selection = equipmentFaceSelections[key] || {};
+                        return (
+                          <div className="unit-table row face-review-table" key={key}>
+                            <label className="check-cell"><input type="checkbox" checked={selection.selected !== false} onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: event.target.checked } }))} /></label>
+                            <span><strong>{item.payload?.valueLabel || item.payload?.value || "-"}</strong><small>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</small></span>
+                            <span>{item.payload?.personName || item.personId || "Sem nome"}</span>
+                            <input value={selection.unitNumber ?? item.payload?.unitNumber ?? ""} placeholder="Ex.: 102" onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: selection.selected !== false, unitNumber: event.target.value } }))} />
+                            <input value={selection.blockName ?? item.payload?.blockName ?? ""} placeholder="Bloco unico" onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: selection.selected !== false, blockName: event.target.value } }))} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div className="unit-table header integration-table"><span>Credencial</span><span>Pessoa</span><span>Status</span><span>Origem</span></div>
                   {(equipmentIntegration.importReport.items || []).slice(0, 12).map((item) => (
                     <div className="unit-table row integration-table" key={`${item.row}-${item.payload?.value}`}>
@@ -3476,7 +3580,7 @@ function App() {
                   </div>
                   {porterAttendanceCall && (
                     <div className="active-call-panel call-action-only">
-                      {porterAttendanceCall.status === "RINGING" && <button type="button" onClick={() => void answerCall(porterAttendanceCall)}><PhoneCall size={16} /> Atender</button>}
+                      {porterAttendanceCall.status === "RINGING" && !incomingCall && <button type="button" onClick={() => void answerCall(porterAttendanceCall)}><PhoneCall size={16} /> Atender</button>}
                       <button type="button" onClick={() => void triggerPorterActionForCall(porterAttendanceCall)}><KeySquare size={16} /> Ligar portaria</button>
                     </div>
                   )}
@@ -3557,7 +3661,7 @@ function App() {
                 <div><strong>Audio da portaria</strong><span>{webPhone.incomingLabel || (webPhone.status === "DISCONNECTED" ? "Desconectado" : "Conectado")}</span></div>
                 <div className="toolbar-actions">
                   <button type="button" disabled={["CONNECTING", "REGISTERED", "RINGING", "CALLING", "IN_CALL"].includes(webPhone.status)} onClick={() => void connectWebPhone()}><PhoneCall size={16} /> Conectar audio</button>
-                  {webPhone.status === "RINGING" && <button type="button" onClick={() => void answerWebPhone()}>Atender</button>}
+                  {webPhone.status === "RINGING" && !incomingCall && <button type="button" onClick={() => void answerWebPhone()}>Atender</button>}
                   {["RINGING", "CALLING", "IN_CALL"].includes(webPhone.status) && <button type="button" className="danger-button" onClick={() => void hangupWebPhone()}>Encerrar</button>}
                   <button type="button" className="secondary-button" disabled={webPhone.status === "DISCONNECTED"} onClick={() => void disconnectWebPhone()}>Desconectar</button>
                 </div>
@@ -3585,7 +3689,6 @@ function App() {
                         channel={item.channel}
                         description={item.description}
                         index={index}
-                        selected={expandedPorterCameraId === item.key || selectedPorterCamera?.id === item.camera.id}
                         onSelect={() => {
                           setSelectedPorterCameraId(item.camera.id);
                           setExpandedPorterCameraId(item.key);
@@ -3622,13 +3725,13 @@ function App() {
               <article className="panel">
                 <div className="panel-heading"><h2>Portaria remota</h2><span>{data.intercomCalls.length} ativas</span></div>
                 <div className="webphone-panel">
-                  <div><strong>Atendimento de audio</strong><span>{webPhone.incomingLabel || (webPhone.status === "DISCONNECTED" ? "Desconectado" : "Conectado")}</span></div>
-                  <div className="toolbar-actions">
-                    <button type="button" disabled={["CONNECTING", "REGISTERED", "RINGING", "IN_CALL"].includes(webPhone.status)} onClick={() => void connectWebPhone()}><PhoneCall size={16} /> Conectar audio</button>
-                    {webPhone.status === "RINGING" && <button type="button" onClick={() => void answerWebPhone()}>Atender</button>}
+                <div><strong>Atendimento de audio</strong><span>{webPhone.incomingLabel || (webPhone.status === "DISCONNECTED" ? "Desconectado" : "Conectado")}</span></div>
+                <div className="toolbar-actions">
+                  <button type="button" disabled={["CONNECTING", "REGISTERED", "RINGING", "IN_CALL"].includes(webPhone.status)} onClick={() => void connectWebPhone()}><PhoneCall size={16} /> Conectar audio</button>
+                    {webPhone.status === "RINGING" && !incomingCall && <button type="button" onClick={() => void answerWebPhone()}>Atender</button>}
                     {["RINGING", "IN_CALL"].includes(webPhone.status) && <button type="button" className="danger-button" onClick={() => void hangupWebPhone()}>Encerrar</button>}
-                    <button type="button" className="secondary-button" disabled={webPhone.status === "DISCONNECTED"} onClick={() => void disconnectWebPhone()}>Desconectar</button>
-                  </div>
+                  <button type="button" className="secondary-button" disabled={webPhone.status === "DISCONNECTED"} onClick={() => void disconnectWebPhone()}>Desconectar</button>
+                </div>
                   <audio ref={webPhoneAudioRef} autoPlay playsInline />
                 </div>
                 <div className="extensions-status-panel">
@@ -3963,13 +4066,25 @@ function App() {
   return (
     <main className="shell">
       {incomingCall && incomingCall.status === "RINGING" && (
-        <div className="call-notification">
-          <PhoneCall size={20} />
-          <div>
-            <strong>Chamada recebida</strong>
-            <span>{incomingCallTenant?.name || "Condominio"} - Unidade {incomingCallUnit?.unitNumber || incomingCall.unitNumber || incomingCall.unitId || "-"}</span>
-          </div>
-          <button type="button" onClick={() => void answerCall(incomingCall)}>Atender</button>
+        <div className="call-modal-backdrop" role="presentation">
+          <section className="call-notification call-modal" role="dialog" aria-modal="true" aria-labelledby="incoming-call-title">
+            <div className="call-modal-icon"><PhoneCall size={24} /></div>
+            <div className="call-modal-content">
+              <span className="call-modal-kicker">Chamada recebida</span>
+              <h2 id="incoming-call-title">{incomingCallTenant?.name || "Condominio"}</h2>
+              <div className="call-modal-grid">
+                <span><strong>Unidade</strong>{incomingCallUnit?.unitNumber || incomingCall.unitNumber || incomingCall.unitId || "-"}</span>
+                <span><strong>Ramal</strong>{incomingCall.sourceExtension || incomingCallUnit?.telephony?.extension || incomingCallUnit?.extension || "-"}</span>
+                <span><strong>Origem</strong>{incomingCall.visitorLabel || incomingCall.targetType || "Aplicativo do morador"}</span>
+                <span><strong>Status</strong>{incomingCall.status}</span>
+              </div>
+              {incomingCallUnit?.residentName && <p>{incomingCallUnit.residentName}</p>}
+            </div>
+            <div className="call-modal-actions">
+              <button type="button" className="call-modal-button call-modal-reject" title="Recusar chamada" aria-label="Recusar chamada" onClick={() => void rejectIncomingCall(incomingCall)}><PhoneOff size={22} /></button>
+              <button type="button" className="call-modal-button call-modal-answer" title="Atender chamada" aria-label="Atender chamada" onClick={() => void answerCall(incomingCall)}><PhoneCall size={22} /></button>
+            </div>
+          </section>
         </div>
       )}
       {disconnectedDevices.length > 0 && (
