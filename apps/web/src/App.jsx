@@ -1026,6 +1026,7 @@ function App() {
   const syncInFlightRef = useRef(false);
   const apiCacheRef = useRef(data);
   const webPhoneAudioRef = useRef(null);
+  const webPhoneRingRef = useRef({ context: null, timer: null });
   const webPhoneUserAgentRef = useRef(null);
   const webPhoneRegistererRef = useRef(null);
   const webPhoneSessionRef = useRef(null);
@@ -1059,6 +1060,44 @@ function App() {
   const selectedUnit = units.find((unit) => unit.unitId === selectedUnitId) || units[0];
   const unitFormUnit = unitFormMode === "new" ? null : selectedUnit;
   const selectedPerson = data.residents.find((person) => person.id === selectedPersonId) || data.residents.find((person) => person.unitId === selectedUnit?.unitId);
+
+  const stopWebPhoneRing = useCallback(() => {
+    const ring = webPhoneRingRef.current;
+    if (ring.timer) {
+      window.clearInterval(ring.timer);
+      ring.timer = null;
+    }
+  }, []);
+
+  const startWebPhoneRing = useCallback(() => {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext || webPhoneRingRef.current.timer) return;
+
+    const playTone = () => {
+      try {
+        const ring = webPhoneRingRef.current;
+        ring.context = ring.context || new AudioContext();
+        void ring.context.resume?.();
+        const oscillator = ring.context.createOscillator();
+        const gain = ring.context.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(880, ring.context.currentTime);
+        oscillator.frequency.setValueAtTime(660, ring.context.currentTime + 0.18);
+        gain.gain.setValueAtTime(0.0001, ring.context.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.22, ring.context.currentTime + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ring.context.currentTime + 0.48);
+        oscillator.connect(gain);
+        gain.connect(ring.context.destination);
+        oscillator.start();
+        oscillator.stop(ring.context.currentTime + 0.5);
+      } catch {
+        stopWebPhoneRing();
+      }
+    };
+
+    playTone();
+    webPhoneRingRef.current.timer = window.setInterval(playTone, 1400);
+  }, [stopWebPhoneRing]);
 
   const attachWebPhoneAudio = useCallback((session) => {
     window.setTimeout(() => {
@@ -1116,6 +1155,7 @@ function App() {
           onInvite(invitation) {
             webPhoneSessionRef.current = invitation;
             const remoteLabel = invitation.remoteIdentity?.displayName || invitation.remoteIdentity?.uri?.user || "Chamada";
+            startWebPhoneRing();
             setWebPhone({
               status: "RINGING",
               diagnostic: "Chamada recebida na Portaria Web",
@@ -1124,10 +1164,12 @@ function App() {
             });
             invitation.stateChange.addListener((state) => {
               if (state === SessionState.Established) {
+                stopWebPhoneRing();
                 attachWebPhoneAudio(invitation);
                 setWebPhone((current) => ({ ...current, status: "IN_CALL", diagnostic: "Chamada em atendimento" }));
               }
               if (state === SessionState.Terminated) {
+                stopWebPhoneRing();
                 webPhoneSessionRef.current = null;
                 setWebPhone((current) => ({
                   ...current,
@@ -1166,7 +1208,7 @@ function App() {
         remoteIdentity: ""
       });
     }
-  }, [attachWebPhoneAudio, selectedTenant?.sipDomain, selectedTenant?.sipWebSocketUrl]);
+  }, [attachWebPhoneAudio, selectedTenant?.sipDomain, selectedTenant?.sipWebSocketUrl, startWebPhoneRing, stopWebPhoneRing]);
 
   const disconnectWebPhone = useCallback(async () => {
     const session = webPhoneSessionRef.current;
@@ -1181,15 +1223,17 @@ function App() {
       webPhoneSessionRef.current = null;
       webPhoneRegistererRef.current = null;
       webPhoneUserAgentRef.current = null;
+      stopWebPhoneRing();
       if (webPhoneAudioRef.current) webPhoneAudioRef.current.srcObject = null;
       setWebPhone({ status: "DISCONNECTED", diagnostic: "Desconectado", incomingLabel: "", remoteIdentity: "" });
     }
-  }, []);
+  }, [stopWebPhoneRing]);
 
   const answerWebPhone = useCallback(async () => {
     const session = webPhoneSessionRef.current;
     if (!(session instanceof Invitation)) return;
     try {
+      stopWebPhoneRing();
       await session.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
       attachWebPhoneAudio(session);
     } catch (error) {
@@ -1199,12 +1243,13 @@ function App() {
         diagnostic: error instanceof Error ? error.message : "Falha ao atender chamada"
       }));
     }
-  }, [attachWebPhoneAudio]);
+  }, [attachWebPhoneAudio, stopWebPhoneRing]);
 
   const hangupWebPhone = useCallback(async () => {
     const session = webPhoneSessionRef.current;
     if (!session) return;
     try {
+      stopWebPhoneRing();
       if (session instanceof Invitation && [SessionState.Initial, SessionState.Establishing].includes(session.state)) {
         await session.reject();
       } else if (session.state !== SessionState.Established && typeof session.cancel === "function") {
@@ -1216,7 +1261,7 @@ function App() {
       webPhoneSessionRef.current = null;
       setWebPhone((current) => ({ ...current, status: "REGISTERED", diagnostic: "Audio conectado", incomingLabel: "", remoteIdentity: "" }));
     }
-  }, []);
+  }, [stopWebPhoneRing]);
 
   useEffect(() => () => {
     void disconnectWebPhone();
@@ -1451,6 +1496,14 @@ function App() {
   const incomingCallTenant = useMemo(() => data.condominiums.find((item) => item.id === (incomingCall?.tenantId || incomingCallUnit?.tenantId)), [data.condominiums, incomingCall?.tenantId, incomingCallUnit?.tenantId]);
   const selectedCall = useMemo(() => data.intercomCalls.find((call) => call.id === selectedCallId), [data.intercomCalls, selectedCallId]);
   const activeSelectedCall = useMemo(() => selectedCall && !["ENDED", "MISSED", "FAILED"].includes(selectedCall.status) ? selectedCall : null, [selectedCall]);
+
+  useEffect(() => {
+    const shouldRing = webPhone.status === "RINGING" || incomingCall?.status === "RINGING";
+    if (shouldRing) startWebPhoneRing();
+    else stopWebPhoneRing();
+    return undefined;
+  }, [incomingCall?.id, incomingCall?.status, startWebPhoneRing, stopWebPhoneRing, webPhone.status]);
+
   const selectedCallUnit = useMemo(() => {
     const call = activeSelectedCall || incomingCall;
     return resolveCallUnit(call, data.units, selectedTenant?.id);
@@ -2617,6 +2670,14 @@ function App() {
   }
 
   function integrationRecordCells(record, resource) {
+    const raw = record.raw || {};
+    const rawSummary = [
+      raw.id ? `ID ${raw.id}` : "",
+      raw.registration ? `Matricula ${raw.registration}` : "",
+      raw.user_type_id ? `Tipo ${raw.user_type_id}` : "",
+      raw.image_timestamp ? "Imagem facial" : "",
+      record.sourceKind || record.source || ""
+    ].filter(Boolean).join(" - ");
     if (resource === "events") {
       return [
         <span><strong>{record.reason || record.doorName || "Evento"}</strong><small>{record.doorName || record.manufacturer || record.scope}</small></span>,
@@ -2628,8 +2689,8 @@ function App() {
     if (resource === "credentials") {
       return [
         <span><strong>{record.personName}</strong><small>Unidade {record.unitNumber || "-"}</small></span>,
-        record.type,
-        record.valueLabel || "-",
+        <span><strong>{record.type}</strong><small>{rawSummary || record.source || "LOCAL"}</small></span>,
+        <span><strong>{record.valueLabel || "-"}</strong><small>{record.devicePath || record.deviceId || "-"}</small></span>,
         <span className={`status ${record.syncStatus === "PENDING" || record.syncStatus === "ERROR" ? "offline" : ""}`}>{record.syncStatus || "LOCAL"}</span>
       ];
     }
@@ -2647,15 +2708,15 @@ function App() {
     if (resource === "faces") {
       return [
         <span><strong>{record.personName}</strong><small>Unidade {record.unitNumber || "-"}</small></span>,
-        record.valueLabel || "Face cadastrada",
+        <span><strong>{record.valueLabel || "Face cadastrada"}</strong><small>{rawSummary || record.source || "Equipamento"}</small></span>,
         <span className={`status ${record.syncStatus === "PENDING" || record.syncStatus === "ERROR" ? "offline" : ""}`}>{record.syncStatus || "LOCAL"}</span>,
         record.validUntil ? formatDateTime(record.validUntil) : "Sem validade final"
       ];
     }
     return [
       <span><strong>{record.name}</strong><small>{record.kind || "Pessoa"} - {record.role || "Usuario"}</small></span>,
-      record.unitNumber ? `Unidade ${record.unitNumber}` : "-",
-      record.phone || record.email || record.cpf || "-",
+      <span><strong>{record.unitNumber ? `Unidade ${record.unitNumber}` : "-"}</strong><small>{rawSummary || record.source || ""}</small></span>,
+      record.phone || record.email || record.cpf || record.externalId || "-",
       `${record.credentials?.length || 0} credencial(is)`
     ];
   }
@@ -2674,6 +2735,10 @@ function App() {
     const currentPerson = selectedPersonId === "new" ? {} : people.find((person) => person.id === selectedPersonId) || people[0] || {};
     const isResident = kind === "RESIDENT";
     const isVisitor = kind === "VISITOR";
+    const currentPersonCredentials = currentPerson.id
+      ? data.credentials.filter((credential) => credential.personId === currentPerson.id)
+      : [];
+    const currentPersonFace = currentPersonCredentials.find((credential) => credential.type === "FACE");
 
     return (
       <section className="people-layout">
@@ -2695,7 +2760,8 @@ function App() {
             {isVisitor && <Field label="Autorizado por"><input name="authorizedBy" defaultValue={currentPerson.authorizedBy || selectedUnit?.residentName || ""} /></Field>}
             {isVisitor && <Field label="Motivo"><input name="accessReason" defaultValue={currentPerson.accessReason || ""} /></Field>}
             {isVisitor && <Field label="Placa"><input name="vehiclePlate" defaultValue={currentPerson.vehiclePlate || ""} /></Field>}
-            {!isResident && <Field label="Credencial"><select name="credentialType" defaultValue={currentPerson.credentialType || "QR_CODE"}><option>QR_CODE</option><option>APP</option><option>FACE</option><option>RFID</option><option>PLATE</option></select></Field>}
+            <Field label={isResident ? "Credencial padrao" : "Credencial"}><select name="credentialType" defaultValue={currentPerson.credentialType || (isResident ? "APP" : "QR_CODE")}><option>APP</option><option>FACE</option><option>RFID</option><option>QR_CODE</option><option>PIN</option><option>PLATE</option></select></Field>
+            {isResident && <Field label="Facial do equipamento"><input readOnly value={currentPersonFace ? `${currentPersonFace.valueLabel || currentPersonFace.value} (${currentPersonFace.source || "equipamento"})` : "Nenhuma facial importada"} /></Field>}
             {kind === "PROVIDER" && <Field label="Dias permitidos"><input name="allowedDays" defaultValue={currentPerson.allowedDays || ""} /></Field>}
             {kind === "PROVIDER" && <Field label="Horario permitido"><input name="allowedHours" defaultValue={currentPerson.allowedHours || ""} /></Field>}
             {isVisitor && <Field label="Valido de"><input type="datetime-local" /></Field>}
@@ -2711,11 +2777,11 @@ function App() {
           <div className="people-header"><span>Nome</span><span>Documentos</span><span>Celular</span><span>Relacao</span><span>Acoes</span></div>
           {people.map((person) => (
             <div className="person-row" key={person.id}>
-              <button className="person-name-cell row-link" onClick={() => setSelectedPersonId(person.id)}><span className="avatar">{person.name?.[0]}</span><div><strong>{person.name}</strong><small>{person.email || person.company || person.authorizedBy || "Sem login"}</small><small>{isResident ? `Permissao: ${person.role}` : person.credentialType}</small></div></button>
+              <button className="person-name-cell row-link" onClick={() => setSelectedPersonId(person.id)}><span className="avatar">{person.name?.[0]}</span><div><strong>{person.name}</strong><small>{person.email || person.company || person.authorizedBy || "Sem login"}</small><small>{isResident ? `Permissao: ${person.role || "RESIDENT"} - Face ${data.credentials.some((credential) => credential.personId === person.id && credential.type === "FACE") ? "importada" : "pendente"}` : person.credentialType}</small></div></button>
               <span>CPF: {person.cpf || "-"}<br />RG: {person.rg || "-"}</span>
               <span>{person.phone || "-"}</span>
               <span>{kind === "PROVIDER" ? person.serviceType || "-" : person.relation || person.accessReason || "-"}</span>
-              <div className="row-actions"><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, person.credentialType || (isResident ? "APP" : "QR_CODE"))}>Credencial</button><button className="compact-action-button secondary-button" onClick={() => void syncCredentialTarget({ personId: person.id, credentialType: person.credentialType || "APP", target: `Pessoa ${person.name}` })}>Sincronizar</button><button className="compact-action-button secondary-button" onClick={() => setSelectedPersonId(person.id)}>Editar</button><button className="compact-action-button danger-button" onClick={() => void deletePerson(person)}>Excluir</button></div>
+              <div className="row-actions"><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, person.credentialType || (isResident ? "APP" : "QR_CODE"))}>Credencial</button><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, "FACE")}>Face</button><button className="compact-action-button secondary-button" onClick={() => void syncCredentialTarget({ personId: person.id, credentialType: person.credentialType || "APP", target: `Pessoa ${person.name}` })}>Sincronizar</button><button className="compact-action-button secondary-button" onClick={() => setSelectedPersonId(person.id)}>Editar</button><button className="compact-action-button danger-button" onClick={() => void deletePerson(person)}>Excluir</button></div>
             </div>
           ))}
         </article>

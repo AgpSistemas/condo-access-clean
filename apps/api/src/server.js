@@ -880,9 +880,23 @@ async function controlIdPost(device, session, pathName, body = {}, { timeoutMs =
   }
 }
 
-async function controlIdLoadObjects(device, session, object, { limit = 1000, timeoutMs = 9000 } = {}) {
-  const result = await controlIdPost(device, session, "/load_objects.fcgi", { object, limit }, { timeoutMs });
-  return Array.isArray(result.payload?.[object]) ? result.payload[object] : [];
+async function controlIdLoadObjects(device, session, object, { limit = 500, timeoutMs = 9000 } = {}) {
+  const records = [];
+  const seen = new Set();
+  let offset = 0;
+
+  for (let page = 0; page < 50; page += 1) {
+    const result = await controlIdPost(device, session, "/load_objects.fcgi", { object, limit, offset }, { timeoutMs });
+    const pageRecords = Array.isArray(result.payload?.[object]) ? result.payload[object] : [];
+    const firstKey = pageRecords[0] ? JSON.stringify([pageRecords[0].id, pageRecords[0].user_id, pageRecords[0].registration]) : "";
+    if (firstKey && seen.has(firstKey)) break;
+    if (firstKey) seen.add(firstKey);
+    records.push(...pageRecords);
+    if (pageRecords.length < limit) break;
+    offset += pageRecords.length;
+  }
+
+  return records;
 }
 
 async function readControlIdSnapshot(device, { includeOptional = true } = {}) {
@@ -1331,6 +1345,75 @@ function collectObjectsByKeys(source, keys = [], found = []) {
   return found;
 }
 
+function findFirstNumberByKeys(source, keys = []) {
+  if (!source || typeof source !== "object") return 0;
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      const found = findFirstNumberByKeys(item, keys);
+      if (found) return found;
+    }
+    return 0;
+  }
+  for (const [key, value] of Object.entries(source)) {
+    if (keys.includes(key) && Number.isFinite(Number(value))) return Number(value);
+    const found = findFirstNumberByKeys(value, keys);
+    if (found) return found;
+  }
+  return 0;
+}
+
+function hikvisionSearchBody(rootName, position = 0, maxResults = 30) {
+  return JSON.stringify({
+    [rootName]: {
+      searchID: `condo-${Date.now()}-${position}`,
+      searchResultPosition: position,
+      maxResults
+    }
+  });
+}
+
+async function readPagedHikvisionCredentials(device, candidate) {
+  const records = [];
+  const attempts = [];
+  const pageSize = candidate.pageSize || 30;
+  let position = 0;
+  let totalMatches = 0;
+
+  for (let page = 0; page < 100; page += 1) {
+    const result = await authenticatedDeviceRequest(device, candidate.path, {
+      method: candidate.method,
+      body: hikvisionSearchBody(candidate.rootName, position, pageSize),
+      contentType: candidate.contentType || "application/json",
+      timeoutMs: 12000
+    });
+    const parsedRecords = parseDeviceCredentialResponse(result.body, {
+      source: "DEVICE_API",
+      kind: candidate.kind,
+      path: `${candidate.path}#${position}`
+    }, candidate.type);
+    const payload = tryParseJson(result.body);
+    const pageMatches = findFirstNumberByKeys(payload, ["numOfMatches", "numOfMatch", "matches"]);
+    totalMatches = totalMatches || findFirstNumberByKeys(payload, ["totalMatches", "totalMatch", "total"]);
+    records.push(...parsedRecords);
+    attempts.push({
+      label: `${candidate.label} pagina ${page + 1}`,
+      path: `${candidate.path} @ ${position}`,
+      ok: true,
+      status: result.status,
+      records: parsedRecords.length,
+      totalMatches: totalMatches || undefined
+    });
+
+    const step = Math.max(pageMatches || parsedRecords.length, 0);
+    if (!step) break;
+    position += step;
+    if (totalMatches && position >= totalMatches) break;
+    if (!totalMatches && step < pageSize) break;
+  }
+
+  return { records, attempts };
+}
+
 function xmlBlocks(text = "", tagNames = []) {
   const blocks = [];
   tagNames.forEach((tagName) => {
@@ -1459,6 +1542,42 @@ function parseDeviceCredentialResponse(text = "", source = {}, fallbackType = "A
   });
 }
 
+function logControlIdImportDebug(device = {}, snapshot = {}, records = [], stage = "read") {
+  const objects = snapshot.objects || {};
+  const objectCounts = Object.fromEntries(
+    Object.entries(objects).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0])
+  );
+  const faceUsers = (objects.users || []).filter((user) => Number(user.image_timestamp || 0) > 0);
+  const faceTemplates = objects.face_templates || [];
+  const faceRecords = records.filter((record) => record.type === "FACE");
+
+  console.log("[CONTROL_ID_IMPORT_DEBUG]", JSON.stringify({
+    stage,
+    generatedAt: now(),
+    device: {
+      id: device.id,
+      name: device.name,
+      tenantId: device.tenantId,
+      manufacturer: device.manufacturer,
+      model: device.model,
+      ipAddress: device.ipAddress,
+      apiPort: device.apiPort
+    },
+    attempts: snapshot.attempts || [],
+    objectCounts,
+    rawObjects: objects,
+    faceDebug: {
+      usersWithImageTimestamp: faceUsers.length,
+      faceTemplates: faceTemplates.length,
+      normalizedFaceRecords: faceRecords.length,
+      usersWithImageTimestampSample: faceUsers.slice(0, 10),
+      faceTemplatesSample: faceTemplates.slice(0, 10),
+      normalizedFaceRecordsSample: faceRecords.slice(0, 20)
+    },
+    normalizedRecords: records
+  }, null, 2));
+}
+
 async function readDeviceCredentialsFromDevice(device) {
   const adapter = deviceAdapter(device);
   const attempts = [];
@@ -1466,6 +1585,7 @@ async function readDeviceCredentialsFromDevice(device) {
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
     const snapshot = await readControlIdSnapshot(device);
     const uniqueRecords = controlIdCredentialRecords(snapshot);
+    logControlIdImportDebug(device, snapshot, uniqueRecords, "read-device-credentials");
     return {
       ok: uniqueRecords.length > 0,
       adapter,
@@ -1478,18 +1598,11 @@ async function readDeviceCredentialsFromDevice(device) {
     };
   }
 
-  const hikvisionBody = (rootName) => JSON.stringify({
-    [rootName]: {
-      searchID: `condo-${Date.now()}`,
-      searchResultPosition: 0,
-      maxResults: 500
-    }
-  });
   const candidates = adapter === "HIKVISION_ISAPI"
     ? [
-      { label: "Hikvision cartoes", kind: "CARD", type: "RFID", method: "POST", path: "/ISAPI/AccessControl/CardInfo/Search?format=json", body: hikvisionBody("CardInfoSearchCond"), contentType: "application/json" },
-      { label: "Hikvision usuarios", kind: "USER", type: "APP", method: "POST", path: "/ISAPI/AccessControl/UserInfo/Search?format=json", body: hikvisionBody("UserInfoSearchCond"), contentType: "application/json" },
-      { label: "Hikvision faces", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/AccessControl/FaceInfo/Search?format=json", body: hikvisionBody("FaceInfoSearchCond"), contentType: "application/json" }
+      { label: "Hikvision cartoes", kind: "CARD", type: "RFID", method: "POST", path: "/ISAPI/AccessControl/CardInfo/Search?format=json", rootName: "CardInfoSearchCond", contentType: "application/json" },
+      { label: "Hikvision usuarios", kind: "USER", type: "APP", method: "POST", path: "/ISAPI/AccessControl/UserInfo/Search?format=json", rootName: "UserInfoSearchCond", contentType: "application/json" },
+      { label: "Hikvision faces", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/AccessControl/FaceInfo/Search?format=json", rootName: "FaceInfoSearchCond", contentType: "application/json" }
     ]
     : adapter === INTELBRAS_SS_3532_MF_W_ADAPTER
       ? [
@@ -1511,25 +1624,31 @@ async function readDeviceCredentialsFromDevice(device) {
 
   for (const candidate of candidates) {
     try {
-      const result = await authenticatedDeviceRequest(device, candidate.path, {
-        method: candidate.method,
-        body: candidate.body,
-        contentType: candidate.contentType || "application/json",
-        timeoutMs: 9000
-      });
-      const parsedRecords = parseDeviceCredentialResponse(result.body, {
-        source: "DEVICE_API",
-        kind: candidate.kind,
-        path: candidate.path
-      }, candidate.type);
-      records.push(...parsedRecords);
-      attempts.push({
-        label: candidate.label,
-        path: candidate.path,
-        ok: true,
-        status: result.status,
-        records: parsedRecords.length
-      });
+      if (adapter === "HIKVISION_ISAPI" && candidate.rootName) {
+        const paged = await readPagedHikvisionCredentials(device, candidate);
+        records.push(...paged.records);
+        attempts.push(...paged.attempts);
+      } else {
+        const result = await authenticatedDeviceRequest(device, candidate.path, {
+          method: candidate.method,
+          body: candidate.body,
+          contentType: candidate.contentType || "application/json",
+          timeoutMs: 9000
+        });
+        const parsedRecords = parseDeviceCredentialResponse(result.body, {
+          source: "DEVICE_API",
+          kind: candidate.kind,
+          path: candidate.path
+        }, candidate.type);
+        records.push(...parsedRecords);
+        attempts.push({
+          label: candidate.label,
+          path: candidate.path,
+          ok: true,
+          status: result.status,
+          records: parsedRecords.length
+        });
+      }
     } catch (error) {
       attempts.push({
         label: candidate.label,
@@ -1657,6 +1776,25 @@ async function importDeviceCredentials(device, { dryRun = true } = {}) {
       }
     });
   });
+
+  if (readResult.adapter === CONTROL_ID_ACCESS_ADAPTER) {
+    console.log("[CONTROL_ID_IMPORT_REPORT]", JSON.stringify({
+      generatedAt: now(),
+      dryRun,
+      device: report.device,
+      source: report.source,
+      total: report.total,
+      valid: report.valid,
+      invalid: report.invalid,
+      duplicates: report.duplicates,
+      peopleCreated: report.peopleCreated,
+      peopleUpdated: report.peopleUpdated,
+      credentialsCreated: report.credentialsCreated,
+      credentialsUpdated: report.credentialsUpdated,
+      attempts: report.attempts,
+      items: report.items
+    }, null, 2));
+  }
 
   if (!dryRun) savePersistentState("device-credentials-imported");
   return report;
@@ -3181,7 +3319,30 @@ function mobileTelephonyConfig(unit = units.get("unit-101")) {
     account: {
       extension: unitData?.telephony?.extension || "9001",
       password: normalizeSipPassword(unitData?.telephony?.extensionPassword, unitData?.telephony?.extension || "9001"),
-      displayName: `Unidade ${unitData?.unitNumber || "101"}`
+      displayName: `Unidade ${unitData?.unitNumber || "101"}`,
+      defaultAudioRoute: "EARPIECE",
+      speakerphoneEnabled: false
+    },
+    audioRouteUi: {
+      enabled: true,
+      defaultAudioRoute: "EARPIECE",
+      speakerphoneEnabled: false,
+      stateEventName: "audioRouteChanged",
+      actions: [
+        { id: "speaker_on", label: "Viva-voz", nativeMethod: "setSpeakerphoneEnabled", value: true },
+        { id: "speaker_off", label: "Auricular", nativeMethod: "setSpeakerphoneEnabled", value: false },
+        { id: "speaker_toggle", label: "Alternar viva-voz", nativeMethod: "toggleSpeakerphone" }
+      ]
+    },
+    incomingCallUi: {
+      enabled: true,
+      eventName: "incomingCall",
+      stateEventName: "callStateChanged",
+      actions: [
+        { id: "answer", label: "Atender", nativeMethod: "answerIncomingCall" },
+        { id: "reject", label: "Recusar", nativeMethod: "rejectIncomingCall" },
+        { id: "hangup", label: "Encerrar", nativeMethod: "hangup" }
+      ]
     },
     callTargets: [
       { type: "PORTER", id: "porter", label: "Portaria", extension: tenantData.sipPorterExtension, available: true },
