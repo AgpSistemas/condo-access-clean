@@ -2774,6 +2774,11 @@ function snapshotVideoFilter(settings = {}) {
   return scale.includes("=") ? scale : `scale=${scale}`;
 }
 
+function snapshotTimeoutMs(settings = {}) {
+  const configured = Number(settings.snapshotTimeoutMs || process.env.CAMERA_SNAPSHOT_TIMEOUT_MS || 20000);
+  return Number.isFinite(configured) && configured >= 5000 ? configured : 20000;
+}
+
 async function ensureSnapshot(camera, maxAgeMs = 15000) {
   const filePath = snapshotFile(camera.id);
   const cached = snapshotCache.get(camera.id);
@@ -2817,7 +2822,7 @@ async function ensureSnapshot(camera, maxAgeMs = 15000) {
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-    }, 8000);
+    }, snapshotTimeoutMs(settings));
 
     child.stderr.on("data", (chunk) => {
       errorText = `${errorText}${chunk.toString("utf8")}`.slice(-1000);
