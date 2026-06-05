@@ -2311,8 +2311,14 @@ function ensureTenantUnitsFromStructure(targetTenant, body = {}) {
   if (!shouldGenerate) return [];
 
   const structureType = String(body.structureType || targetTenant.structureType || "VERTICAL").toUpperCase();
-  const groupCount = parsePositiveInteger(body.structureGroupCount ?? body.floorCount ?? body.blockCount, 0);
-  const unitsPerGroup = parsePositiveInteger(body.unitsPerGroup ?? body.unitsPerFloor ?? body.unitsPerBlock, 0);
+  const groupCount = parsePositiveInteger(
+    body.structureGroupCount ?? body.floorCount ?? body.blockCount,
+    targetTenant.structureGroupCount || 0
+  );
+  const unitsPerGroup = parsePositiveInteger(
+    body.unitsPerGroup ?? body.unitsPerFloor ?? body.unitsPerBlock,
+    targetTenant.unitsPerGroup || 0
+  );
   if (!groupCount || !unitsPerGroup) return [];
 
   const created = [];
@@ -4302,7 +4308,11 @@ async function handleRequest(request, response) {
     targetTenant.updatedAt = now();
     if (isNewTenant) extraTenants.unshift(targetTenant);
     savePersistentState(generatedUnits.length ? "tenant-saved-units-generated" : "tenant-saved");
-    return json(response, isNewTenant ? 201 : 200, { ...targetTenant, generatedUnits: generatedUnits.length });
+    return json(response, isNewTenant ? 201 : 200, {
+      ...targetTenant,
+      generatedUnits: generatedUnits.length,
+      generatedUnitList: generatedUnits
+    });
   }
 
   const deleteTenantMatch = url.pathname.match(/^\/api\/condominiums\/([^/]+)$/);

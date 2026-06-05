@@ -117,6 +117,89 @@ eas build -p android --profile preview
 - O RTSP direto continua oculto por padrao com `EXPOSE_CAMERA_RTSP=false`.
 - Acionamentos reais de rele/porta devem ser testados somente com autorizacao no local.
 
+## Retorno da API para Railway 2026-06-05
+
+A API oficial voltou a ser somente Railway, porque as integracoes de equipamentos estavam homologadas nesse ambiente.
+
+Destino oficial:
+
+- Projeto: `trustworthy-nourishment`
+- Servico: `api`
+- URL: `https://api-production-441f.up.railway.app`
+- Netlify Web: manter `VITE_API_URL=https://api-production-441f.up.railway.app`
+- APK Mobile: manter `EXPO_PUBLIC_API_URL=https://api-production-441f.up.railway.app/api`
+- APK Mobile: manter `EXPO_PUBLIC_GATEWAY_URL=https://api-production-441f.up.railway.app`
+- APK Mobile: manter `EXPO_PUBLIC_STREAM_URL=https://api-production-441f.up.railway.app`
+
+Os arquivos de Render foram removidos para evitar novo deploy acidental nesse provedor:
+
+```txt
+render.yaml
+scripts/create-render-service.ps1
+docs/RENDER_DEPLOY.md
+```
+
+Para publicar a API no Railway, a sessao precisa de login valido ou token temporario:
+
+```cmd
+railway login
+```
+
+Ou:
+
+```cmd
+set RAILWAY_API_TOKEN=SEU_TOKEN_RAILWAY
+```
+
+Depois:
+
+```cmd
+railway link --project 72c29bb4-f05e-4b2f-9d03-87d25b5114d7 --environment production --service api
+railway up --service api --environment production --message "Return Condo Access API to Railway"
+```
+
+Validacao esperada:
+
+```powershell
+curl.exe https://api-production-441f.up.railway.app/health
+curl.exe https://api-production-441f.up.railway.app/api/bootstrap
+```
+
+## Deploy automatico GitHub -> Railway
+
+O servico `api` pode publicar automaticamente no Railway quando houver push na branch `main`.
+
+Workflow criado:
+
+```txt
+.github/workflows/deploy-api-railway.yml
+```
+
+Ele roda somente quando mudarem arquivos da API/deploy:
+
+```txt
+package.json
+package-lock.json
+Dockerfile
+railway.json
+apps/api/**
+```
+
+Para ativar no GitHub:
+
+1. Abra `https://github.com/AgpSistemas/condo-access-clean/settings/secrets/actions`.
+2. Crie um secret chamado `RAILWAY_API_TOKEN`.
+3. Cole um token valido do Railway com acesso ao projeto `trustworthy-nourishment`.
+4. Salve e faca push na branch `main`.
+
+Depois disso, cada alteracao na API dispara:
+
+```cmd
+railway up --project 72c29bb4-f05e-4b2f-9d03-87d25b5114d7 --environment production --service api --ci
+```
+
+Observacao: o autodeploy nativo do Railway tambem funciona quando o servico e conectado pelo painel Railway a um repositorio GitHub. No estado atual, `railway service list --json` mostrou `source: null` para o servico `api`, entao este workflow garante o deploy automatico mesmo sem essa ligacao nativa.
+
 ## Desenvolvimento em rede local
 
 Script criado na raiz do projeto:

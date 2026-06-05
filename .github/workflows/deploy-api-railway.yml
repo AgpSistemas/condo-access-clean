@@ -1,0 +1,56 @@
+name: Deploy API to Railway
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - "Dockerfile"
+      - "railway.json"
+      - "apps/api/**"
+  workflow_dispatch:
+
+concurrency:
+  group: railway-api-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy API
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_PROJECT_ID: 72c29bb4-f05e-4b2f-9d03-87d25b5114d7
+      RAILWAY_ENVIRONMENT: production
+      RAILWAY_SERVICE: api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Validate Railway token
+        shell: bash
+        run: |
+          if [ -z "$RAILWAY_API_TOKEN" ]; then
+            echo "Missing GitHub secret RAILWAY_API_TOKEN."
+            exit 1
+          fi
+
+      - name: Deploy API to Railway
+        run: |
+          railway up \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT" \
+            --service "$RAILWAY_SERVICE" \
+            --ci \
+            --message "GitHub auto deploy ${GITHUB_SHA}"

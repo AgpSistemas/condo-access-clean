@@ -1957,21 +1957,28 @@ function App() {
       setMessage(saved.message || "Falha ao salvar condominio.");
       return;
     }
+    const generatedUnitCount = saved?.generatedUnits || 0;
     if (saved?.id) {
+      const { generatedUnitList: rawGeneratedUnitList, generatedUnits: _generatedUnits, ...savedTenant } = saved;
+      const generatedUnitList = Array.isArray(rawGeneratedUnitList) ? rawGeneratedUnitList : [];
       setData((current) => {
-        const exists = current.condominiums.some((item) => item.id === saved.id);
+        const exists = current.condominiums.some((item) => item.id === savedTenant.id);
+        const generatedUnitIds = new Set(generatedUnitList.map((unit) => unit.unitId));
         return {
           ...current,
           condominiums: exists
-            ? current.condominiums.map((item) => item.id === saved.id ? saved : item)
-            : [saved, ...current.condominiums]
+            ? current.condominiums.map((item) => item.id === savedTenant.id ? savedTenant : item)
+            : [savedTenant, ...current.condominiums],
+          units: generatedUnitList.length
+            ? [...current.units.filter((unit) => !generatedUnitIds.has(unit.unitId)), ...generatedUnitList]
+            : current.units
         };
       });
-      setSelectedTenantId(saved.id);
+      setSelectedTenantId(savedTenant.id);
       setCondoFormMode("edit");
       setActiveSection("condoHome");
     }
-    setMessage(saved.generatedUnits ? `Condominio salvo. ${saved.generatedUnits} unidade(s) criada(s).` : "Condominio salvo.");
+    setMessage(generatedUnitCount ? `Condominio salvo. ${generatedUnitCount} unidade(s) criada(s).` : "Condominio salvo.");
     void refreshApiCache();
   }
 
@@ -3226,7 +3233,7 @@ function App() {
               <Field label="Estado"><input name="state" maxLength="2" defaultValue={condoFormTenant?.state || ""} /></Field>
               <Field label="Latitude"><input name="latitude" value={condoGeo.latitude} onChange={(event) => setCondoGeo((current) => ({ ...current, latitude: event.target.value }))} /></Field>
               <Field label="Longitude"><input name="longitude" value={condoGeo.longitude} onChange={(event) => setCondoGeo((current) => ({ ...current, longitude: event.target.value }))} /></Field>
-              <Field label="Gerar unidades"><label className="checkbox-row"><input name="generateUnits" type="checkbox" defaultChecked={condoFormMode === "new"} /> Criar apartamentos/unidades automaticamente</label></Field>
+              <Field label="Gerar unidades"><label className="checkbox-row"><input name="generateUnits" type="checkbox" defaultChecked={condoFormMode === "new" || Boolean(condoFormTenant?.structureGroupCount && condoFormTenant?.unitsPerGroup)} /> Criar apartamentos/unidades automaticamente</label></Field>
               <input type="hidden" name="telephonyProvider" value={condoFormTenant?.telephonyProvider || "DIRECT_SIP"} />
               <input type="hidden" name="sipDomain" value={condoFormTenant?.sipDomain || ""} />
               <input type="hidden" name="sipWebSocketUrl" value={condoFormTenant?.sipWebSocketUrl || ""} />
