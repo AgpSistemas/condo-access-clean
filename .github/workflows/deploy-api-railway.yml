@@ -10,6 +10,7 @@ on:
       - "Dockerfile"
       - "railway.json"
       - "apps/api/**"
+      - ".github/workflows/deploy-api-railway.yml"
   workflow_dispatch:
 
 concurrency:
