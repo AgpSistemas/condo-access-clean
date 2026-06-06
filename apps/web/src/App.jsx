@@ -2642,6 +2642,11 @@ function App() {
       })
     });
     const report = await response.json().catch(() => ({}));
+    console.log("[HIKVISION_IMPORT_REPORT]", {
+      dryRun,
+      deviceId,
+      report
+    });
     if (!response.ok) {
       const error = report.message || "Falha ao importar credenciais do equipamento.";
       setEquipmentIntegration((current) => ({ ...current, importing: false, error, importReport: report }));

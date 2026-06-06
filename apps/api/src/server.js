@@ -1559,6 +1559,21 @@ async function readPagedHikvisionCredentials(device, candidate) {
       bodyFormat: candidate.bodyFormat || "json",
       bodyPreview: parsedRecords.length ? undefined : responseSample(result.body)
     });
+    console.log("[HIKVISION_CREDENTIAL_SEARCH_DEBUG]", JSON.stringify({
+      generatedAt: now(),
+      deviceId: device.id,
+      deviceName: device.name,
+      candidate: candidate.label,
+      path: candidate.path,
+      bodyFormat: candidate.bodyFormat || "json",
+      position,
+      status: result.status,
+      parsedRecords: parsedRecords.length,
+      pageMatches,
+      totalMatches: totalMatches || undefined,
+      bodyPreview: responseSample(result.body),
+      sampleRecord: parsedRecords[0] || null
+    }));
 
     const step = Math.max(pageMatches || parsedRecords.length, 0);
     if (!step) break;
@@ -2314,6 +2329,20 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
   }
 
   if (!dryRun) savePersistentState("device-credentials-imported");
+  console.log("[DEVICE_CREDENTIAL_IMPORT_DEBUG]", JSON.stringify({
+    generatedAt: now(),
+    dryRun,
+    deviceId: device.id,
+    deviceName: device.name,
+    adapter: report.adapter,
+    total: report.total,
+    valid: report.valid,
+    invalid: report.invalid,
+    credentialsCreated: report.credentialsCreated,
+    credentialsUpdated: report.credentialsUpdated,
+    attempts: report.attempts,
+    itemsSample: report.items.slice(0, 10)
+  }));
   return report;
 }
 
