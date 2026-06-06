@@ -188,8 +188,8 @@ apps/api/**
 Para ativar no GitHub:
 
 1. Abra `https://github.com/AgpSistemas/condo-access-clean/settings/secrets/actions`.
-2. Crie um secret chamado `RAILWAY_API_TOKEN`.
-3. Cole um token valido do Railway com acesso ao projeto `trustworthy-nourishment`.
+2. Crie um secret chamado `RAILWAY_TOKEN`.
+3. Cole um Project Token valido do Railway com acesso ao projeto `trustworthy-nourishment`.
 4. Salve e faca push na branch `main`.
 
 Depois disso, cada alteracao na API dispara:

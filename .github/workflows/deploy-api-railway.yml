@@ -22,8 +22,7 @@ jobs:
     name: Deploy API
     runs-on: ubuntu-latest
     env:
-      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_PROJECT_ID: 72c29bb4-f05e-4b2f-9d03-87d25b5114d7
       RAILWAY_ENVIRONMENT: production
       RAILWAY_SERVICE: api
@@ -42,8 +41,8 @@ jobs:
       - name: Deploy API to Railway
         shell: bash
         run: |
-          if [ -z "$RAILWAY_API_TOKEN" ]; then
-            echo "GitHub secret RAILWAY_API_TOKEN is missing."
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "GitHub secret RAILWAY_TOKEN is missing."
             echo "Create it in https://github.com/AgpSistemas/condo-access-clean/settings/secrets/actions to enable automatic deploys."
             exit 0
           fi
