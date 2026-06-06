@@ -1392,6 +1392,24 @@ function valueFromKeys(source = {}, keys = []) {
   return "";
 }
 
+function recursiveValueFromKeys(source = {}, keys = []) {
+  if (!source || typeof source !== "object") return "";
+  const direct = valueFromKeys(source, keys);
+  if (direct) return direct;
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      const found = recursiveValueFromKeys(item, keys);
+      if (found) return found;
+    }
+    return "";
+  }
+  for (const value of Object.values(source)) {
+    const found = recursiveValueFromKeys(value, keys);
+    if (found) return found;
+  }
+  return "";
+}
+
 function collectObjectsByKeys(source, keys = [], found = []) {
   if (!source || typeof source !== "object") return found;
   if (Array.isArray(source)) {
@@ -1588,7 +1606,7 @@ async function readPagedHikvisionCredentials(device, candidate) {
 }
 
 function firstHikvisionImageValue(record = {}) {
-  const direct = valueFromKeys(record, [
+  const imageKeys = [
     "photoUrl",
     "photoURL",
     "faceURL",
@@ -1616,11 +1634,13 @@ function firstHikvisionImageValue(record = {}) {
     "url",
     "uri",
     "href"
-  ]);
+  ];
+  const direct = valueFromKeys(record, imageKeys) || recursiveValueFromKeys(record, imageKeys);
   if (direct && /\.(?:jpe?g|png|webp)(?:@[^?]+)?(?:\?.*)?$/i.test(direct)) return direct;
   if (direct && /\/LOCALS\/pic\/(?:enrlFace|face|snap|FDLib)\//i.test(direct)) return direct;
 
-  const base64 = valueFromKeys(record, ["faceImage", "faceData", "imageData", "picData", "snapPic", "pictureData"]);
+  const base64Keys = ["faceImage", "faceData", "imageData", "picData", "snapPic", "pictureData"];
+  const base64 = valueFromKeys(record, base64Keys) || recursiveValueFromKeys(record, base64Keys);
   if (!base64) return "";
   return base64.startsWith("data:") ? base64 : `data:image/jpeg;base64,${base64.replace(/^data:image\/[a-z]+;base64,/i, "")}`;
 }
@@ -2147,6 +2167,24 @@ function faceImportSelectionForRecord(record = {}, index = 0, selections = []) {
 }
 
 function unitPayloadFromFaceSelection(record = {}, device = {}, selection = {}) {
+  const selectedUnitId = String(selection.unitId || "").trim();
+  const selectedUnit = selectedUnitId ? unitForId(selectedUnitId) : null;
+  if (selectedUnit && selectedUnit.tenantId === device.tenantId) {
+    return {
+      tenantId: device.tenantId,
+      unitId: selectedUnit.unitId,
+      unitNumber: selectedUnit.unitNumber,
+      blockName: selectedUnit.blockName || "",
+      name: record.personName || `Usuario ${record.personExternalId || ""}`.trim(),
+      cpf: "",
+      email: "",
+      phone: "",
+      relation: "Morador",
+      kind: "RESIDENT",
+      credentialType: record.type || "FACE",
+      credentialValue: record.value
+    };
+  }
   const unitNumber = String(selection.unitNumber || selection.unit || record.raw?.unitNumber || record.raw?.apartment || record.raw?.roomNo || "").trim();
   const blockName = String(selection.blockName || selection.block || record.raw?.blockName || record.raw?.floorNo || "").trim();
   if (!unitNumber) return null;
@@ -2160,7 +2198,7 @@ function unitPayloadFromFaceSelection(record = {}, device = {}, selection = {}) 
     phone: "",
     relation: "Morador",
     kind: "RESIDENT",
-    credentialType: "FACE",
+    credentialType: record.type || "FACE",
     credentialValue: record.value
   };
 }
@@ -2207,9 +2245,15 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
     }
 
     const existingPerson = matchResidentForDeviceCredential(record, device);
-    const selectedUnitPayload = record.type === "FACE" ? unitPayloadFromFaceSelection(record, device, selection || {}) : null;
-    const existingSelectedUnit = selectedUnitPayload ? findUnitByNumber(device.tenantId, selectedUnitPayload.unitNumber, selectedUnitPayload.blockName) : null;
-    const selectedUnit = selectedUnitPayload ? upsertImportUnit(selectedUnitPayload, dryRun) : null;
+    const selectedUnitPayload = unitPayloadFromFaceSelection(record, device, selection || {});
+    const existingSelectedUnit = selectedUnitPayload?.unitId
+      ? unitForId(selectedUnitPayload.unitId)
+      : selectedUnitPayload
+        ? findUnitByNumber(device.tenantId, selectedUnitPayload.unitNumber, selectedUnitPayload.blockName)
+        : null;
+    const selectedUnit = selectedUnitPayload
+      ? existingSelectedUnit || upsertImportUnit(selectedUnitPayload, dryRun)
+      : null;
     const person = (record.personName || record.personExternalId)
       ? upsertDeviceImportPerson(record, device, dryRun, selectedUnit?.unitId || existingPerson?.unitId || "")
       : existingPerson;

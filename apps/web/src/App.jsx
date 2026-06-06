@@ -548,6 +548,20 @@ function faceImportSelectionKey(item = {}) {
   return item.payload?.recordId || `${item.row}-${item.payload?.value || ""}`;
 }
 
+function importSelectionBase(item = {}, selection = {}) {
+  return {
+    key: faceImportSelectionKey(item),
+    row: item.row,
+    recordId: item.payload?.recordId || "",
+    type: item.payload?.type || "",
+    value: item.payload?.value || "",
+    selected: selection.selected !== false,
+    unitId: selection.unitId || item.unitId || "",
+    unitNumber: selection.unitNumber ?? item.payload?.unitNumber ?? "",
+    blockName: selection.blockName ?? item.payload?.blockName ?? ""
+  };
+}
+
 function groupCameraDevices(cameras) {
   const groups = new Map();
   cameras.forEach((camera) => {
@@ -2622,6 +2636,26 @@ function App() {
     setMessage(`${result.device?.name || "Equipamento"}: ${count} registro(s) em ${resource}.`);
   }
 
+  function updateEquipmentCredentialSelection(item, patch = {}) {
+    const key = faceImportSelectionKey(item);
+    setEquipmentFaceSelections((current) => {
+      const currentSelection = current[key] || {};
+      const unit = patch.unitId ? units.find((candidate) => candidate.unitId === patch.unitId) : null;
+      const clearedUnit = Object.prototype.hasOwnProperty.call(patch, "unitId") && !patch.unitId
+        ? { unitId: "", unitNumber: "", blockName: "" }
+        : {};
+      return {
+        ...current,
+        [key]: {
+          ...importSelectionBase(item, currentSelection),
+          ...patch,
+          ...clearedUnit,
+          ...(unit ? { unitId: unit.unitId, unitNumber: unit.unitNumber || "", blockName: unit.blockName || "" } : {})
+        }
+      };
+    });
+  }
+
   async function importEquipmentCredentials(dryRun = true) {
     const deviceId = equipmentIntegration.deviceId || selectedIntegrationDevice?.id || "";
     if (!deviceId) {
@@ -2644,11 +2678,11 @@ function App() {
       })
     });
     const report = await response.json().catch(() => ({}));
-    console.log("[HIKVISION_IMPORT_REPORT]", {
+    console.log("[HIKVISION_IMPORT_JSON]", JSON.stringify({
       dryRun,
       deviceId,
       report
-    });
+    }, null, 2));
     if (!response.ok) {
       const error = report.message || "Falha ao importar credenciais do equipamento.";
       setEquipmentIntegration((current) => ({ ...current, importing: false, error, importReport: report }));
@@ -2664,19 +2698,10 @@ function App() {
     if (dryRun) {
       const nextSelections = {};
       (report.items || [])
-        .filter((item) => item.payload?.type === "FACE")
+        .filter((item) => item.payload?.type && item.payload?.value)
         .forEach((item) => {
           const key = faceImportSelectionKey(item);
-          nextSelections[key] = {
-            key,
-            row: item.row,
-            recordId: item.payload?.recordId || "",
-            type: item.payload?.type || "FACE",
-            value: item.payload?.value || "",
-            selected: true,
-            unitNumber: item.payload?.unitNumber || "",
-            blockName: item.payload?.blockName || ""
-          };
+          nextSelections[key] = importSelectionBase(item, { selected: true });
         });
       setEquipmentFaceSelections(nextSelections);
     }
@@ -3638,24 +3663,32 @@ function App() {
                     <span><strong>{equipmentIntegration.importReport.eventsCreated || 0}</strong>eventos salvos</span>
                     <span><strong>{equipmentIntegration.importReport.syncJob?.synced || 0}</strong>ressincronizadas</span>
                   </div>
-                  {(equipmentIntegration.importReport.items || []).some((item) => item.payload?.type === "FACE") && (
+                  {(equipmentIntegration.importReport.items || []).length ? (
                     <div className="face-import-review">
-                      <div className="unit-table header face-review-table"><span>Importar</span><span>Facial</span><span>Pessoa</span><span>Unidade</span><span>Bloco</span></div>
-                      {(equipmentIntegration.importReport.items || []).filter((item) => item.payload?.type === "FACE").map((item) => {
+                      <div className="unit-table header credential-review-table"><span>Importar</span><span>Credencial</span><span>Facial</span><span>Pessoa</span><span>Unidade</span></div>
+                      {(equipmentIntegration.importReport.items || []).map((item) => {
                         const key = faceImportSelectionKey(item);
                         const selection = equipmentFaceSelections[key] || {};
+                        const selected = selection.selected !== false;
+                        const photoUrl = item.payload?.photoUrl || "";
                         return (
-                          <div className="unit-table row face-review-table" key={key}>
-                            <label className="check-cell"><input type="checkbox" checked={selection.selected !== false} onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: event.target.checked } }))} /></label>
-                            <span className="credential-person-cell"><PersonAvatar name={item.payload?.personName || item.payload?.valueLabel || item.payload?.value || "Face"} photoUrl={item.payload?.photoUrl || ""} /><span><strong>{item.payload?.valueLabel || item.payload?.value || "-"}</strong><small>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</small></span></span>
+                          <div className="unit-table row credential-review-table" key={key}>
+                            <label className="check-cell"><input type="checkbox" checked={selected} onChange={(event) => updateEquipmentCredentialSelection(item, { selected: event.target.checked })} /></label>
+                            <span><strong>{item.payload?.type || "-"}</strong><small>{item.payload?.valueLabel || item.payload?.value || "-"}</small><small>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</small></span>
+                            <span className="credential-face-cell">
+                              <PersonAvatar name={item.payload?.personName || item.payload?.valueLabel || item.payload?.value || "Face"} photoUrl={photoUrl} />
+                              <small>{photoUrl ? "Foto facial" : "Sem foto facial"}</small>
+                            </span>
                             <span>{item.payload?.personName || item.personId || "Sem nome"}</span>
-                            <input value={selection.unitNumber ?? item.payload?.unitNumber ?? ""} placeholder="Ex.: 102" onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: selection.selected !== false, unitNumber: event.target.value } }))} />
-                            <input value={selection.blockName ?? item.payload?.blockName ?? ""} placeholder="Bloco unico" onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: selection.selected !== false, blockName: event.target.value } }))} />
+                            <select value={selection.unitId || ""} onChange={(event) => updateEquipmentCredentialSelection(item, { unitId: event.target.value })}>
+                              <option value="">Sem unidade</option>
+                              {units.map((unit) => <option key={unit.unitId} value={unit.unitId}>Unidade {unit.unitNumber}{unit.blockName ? ` - ${unit.blockName}` : ""}</option>)}
+                            </select>
                           </div>
                         );
                       })}
                     </div>
-                  )}
+                  ) : null}
                   <div className="unit-table header integration-table"><span>Credencial</span><span>Pessoa</span><span>Status</span><span>Origem</span></div>
                   {(equipmentIntegration.importReport.items || []).slice(0, 12).map((item) => (
                     <div className="unit-table row integration-table" key={`${item.row}-${item.payload?.value}`}>

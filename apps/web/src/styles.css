@@ -2029,11 +2029,27 @@ nav button:hover {
   grid-template-columns: 72px minmax(220px, 1.2fr) minmax(160px, 1fr) 130px 130px;
 }
 
+.credential-review-table {
+  grid-template-columns: 72px minmax(180px, 1fr) minmax(120px, 0.7fr) minmax(150px, 1fr) minmax(180px, 0.9fr);
+}
+
+.credential-review-table select,
 .face-review-table input:not([type="checkbox"]) {
   min-height: 38px;
   border: 1px solid #ccd8de;
   border-radius: 8px;
   padding: 0 10px;
+}
+
+.credential-face-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.credential-face-cell .avatar {
+  width: 54px;
+  height: 54px;
 }
 
 .check-cell {
@@ -2341,6 +2357,7 @@ button.simple-row.selected {
   .equipment-read-actions,
   .integration-summary-grid,
   .integration-table,
+  .credential-review-table,
   .unit-directory-grid,
   .porter-filter-grid,
   .remote-call-summary,
