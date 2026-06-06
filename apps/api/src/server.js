@@ -2801,6 +2801,40 @@ function findUnitByNumber(tenantId, unitNumber, blockName = "") {
   );
 }
 
+async function directHikvisionIntegrationPayload(device, resource = "summary", { limit = 50 } = {}) {
+  const snapshot = await readDeviceCredentialsFromDevice(device);
+  const credentialRecords = hikvisionDeviceCredentials(snapshot.records || [], device);
+  const eventRecords = (snapshot.events || []).slice(0, limit);
+  const resourcesPayload = {
+    events: eventRecords,
+    credentials: credentialRecords,
+    schedules: integrationScheduleRecords(device),
+    faces: credentialRecords.filter((credential) => credential.type === "FACE"),
+    users: hikvisionDeviceUsers(snapshot.records || [], device)
+  };
+  const summary = Object.fromEntries(Object.entries(resourcesPayload).map(([key, records]) => [key, records.length]));
+  return {
+    ok: true,
+    generatedAt: now(),
+    source: "HIKVISION_ISAPI",
+    message: snapshot.message || "Dados lidos diretamente do equipamento Hikvision.",
+    resource,
+    summary,
+    attempts: snapshot.attempts,
+    capabilities: {
+      adapter: "HIKVISION_ISAPI",
+      directDeviceRead: true,
+      webhookEvents: false,
+      localCredentials: true,
+      localSchedules: true,
+      localFaces: true,
+      localUsers: true
+    },
+    device: publicDevice(device),
+    records: resource === "summary" ? [] : (resourcesPayload[resource] || [])
+  };
+}
+
 function nextAvailableUnitExtension(targetTenant = tenant) {
   const start = Number(targetTenant.sipExtensionStart || 9100);
   const end = Number(targetTenant.sipExtensionEnd || start + 99);
@@ -4308,9 +4342,10 @@ async function handleRequest(request, response) {
       });
     }
     try {
-      const payload = await deviceIntegrationPayload(device, resource, {
-        limit: Number(url.searchParams.get("limit") || 50)
-      });
+      const limit = Number(url.searchParams.get("limit") || 50);
+      const payload = deviceAdapter(device) === "HIKVISION_ISAPI" && ["summary", "credentials", "faces", "users", "events"].includes(resource)
+        ? await directHikvisionIntegrationPayload(device, resource, { limit })
+        : await deviceIntegrationPayload(device, resource, { limit });
       return json(response, 200, payload);
     } catch (error) {
       return json(response, 502, {

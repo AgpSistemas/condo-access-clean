@@ -3563,7 +3563,7 @@ function App() {
                   <button className="secondary-button" type="button" disabled={equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void importEquipmentCredentials(true)}>
                     <Search size={16} /> Previa credenciais do equipamento
                   </button>
-                  <button type="button" disabled={equipmentIntegration.importing || !equipmentIntegration.importReport?.total} onClick={() => void importEquipmentCredentials(false)}>
+                  <button type="button" disabled={equipmentIntegration.importing || !(equipmentIntegration.importReport?.total || equipmentIntegration.payload?.summary?.credentials)} onClick={() => void importEquipmentCredentials(false)}>
                     <Save size={16} /> Importar para o banco
                   </button>
                 </div>
