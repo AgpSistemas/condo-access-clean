@@ -44,7 +44,7 @@ jobs:
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "GitHub secret RAILWAY_TOKEN is missing."
             echo "Create it in https://github.com/AgpSistemas/condo-access-clean/settings/secrets/actions to enable automatic deploys."
-            exit 0
+            exit 1
           fi
 
           set +e
@@ -60,7 +60,7 @@ jobs:
           if [ "$status" -ne 0 ] && grep -qi "Unauthorized" railway-deploy.log; then
             echo "GitHub secret RAILWAY_TOKEN is present, but Railway rejected it."
             echo "Create a valid Railway Project Token for trustworthy-nourishment / production and update the GitHub secret RAILWAY_TOKEN."
-            exit 0
+            exit 1
           fi
 
           exit "$status"
