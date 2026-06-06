@@ -695,6 +695,29 @@ nav button:hover {
   font-size: 20px;
   font-weight: 700;
   flex: 0 0 auto;
+  overflow: hidden;
+  position: relative;
+}
+
+.avatar img,
+.avatar em {
+  grid-area: 1 / 1;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  position: relative;
+  z-index: 2;
+}
+
+.avatar em {
+  font-style: normal;
+}
+
+.avatar.has-photo {
+  background: #172024;
 }
 
 .row-actions {
@@ -1793,6 +1816,32 @@ nav button:hover {
 .unit-table small {
   color: #66787e;
   font-size: 12px;
+}
+
+.credential-person-cell {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.credential-person-cell .avatar {
+  width: 42px;
+  height: 42px;
+  font-size: 16px;
+}
+
+.credential-person-cell > span:last-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.credential-person-cell strong,
+.credential-person-cell small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .data-grid.header {

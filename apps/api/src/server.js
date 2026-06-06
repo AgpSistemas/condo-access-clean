@@ -1362,6 +1362,7 @@ function saveCredential(body = {}) {
     syncStatus: body.syncStatus || "PENDING",
     deviceId: body.deviceId || "",
     source: body.source || "MANUAL",
+    photoUrl: body.photoUrl || "",
     validFrom: body.validFrom || "",
     validUntil: body.validUntil || "",
     createdAt: body.createdAt || now(),
@@ -1421,12 +1422,13 @@ function findFirstNumberByKeys(source, keys = []) {
   return 0;
 }
 
-function hikvisionSearchBody(rootName, position = 0, maxResults = 30) {
+function hikvisionSearchBody(rootName, position = 0, maxResults = 30, extra = {}) {
   return JSON.stringify({
     [rootName]: {
-      searchID: `condo-${Date.now()}-${position}`,
+      searchID: extra.searchID || `condo-${Date.now()}`,
       searchResultPosition: position,
-      maxResults
+      maxResults,
+      ...Object.fromEntries(Object.entries(extra).filter(([key]) => key !== "searchID"))
     }
   });
 }
@@ -1435,21 +1437,25 @@ async function readPagedHikvisionCredentials(device, candidate) {
   const records = [];
   const attempts = [];
   const pageSize = candidate.pageSize || 30;
+  const searchID = `condo-${Date.now()}-${randomBytes(3).toString("hex")}`;
   let position = 0;
   let totalMatches = 0;
 
-  for (let page = 0; page < 100; page += 1) {
+  for (let page = 0; page < 1000; page += 1) {
     const result = await authenticatedDeviceRequest(device, candidate.path, {
       method: candidate.method,
-      body: hikvisionSearchBody(candidate.rootName, position, pageSize),
+      body: hikvisionSearchBody(candidate.rootName, position, pageSize, { searchID, ...(candidate.search || {}) }),
       contentType: candidate.contentType || "application/json",
       timeoutMs: 12000
     });
-    const parsedRecords = parseDeviceCredentialResponse(result.body, {
+    let parsedRecords = parseDeviceCredentialResponse(result.body, {
       source: "DEVICE_API",
       kind: candidate.kind,
       path: `${candidate.path}#${position}`
     }, candidate.type);
+    if (candidate.type === "FACE") {
+      parsedRecords = await enrichHikvisionFaceRecords(device, parsedRecords);
+    }
     const payload = tryParseJson(result.body);
     const pageMatches = findFirstNumberByKeys(payload, ["numOfMatches", "numOfMatch", "matches"]);
     totalMatches = totalMatches || findFirstNumberByKeys(payload, ["totalMatches", "totalMatch", "total"]);
@@ -1471,6 +1477,239 @@ async function readPagedHikvisionCredentials(device, candidate) {
   }
 
   return { records, attempts };
+}
+
+function firstHikvisionImageValue(record = {}) {
+  const direct = valueFromKeys(record, [
+    "photoUrl",
+    "photoURL",
+    "faceURL",
+    "faceUrl",
+    "FaceURL",
+    "picUrl",
+    "picURL",
+    "pictureURL",
+    "pictureUrl",
+    "snapPicUrl",
+    "snapPicURL",
+    "imageURL",
+    "imageUrl"
+  ]);
+  if (direct) return direct;
+
+  const base64 = valueFromKeys(record, ["faceImage", "faceData", "imageData", "picData", "snapPic", "pictureData"]);
+  if (!base64) return "";
+  return base64.startsWith("data:") ? base64 : `data:image/jpeg;base64,${base64.replace(/^data:image\/[a-z]+;base64,/i, "")}`;
+}
+
+function absoluteDeviceImageUrl(device, photoRef = "") {
+  const clean = String(photoRef || "").trim();
+  if (!clean || clean.startsWith("data:")) return clean;
+  try {
+    return new URL(clean).toString();
+  } catch {
+    const pathName = clean.startsWith("/") ? clean : `/${clean}`;
+    return `${deviceBaseUrl(device)}${pathName}`;
+  }
+}
+
+async function hikvisionFetchImageAsDataUrl(device, photoRef = "") {
+  const clean = String(photoRef || "").trim();
+  if (!clean || clean.startsWith("data:")) return clean;
+
+  const maxBytes = Number(process.env.HIKVISION_FACE_IMAGE_MAX_BYTES || 350000);
+  const targetUrl = absoluteDeviceImageUrl(device, clean);
+  const headers = await hikvisionAuthHeaders(device, targetUrl, "GET");
+  const request = withTimeout(10000);
+  try {
+    const response = await fetch(targetUrl, { method: "GET", headers, signal: request.signal });
+    if (!response.ok) throw new Error(`Imagem facial respondeu ${response.status}`);
+    const contentType = response.headers.get("content-type") || "image/jpeg";
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!buffer.length || buffer.length > maxBytes) return targetUrl;
+    return `data:${contentType.split(";")[0] || "image/jpeg"};base64,${buffer.toString("base64")}`;
+  } finally {
+    request.done();
+  }
+}
+
+async function enrichHikvisionFaceRecords(device, records = []) {
+  const enriched = [];
+  for (const record of records) {
+    const photoRef = record.photoUrl || record.photoRef || firstHikvisionImageValue(record.raw);
+    if (!photoRef) {
+      enriched.push(record);
+      continue;
+    }
+    try {
+      enriched.push({
+        ...record,
+        photoUrl: await hikvisionFetchImageAsDataUrl(device, photoRef),
+        photoRef
+      });
+    } catch {
+      enriched.push({
+        ...record,
+        photoUrl: absoluteDeviceImageUrl(device, photoRef),
+        photoRef
+      });
+    }
+  }
+  return enriched;
+}
+
+function parseHikvisionEventTime(value = "") {
+  const clean = String(value || "").trim();
+  if (!clean) return "";
+  const parsed = Date.parse(clean);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : clean;
+}
+
+function hikvisionEventDecision(event = {}) {
+  const haystack = [
+    event.eventType,
+    event.eventName,
+    event.name,
+    event.currentVerifyMode,
+    event.attendanceStatus,
+    event.status,
+    event.reason
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  if (/(deny|denied|fail|failed|invalid|black|illegal|recus|negad)/i.test(haystack)) return "DENY";
+  if (/(allow|allowed|success|valid|open|pass|permit|liber|autoriza)/i.test(haystack)) return "ALLOW";
+  return "INFO";
+}
+
+function normalizeHikvisionEvent(row = {}, device = {}) {
+  const serial = valueFromKeys(row, ["serialNo", "SerialNo", "eventID", "eventId", "id"]);
+  const userId = valueFromKeys(row, ["employeeNoString", "employeeNo", "userId", "UserID", "cardUserId", "FPID"]);
+  const userName = valueFromKeys(row, ["name", "employeeName", "userName", "UserName", "CardName", "personName"]);
+  const cardNo = valueFromKeys(row, ["cardNo", "CardNo", "cardNumber"]);
+  const createdAt = parseHikvisionEventTime(valueFromKeys(row, ["time", "dateTime", "eventTime", "eventDateTime", "datetime"]));
+  const photoUrl = firstHikvisionImageValue(row);
+  const reason = valueFromKeys(row, ["eventType", "eventName", "currentVerifyMode", "attendanceStatus", "minor", "major"]) || "Evento Hikvision";
+  const idSeed = [device.id, serial, createdAt, userId, cardNo, reason].filter(Boolean).join("-");
+  return {
+    id: `hikvision-event-${normalizeLookup(idSeed).slice(0, 48) || randomBytes(4).toString("hex")}`,
+    tenantId: device.tenantId || tenant.id,
+    unitId: "",
+    decision: hikvisionEventDecision({ ...row, reason }),
+    reason,
+    createdAt: createdAt || now(),
+    user: { id: userId, name: userName },
+    userId,
+    userName,
+    cardNo,
+    door: { id: device.id, name: device.name || "Hikvision", deviceId: device.id, manufacturer: device.manufacturer || "Hikvision" },
+    rawEvent: row,
+    photoUrl,
+    scope: "DEVICE"
+  };
+}
+
+function parseHikvisionEventsResponse(text = "", device = {}) {
+  const parsed = tryParseJson(text);
+  let rows = [];
+  if (parsed) {
+    rows = collectObjectsByKeys(parsed, [
+      "MatchList",
+      "AcsEvent",
+      "AcsEventInfo",
+      "AccessControllerEvent",
+      "EventInfo",
+      "Info",
+      "events",
+      "records"
+    ]);
+  } else if (text.includes("<")) {
+    rows = xmlBlocks(text, ["MatchInfo", "AcsEvent", "AcsEventInfo", "AccessControllerEvent", "Info"]).map((block) => ({
+      serialNo: xmlValue(block, ["serialNo", "SerialNo", "eventID", "id"]),
+      time: xmlValue(block, ["time", "dateTime", "eventTime", "eventDateTime"]),
+      employeeNoString: xmlValue(block, ["employeeNoString", "employeeNo", "userId", "UserID"]),
+      name: xmlValue(block, ["name", "employeeName", "userName", "UserName", "CardName"]),
+      cardNo: xmlValue(block, ["cardNo", "cardNumber", "CardNo"]),
+      eventType: xmlValue(block, ["eventType", "eventName", "minor", "major"])
+    })).filter((row) => Object.values(row).some(Boolean));
+  } else {
+    rows = queryTableRows(text);
+  }
+
+  const seen = new Set();
+  return rows
+    .map((row) => normalizeHikvisionEvent(row, device))
+    .filter((event) => {
+      const key = normalizeLookup(`${event.door?.deviceId}-${event.createdAt}-${event.userId}-${event.cardNo}-${event.reason}`);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+async function readPagedHikvisionEvents(device, { limit = 200 } = {}) {
+  const records = [];
+  const attempts = [];
+  const pageSize = 30;
+  const searchID = `condo-events-${Date.now()}-${randomBytes(3).toString("hex")}`;
+  const endTime = new Date();
+  const startTime = new Date(endTime.getTime() - 30 * 24 * 60 * 60 * 1000);
+  let position = 0;
+  let totalMatches = 0;
+
+  for (let page = 0; page < 1000 && records.length < limit; page += 1) {
+    const result = await authenticatedDeviceRequest(device, "/ISAPI/AccessControl/AcsEvent?format=json", {
+      method: "POST",
+      body: hikvisionSearchBody("AcsEventCond", position, pageSize, {
+        searchID,
+        major: 0,
+        minor: 0,
+        picEnable: true,
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString()
+      }),
+      contentType: "application/json",
+      timeoutMs: 12000
+    });
+    const parsedRecords = parseHikvisionEventsResponse(result.body, device);
+    const payload = tryParseJson(result.body);
+    const pageMatches = findFirstNumberByKeys(payload, ["numOfMatches", "numOfMatch", "matches"]);
+    totalMatches = totalMatches || findFirstNumberByKeys(payload, ["totalMatches", "totalMatch", "total"]);
+    records.push(...parsedRecords);
+    attempts.push({
+      label: `Hikvision eventos pagina ${page + 1}`,
+      path: `/ISAPI/AccessControl/AcsEvent?format=json @ ${position}`,
+      ok: true,
+      status: result.status,
+      records: parsedRecords.length,
+      totalMatches: totalMatches || undefined
+    });
+
+    const step = Math.max(pageMatches || parsedRecords.length, 0);
+    if (!step) break;
+    position += step;
+    if (totalMatches && position >= totalMatches) break;
+    if (!totalMatches && step < pageSize) break;
+  }
+
+  return { records: records.slice(0, limit), attempts };
+}
+
+function persistDeviceEvents(device, events = []) {
+  let created = 0;
+  let updated = 0;
+  events.forEach((event) => {
+    const key = normalizeLookup(`${event.door?.deviceId || device.id}-${event.createdAt}-${event.userId}-${event.cardNo}-${event.reason}`);
+    const existing = accessLogs.find((log) =>
+      normalizeLookup(`${log.door?.deviceId || ""}-${log.createdAt}-${log.user?.id || log.userId || ""}-${log.cardNo || ""}-${log.reason || ""}`) === key
+    );
+    if (existing) {
+      Object.assign(existing, { ...existing, ...event, id: existing.id, updatedAt: now() });
+      updated += 1;
+    } else {
+      accessLogs.unshift(event);
+      created += 1;
+    }
+  });
+  return { created, updated };
 }
 
 function xmlBlocks(text = "", tagNames = []) {
@@ -1527,7 +1766,8 @@ function normalizeDeviceCredential(record = {}, source = {}, fallbackType = "APP
     fallbackType
   );
   const personName = valueFromKeys(record, ["name", "employeeName", "userName", "UserName", "CardName", "personName", "NickName"]);
-  const personExternalId = valueFromKeys(record, ["employeeNoString", "employeeNo", "userId", "UserID", "cardUserId", "UserIDList.0", "id"]);
+  const personExternalId = valueFromKeys(record, ["employeeNoString", "employeeNo", "userId", "UserID", "cardUserId", "UserIDList.0", "FPID", "id"]);
+  const photoUrl = firstHikvisionImageValue(record);
   const value = valueFromKeys(record, [
     "value",
     "cardNo",
@@ -1544,6 +1784,7 @@ function normalizeDeviceCredential(record = {}, source = {}, fallbackType = "APP
     "employeeNo",
     "userId",
     "UserID",
+    "FPID",
     "id"
   ]) || `${type}-${personExternalId || personName || randomBytes(3).toString("hex")}`;
   if (!String(value).trim()) return null;
@@ -1554,6 +1795,7 @@ function normalizeDeviceCredential(record = {}, source = {}, fallbackType = "APP
     valueLabel: type === "FACE" && personName ? `Face - ${personName}` : String(value).trim(),
     personName,
     personExternalId,
+    photoUrl,
     source: source.source || "DEVICE",
     sourceKind: source.kind || fallbackType,
     devicePath: source.path || "",
@@ -1569,6 +1811,9 @@ function parseDeviceCredentialResponse(text = "", source = {}, fallbackType = "A
       "CardInfo",
       "UserInfo",
       "FaceInfo",
+      "FaceDataRecord",
+      "FDSearchResult",
+      "FDMatch",
       "MatchInfo",
       "Info",
       "users",
@@ -1641,6 +1886,7 @@ async function readDeviceCredentialsFromDevice(device) {
   const adapter = deviceAdapter(device);
   const attempts = [];
   const records = [];
+  const events = [];
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
     const snapshot = await readControlIdSnapshot(device);
     const uniqueRecords = controlIdCredentialRecords(snapshot);
@@ -1650,6 +1896,7 @@ async function readDeviceCredentialsFromDevice(device) {
       adapter,
       source: "CONTROL_ID_API",
       records: uniqueRecords,
+      events: controlIdDeviceEvents(snapshot, device, 200),
       attempts: snapshot.attempts,
       message: uniqueRecords.length
         ? `${uniqueRecords.length} credencial(is) lida(s) do Control iD`
@@ -1661,7 +1908,8 @@ async function readDeviceCredentialsFromDevice(device) {
     ? [
       { label: "Hikvision cartoes", kind: "CARD", type: "RFID", method: "POST", path: "/ISAPI/AccessControl/CardInfo/Search?format=json", rootName: "CardInfoSearchCond", contentType: "application/json" },
       { label: "Hikvision usuarios", kind: "USER", type: "APP", method: "POST", path: "/ISAPI/AccessControl/UserInfo/Search?format=json", rootName: "UserInfoSearchCond", contentType: "application/json" },
-      { label: "Hikvision faces", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/AccessControl/FaceInfo/Search?format=json", rootName: "FaceInfoSearchCond", contentType: "application/json" }
+      { label: "Hikvision faces", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/AccessControl/FaceInfo/Search?format=json", rootName: "FaceInfoSearchCond", contentType: "application/json" },
+      { label: "Hikvision biblioteca facial", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/Intelligent/FDLib/FDSearch?format=json", rootName: "FDSearchDescription", contentType: "application/json", search: { faceLibType: "blackFD" } }
     ]
     : adapter === INTELBRAS_SS_3532_MF_W_ADAPTER
       ? [
@@ -1676,6 +1924,7 @@ async function readDeviceCredentialsFromDevice(device) {
       ok: false,
       adapter,
       records,
+      events,
       attempts,
       message: `Adapter ${adapter} ainda nao possui leitura direta de credenciais homologada`
     };
@@ -1718,6 +1967,21 @@ async function readDeviceCredentialsFromDevice(device) {
     }
   }
 
+  if (adapter === "HIKVISION_ISAPI") {
+    try {
+      const eventResult = await readPagedHikvisionEvents(device, { limit: 200 });
+      events.push(...eventResult.records);
+      attempts.push(...eventResult.attempts);
+    } catch (error) {
+      attempts.push({
+        label: "Hikvision eventos",
+        path: "/ISAPI/AccessControl/AcsEvent?format=json",
+        ok: false,
+        error: error instanceof Error ? error.message : "Falha ao ler eventos Hikvision"
+      });
+    }
+  }
+
   const seen = new Set();
   const uniqueRecords = records.filter((record) => {
     const key = credentialKey(device.tenantId, record.type, record.value);
@@ -1731,6 +1995,7 @@ async function readDeviceCredentialsFromDevice(device) {
     adapter,
     source: "DEVICE_API",
     records: uniqueRecords,
+    events,
     attempts,
     message: uniqueRecords.length
       ? `${uniqueRecords.length} credencial(is) lida(s) do equipamento`
@@ -1786,6 +2051,10 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
     unitsCreated: 0,
     credentialsCreated: 0,
     credentialsUpdated: 0,
+    eventsRead: readResult.events?.length || 0,
+    eventsCreated: 0,
+    eventsUpdated: 0,
+    syncJob: null,
     invalid: 0,
     attempts: readResult.attempts,
     message: readResult.message,
@@ -1833,6 +2102,7 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
           personId: existingCredential.personId || person?.id || "",
           personName: existingCredential.personName || person?.name || record.personName || "",
           unitId: existingCredential.unitId || unit?.unitId || "",
+          photoUrl: existingCredential.photoUrl || record.photoUrl || "",
           source: "DEVICE_IMPORT",
           syncStatus: "SYNCED",
           lastSyncedAt: now(),
@@ -1848,6 +2118,7 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
           type: record.type,
           value: record.value,
           valueLabel: record.valueLabel,
+          photoUrl: record.photoUrl || "",
           deviceId: device.id,
           source: "DEVICE_IMPORT",
           syncStatus: "SYNCED"
@@ -1879,6 +2150,7 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
         valueLabel: record.valueLabel,
         personName: record.personName,
         personExternalId: record.personExternalId,
+        photoUrl: record.photoUrl || "",
         devicePath: record.devicePath,
         unitNumber: selectedUnitPayload?.unitNumber || unit?.unitNumber || "",
         blockName: selectedUnitPayload?.blockName || unit?.blockName || "",
@@ -1904,6 +2176,33 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
       attempts: report.attempts,
       items: report.items
     }, null, 2));
+  }
+
+  if (!dryRun && readResult.events?.length) {
+    const eventReport = persistDeviceEvents(device, readResult.events);
+    report.eventsCreated = eventReport.created;
+    report.eventsUpdated = eventReport.updated;
+  }
+
+  if (!dryRun) {
+    const syncJob = {
+      id: makeId("sync"),
+      tenantId: device.tenantId || tenant.id,
+      manufacturer: device.manufacturer || "Hikvision",
+      target: device.name || "Equipamento importado",
+      direction: "SEND",
+      credentialType: "",
+      personId: "",
+      credentialId: "",
+      deviceId: device.id,
+      status: "PENDING",
+      total: 0,
+      synced: 0,
+      errors: 0,
+      lastRunAt: now()
+    };
+    credentialSyncJobs.unshift(syncJob);
+    report.syncJob = processCredentialSyncJob(syncJob);
   }
 
   if (!dryRun) savePersistentState("device-credentials-imported");
@@ -1942,7 +2241,8 @@ function integrationCredentialRecord(credential) {
     deviceId: credential.deviceId || "",
     validFrom: credential.validFrom || "",
     validUntil: credential.validUntil || "",
-    source: credential.source || "LOCAL"
+    source: credential.source || "LOCAL",
+    photoUrl: credential.photoUrl || person?.photoUrl || ""
   };
 }
 
@@ -2180,6 +2480,78 @@ function controlIdDeviceEvents(snapshot = {}, device = {}, limit = 50) {
   });
 }
 
+function hikvisionDeviceCredentials(records = [], device = {}) {
+  return records.map((credential) => {
+    const person = matchResidentForDeviceCredential(credential, device);
+    const unit = unitForId(person?.unitId);
+    return {
+      id: credential.id,
+      personId: person?.id || "",
+      personName: person?.name || credential.personName || "Sem vinculo local",
+      unitId: unit?.unitId || "",
+      unitNumber: unit?.unitNumber || "",
+      type: credential.type,
+      valueLabel: credential.valueLabel || credential.value,
+      syncStatus: "DEVICE",
+      deviceId: device.id,
+      validFrom: "",
+      validUntil: "",
+      source: "HIKVISION_ISAPI",
+      photoUrl: credential.photoUrl || person?.photoUrl || "",
+      raw: credential.raw
+    };
+  });
+}
+
+function hikvisionDeviceUsers(records = [], device = {}) {
+  const byExternalId = new Map();
+  records.forEach((record) => {
+    const externalId = record.personExternalId || record.value;
+    const key = normalizeLookup(externalId || record.personName || record.id);
+    if (!key) return;
+    const current = byExternalId.get(key) || {
+      id: `hikvision-user-${key.slice(0, 32)}`,
+      name: record.personName || `Usuario ${externalId || ""}`.trim(),
+      kind: "USER",
+      role: "Usuario",
+      externalId,
+      photoUrl: record.photoUrl || "",
+      credentials: []
+    };
+    if (record.photoUrl && !current.photoUrl) current.photoUrl = record.photoUrl;
+    current.credentials.push({
+      id: record.id,
+      type: record.type,
+      valueLabel: record.valueLabel || record.value,
+      syncStatus: "DEVICE"
+    });
+    byExternalId.set(key, current);
+  });
+
+  return Array.from(byExternalId.values()).map((user) => {
+    const person = matchResidentForDeviceCredential({
+      personName: user.name,
+      personExternalId: user.externalId
+    }, device);
+    const unit = unitForId(person?.unitId);
+    return {
+      ...user,
+      name: person?.name || user.name,
+      unitId: unit?.unitId || "",
+      unitNumber: unit?.unitNumber || "",
+      blockName: unit?.blockName || "",
+      cpf: person?.cpf || "",
+      rg: person?.rg || "",
+      phone: person?.phone || "",
+      email: person?.email || "",
+      vehiclePlate: person?.vehiclePlate || "",
+      allowedDays: person?.allowedDays || "",
+      allowedHours: person?.allowedHours || "",
+      source: "HIKVISION_ISAPI"
+    };
+  });
+}
+
 async function deviceIntegrationPayload(device, resource = "summary", { limit = 50 } = {}) {
   const adapter = deviceAdapter(device);
   let directPayload = null;
@@ -2196,6 +2568,20 @@ async function deviceIntegrationPayload(device, resource = "summary", { limit = 
       faces: credentialRecords.filter((credential) => credential.type === "FACE"),
       users: controlIdDeviceUsers(snapshot, device),
       events: controlIdDeviceEvents(snapshot, device, limit)
+    };
+  }
+
+  if (adapter === "HIKVISION_ISAPI") {
+    const snapshot = await readDeviceCredentialsFromDevice(device);
+    directAttempts = snapshot.attempts;
+    const credentialRecords = hikvisionDeviceCredentials(snapshot.records || [], device);
+    directPayload = {
+      source: "HIKVISION_ISAPI",
+      credentials: credentialRecords,
+      schedules: integrationScheduleRecords(device),
+      faces: credentialRecords.filter((credential) => credential.type === "FACE"),
+      users: hikvisionDeviceUsers(snapshot.records || [], device),
+      events: (snapshot.events || []).slice(0, limit)
     };
   }
 
@@ -2468,6 +2854,7 @@ function upsertDeviceImportPerson(record = {}, device = {}, dryRun = true, unitI
     vehiclePlate: existing?.vehiclePlate || "",
     accessReason: existing?.accessReason || "",
     credentialType: existing?.credentialType || record.type || "FACE",
+    photoUrl: record.photoUrl || existing?.photoUrl || "",
     allowedDays: existing?.allowedDays || "",
     allowedHours: existing?.allowedHours || "",
     source: existing?.source || "DEVICE_IMPORT",

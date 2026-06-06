@@ -164,6 +164,16 @@ function sameText(left, right) {
   return String(left || "").trim().toLowerCase() === String(right || "").trim().toLowerCase();
 }
 
+function PersonAvatar({ name = "", photoUrl = "" }) {
+  const initial = String(name || "?").trim().slice(0, 1).toUpperCase() || "?";
+  return (
+    <span className={`avatar ${photoUrl ? "has-photo" : ""}`}>
+      {photoUrl ? <img src={photoUrl} alt="" onError={(event) => { event.currentTarget.style.display = "none"; event.currentTarget.parentElement?.classList.remove("has-photo"); }} /> : null}
+      <em>{initial}</em>
+    </span>
+  );
+}
+
 function callTime(call = {}) {
   return new Date(call.createdAt || call.answeredAt || 0).getTime() || 0;
 }
@@ -2669,7 +2679,7 @@ function App() {
     }
     setMessage(dryRun
       ? `${report.total || 0} credencial(is) encontrada(s) no equipamento para conferencia.`
-      : `Importacao concluida: ${report.credentialsCreated || 0} nova(s), ${report.credentialsUpdated || 0} atualizada(s).`);
+      : `Importacao concluida: ${report.credentialsCreated || 0} nova(s), ${report.credentialsUpdated || 0} atualizada(s), ${report.eventsCreated || 0} evento(s) salvo(s).`);
   }
 
   async function refreshExtensionStatus() {
@@ -3070,7 +3080,7 @@ function App() {
           <div className="people-header"><span>Nome</span><span>Documentos</span><span>Celular</span><span>Relacao</span><span>Acoes</span></div>
           {people.map((person) => (
             <div className="person-row" key={person.id}>
-              <button className="person-name-cell row-link" onClick={() => setSelectedPersonId(person.id)}><span className="avatar">{person.name?.[0]}</span><div><strong>{person.name}</strong><small>{person.email || person.company || person.authorizedBy || "Sem login"}</small><small>{isResident ? `Permissao: ${person.role || "RESIDENT"} - Face ${data.credentials.some((credential) => credential.personId === person.id && credential.type === "FACE") ? "importada" : "pendente"}` : person.credentialType}</small></div></button>
+              <button className="person-name-cell row-link" onClick={() => setSelectedPersonId(person.id)}><PersonAvatar name={person.name} photoUrl={person.photoUrl} /><div><strong>{person.name}</strong><small>{person.email || person.company || person.authorizedBy || "Sem login"}</small><small>{isResident ? `Permissao: ${person.role || "RESIDENT"} - Face ${data.credentials.some((credential) => credential.personId === person.id && credential.type === "FACE") ? "importada" : "pendente"}` : person.credentialType}</small></div></button>
               <span>CPF: {person.cpf || "-"}<br />RG: {person.rg || "-"}</span>
               <span>{person.phone || "-"}</span>
               <span>{kind === "PROVIDER" ? person.serviceType || "-" : person.relation || person.accessReason || "-"}</span>
@@ -3413,7 +3423,7 @@ function App() {
           <article className="panel people-panel">
             <div className="panel-heading"><h2>Sindico atual</h2><ShieldCheck size={20} /></div>
             <div className="person-row">
-              <div className="person-name-cell"><span className="avatar">{syndic?.name?.[0] || "S"}</span><div><strong>{syndic?.name || "Nao definido"}</strong><small>{syndic?.email || "-"}</small><small>{selectedTenant?.name}</small></div></div>
+              <div className="person-name-cell"><PersonAvatar name={syndic?.name || "S"} photoUrl={syndic?.photoUrl} /><div><strong>{syndic?.name || "Nao definido"}</strong><small>{syndic?.email || "-"}</small><small>{selectedTenant?.name}</small></div></div>
               <span>CPF: {syndic?.cpf || "-"}<br />RG: {syndic?.rg || "-"}</span>
               <span>{syndic?.phone || "-"}</span>
               <span>Sindico</span>
@@ -3606,6 +3616,9 @@ function App() {
                     <span><strong>{equipmentIntegration.importReport.unitsCreated || 0}</strong>unidades novas</span>
                     <span><strong>{equipmentIntegration.importReport.credentialsCreated || 0}</strong>novas</span>
                     <span><strong>{equipmentIntegration.importReport.credentialsUpdated || 0}</strong>atualizadas</span>
+                    <span><strong>{equipmentIntegration.importReport.eventsRead || 0}</strong>eventos lidos</span>
+                    <span><strong>{equipmentIntegration.importReport.eventsCreated || 0}</strong>eventos salvos</span>
+                    <span><strong>{equipmentIntegration.importReport.syncJob?.synced || 0}</strong>ressincronizadas</span>
                   </div>
                   {(equipmentIntegration.importReport.items || []).some((item) => item.payload?.type === "FACE") && (
                     <div className="face-import-review">
@@ -3616,7 +3629,7 @@ function App() {
                         return (
                           <div className="unit-table row face-review-table" key={key}>
                             <label className="check-cell"><input type="checkbox" checked={selection.selected !== false} onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: event.target.checked } }))} /></label>
-                            <span><strong>{item.payload?.valueLabel || item.payload?.value || "-"}</strong><small>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</small></span>
+                            <span className="credential-person-cell"><PersonAvatar name={item.payload?.personName || item.payload?.valueLabel || item.payload?.value || "Face"} photoUrl={item.payload?.photoUrl || ""} /><span><strong>{item.payload?.valueLabel || item.payload?.value || "-"}</strong><small>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</small></span></span>
                             <span>{item.payload?.personName || item.personId || "Sem nome"}</span>
                             <input value={selection.unitNumber ?? item.payload?.unitNumber ?? ""} placeholder="Ex.: 102" onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: selection.selected !== false, unitNumber: event.target.value } }))} />
                             <input value={selection.blockName ?? item.payload?.blockName ?? ""} placeholder="Bloco unico" onChange={(event) => setEquipmentFaceSelections((current) => ({ ...current, [key]: { ...selection, key, row: item.row, recordId: item.payload?.recordId || "", type: "FACE", value: item.payload?.value || "", selected: selection.selected !== false, blockName: event.target.value } }))} />
@@ -4114,13 +4127,15 @@ function App() {
           </article>
           <article className="panel">
             <div className="panel-heading"><h2>Credenciais</h2><BadgeCheck size={20} /></div>
-            <div className="unit-table header"><span>Pessoa / Unidade</span><span>Tipo</span><span>Identificacao</span><span>Sincronismo</span></div>
+            <div className="unit-table header"><span>Foto / Pessoa</span><span>Tipo</span><span>Identificacao</span><span>Sincronismo</span></div>
             {tenantCredentials.map((credential) => {
               const person = data.residents.find((item) => item.id === credential.personId);
               const unit = data.units.find((item) => item.unitId === credential.unitId);
+              const credentialName = person?.name || credential.personName || credential.personId || "Sem pessoa";
+              const credentialPhoto = person?.photoUrl || credential.photoUrl || "";
               return (
                 <div className="unit-table row" key={credential.id}>
-                  <span><strong>{person?.name || credential.personId}</strong><small>Unidade {unit?.unitNumber || "-"}</small></span>
+                  <span className="credential-person-cell"><PersonAvatar name={credentialName} photoUrl={credentialPhoto} /><span><strong>{credentialName}</strong><small>Unidade {unit?.unitNumber || "-"}</small></span></span>
                   <span>{credential.type}</span>
                   <span>{credential.valueLabel}</span>
                   <span className={`status ${credential.syncStatus === "PENDING" || credential.syncStatus === "ERROR" ? "offline" : ""}`}>{credential.syncStatus}</span>
