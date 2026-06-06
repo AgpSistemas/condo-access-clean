@@ -3652,7 +3652,7 @@ function App() {
                       {equipmentIntegration.importReport.attempts.map((attempt) => (
                         <div className="simple-row" key={attempt.path}>
                           <ServerCog size={18} />
-                          <div><strong>{attempt.label}</strong><span>{attempt.path}</span></div>
+                          <div><strong>{attempt.label}</strong><span>{attempt.path}{attempt.bodyFormat ? ` - ${attempt.bodyFormat}` : ""}</span>{attempt.error && <small>{attempt.error}</small>}{attempt.bodyPreview && <small>{attempt.bodyPreview}</small>}</div>
                           <span className={`status ${attempt.ok ? "" : "offline"}`}>{attempt.ok ? `${attempt.records || 0} registro(s)` : "Falhou"}</span>
                         </div>
                       ))}

@@ -1451,7 +1451,11 @@ function looksLikeDeviceCredentialRow(record = {}) {
     "personName",
     "faceURL",
     "faceUrl",
-    "photoUrl"
+    "photoUrl",
+    "URL",
+    "url",
+    "uri",
+    "href"
   ]));
 }
 
@@ -1483,6 +1487,41 @@ function hikvisionSearchBody(rootName, position = 0, maxResults = 30, extra = {}
   });
 }
 
+function hikvisionSearchXmlBody(rootName, position = 0, maxResults = 30, extra = {}) {
+  const nodes = {
+    searchID: extra.searchID || `condo-${Date.now()}`,
+    searchResultPosition: position,
+    maxResults,
+    ...Object.fromEntries(Object.entries(extra).filter(([key]) => key !== "searchID"))
+  };
+  const xml = Object.entries(nodes)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `<${key}>${String(value).replace(/[<>&'"]/g, (char) => ({
+      "<": "&lt;",
+      ">": "&gt;",
+      "&": "&amp;",
+      "'": "&apos;",
+      "\"": "&quot;"
+    })[char])}</${key}>`)
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8"?><${rootName}>${xml}</${rootName}>`;
+}
+
+function hikvisionSearchRequestBody(candidate, position, pageSize, searchID) {
+  const extra = { searchID, ...(candidate.search || {}) };
+  return candidate.bodyFormat === "xml"
+    ? hikvisionSearchXmlBody(candidate.rootName, position, pageSize, extra)
+    : hikvisionSearchBody(candidate.rootName, position, pageSize, extra);
+}
+
+function responseSample(text = "") {
+  return String(text || "")
+    .replace(/token=[^"'&<>\s]+/gi, "token=***")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 360);
+}
+
 async function readPagedHikvisionCredentials(device, candidate) {
   const records = [];
   const attempts = [];
@@ -1494,7 +1533,7 @@ async function readPagedHikvisionCredentials(device, candidate) {
   for (let page = 0; page < 1000; page += 1) {
     const result = await authenticatedDeviceRequest(device, candidate.path, {
       method: candidate.method,
-      body: hikvisionSearchBody(candidate.rootName, position, pageSize, { searchID, ...(candidate.search || {}) }),
+      body: hikvisionSearchRequestBody(candidate, position, pageSize, searchID),
       contentType: candidate.contentType || "application/json",
       timeoutMs: 12000
     });
@@ -1516,7 +1555,9 @@ async function readPagedHikvisionCredentials(device, candidate) {
       ok: true,
       status: result.status,
       records: parsedRecords.length,
-      totalMatches: totalMatches || undefined
+      totalMatches: totalMatches || undefined,
+      bodyFormat: candidate.bodyFormat || "json",
+      bodyPreview: parsedRecords.length ? undefined : responseSample(result.body)
     });
 
     const step = Math.max(pageMatches || parsedRecords.length, 0);
@@ -1536,16 +1577,31 @@ function firstHikvisionImageValue(record = {}) {
     "faceURL",
     "faceUrl",
     "FaceURL",
+    "facePicURL",
+    "facePicUrl",
+    "facePictureURL",
+    "facePictureUrl",
+    "enrlFaceURL",
+    "enrlFaceUrl",
+    "enrollFaceURL",
+    "enrollFaceUrl",
     "picUrl",
     "picURL",
+    "PicUrl",
+    "PicURL",
     "pictureURL",
     "pictureUrl",
     "snapPicUrl",
     "snapPicURL",
     "imageURL",
-    "imageUrl"
+    "imageUrl",
+    "URL",
+    "url",
+    "uri",
+    "href"
   ]);
-  if (direct) return direct;
+  if (direct && /\.(?:jpe?g|png|webp)(?:@[^?]+)?(?:\?.*)?$/i.test(direct)) return direct;
+  if (direct && /\/LOCALS\/pic\/(?:enrlFace|face|snap|FDLib)\//i.test(direct)) return direct;
 
   const base64 = valueFromKeys(record, ["faceImage", "faceData", "imageData", "picData", "snapPic", "pictureData"]);
   if (!base64) return "";
@@ -1566,6 +1622,7 @@ function absoluteDeviceImageUrl(device, photoRef = "") {
 async function hikvisionFetchImageAsDataUrl(device, photoRef = "") {
   const clean = String(photoRef || "").trim();
   if (!clean || clean.startsWith("data:")) return clean;
+  if (/[\?&]token=/i.test(clean)) return absoluteDeviceImageUrl(device, clean);
 
   const maxBytes = Number(process.env.HIKVISION_FACE_IMAGE_MAX_BYTES || 350000);
   const targetUrl = absoluteDeviceImageUrl(device, clean);
@@ -1864,6 +1921,7 @@ function parseDeviceCredentialResponse(text = "", source = {}, fallbackType = "A
       "FaceDataRecord",
       "FDSearchResult",
       "FDMatch",
+      "MatchList",
       "MatchInfo",
       "Info",
       "users",
@@ -1873,11 +1931,12 @@ function parseDeviceCredentialResponse(text = "", source = {}, fallbackType = "A
     ]).filter(looksLikeDeviceCredentialRow);
     if (!rows.length && looksLikeDeviceCredentialRow(parsed)) rows = [parsed];
   } else if (text.includes("<")) {
-    rows = xmlBlocks(text, ["CardInfo", "UserInfo", "FaceInfo", "MatchInfo", "Info"]).map((block) => ({
+    rows = xmlBlocks(text, ["CardInfo", "UserInfo", "FaceInfo", "FaceDataRecord", "FDSearchResult", "FDMatch", "MatchList", "MatchInfo", "Info"]).map((block) => ({
       cardNo: xmlValue(block, ["cardNo", "cardNumber", "CardNo"]),
-      employeeNoString: xmlValue(block, ["employeeNoString", "employeeNo", "userId", "UserID", "id"]),
+      employeeNoString: xmlValue(block, ["employeeNoString", "employeeNo", "userId", "UserID", "FPID", "id"]),
       name: xmlValue(block, ["name", "employeeName", "userName", "UserName", "CardName"]),
       password: xmlValue(block, ["password", "Password", "pin"]),
+      faceURL: xmlValue(block, ["faceURL", "faceUrl", "FaceURL", "picUrl", "picURL", "URL", "url"]),
       type: source.kind
     })).filter((row) => Object.values(row).some(Boolean));
   } else {
@@ -1957,9 +2016,13 @@ async function readDeviceCredentialsFromDevice(device) {
   const candidates = adapter === "HIKVISION_ISAPI"
     ? [
       { label: "Hikvision cartoes", kind: "CARD", type: "RFID", method: "POST", path: "/ISAPI/AccessControl/CardInfo/Search?format=json", rootName: "CardInfoSearchCond", contentType: "application/json" },
+      { label: "Hikvision cartoes XML", kind: "CARD", type: "RFID", method: "POST", path: "/ISAPI/AccessControl/CardInfo/Search", rootName: "CardInfoSearchCond", contentType: "application/xml", bodyFormat: "xml" },
       { label: "Hikvision usuarios", kind: "USER", type: "APP", method: "POST", path: "/ISAPI/AccessControl/UserInfo/Search?format=json", rootName: "UserInfoSearchCond", contentType: "application/json" },
+      { label: "Hikvision usuarios XML", kind: "USER", type: "APP", method: "POST", path: "/ISAPI/AccessControl/UserInfo/Search", rootName: "UserInfoSearchCond", contentType: "application/xml", bodyFormat: "xml" },
       { label: "Hikvision faces", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/AccessControl/FaceInfo/Search?format=json", rootName: "FaceInfoSearchCond", contentType: "application/json" },
-      { label: "Hikvision biblioteca facial", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/Intelligent/FDLib/FDSearch?format=json", rootName: "FDSearchDescription", contentType: "application/json", search: { faceLibType: "blackFD" } }
+      { label: "Hikvision faces XML", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/AccessControl/FaceInfo/Search", rootName: "FaceInfoSearchCond", contentType: "application/xml", bodyFormat: "xml" },
+      { label: "Hikvision biblioteca facial", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/Intelligent/FDLib/FDSearch?format=json", rootName: "FDSearchDescription", contentType: "application/json", search: { faceLibType: "blackFD" } },
+      { label: "Hikvision biblioteca facial XML", kind: "FACE", type: "FACE", method: "POST", path: "/ISAPI/Intelligent/FDLib/FDSearch", rootName: "FDSearchDescription", contentType: "application/xml", bodyFormat: "xml", search: { faceLibType: "blackFD" } }
     ]
     : adapter === INTELBRAS_SS_3532_MF_W_ADAPTER
       ? [
