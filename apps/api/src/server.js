@@ -1905,9 +1905,11 @@ function deviceCredentialType(rawType = "", fallback = "APP") {
 }
 
 function normalizeDeviceCredential(record = {}, source = {}, fallbackType = "APP") {
+  const hasFaceImage = Boolean(firstHikvisionImageValue(record) || Number(record.numOfFace || record.faceNum || 0) > 0);
+  const inferredFallbackType = hasFaceImage && normalizeCredentialType(fallbackType) === "APP" ? "FACE" : fallbackType;
   const type = deviceCredentialType(
     record.type || record.credentialType || record.cardType || record.Method || record.method,
-    fallbackType
+    inferredFallbackType
   );
   const personName = valueFromKeys(record, ["name", "employeeName", "userName", "UserName", "CardName", "personName", "NickName"]);
   const personExternalId = valueFromKeys(record, ["employeeNoString", "employeeNo", "userId", "UserID", "cardUserId", "UserIDList.0", "FPID", "id"]);
