@@ -1362,6 +1362,8 @@ function saveCredential(body = {}) {
     syncStatus: body.syncStatus || "PENDING",
     deviceId: body.deviceId || "",
     source: body.source || "MANUAL",
+    personExternalId: body.personExternalId || body.externalId || "",
+    devicePath: body.devicePath || "",
     photoUrl: body.photoUrl || "",
     validFrom: body.validFrom || "",
     validUntil: body.validUntil || "",
@@ -2225,6 +2227,8 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
           personId: existingCredential.personId || person?.id || "",
           personName: existingCredential.personName || person?.name || record.personName || "",
           unitId: existingCredential.unitId || unit?.unitId || "",
+          personExternalId: existingCredential.personExternalId || record.personExternalId || "",
+          devicePath: existingCredential.devicePath || record.devicePath || "",
           photoUrl: existingCredential.photoUrl || record.photoUrl || "",
           source: "DEVICE_IMPORT",
           syncStatus: "SYNCED",
@@ -2241,6 +2245,8 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
           type: record.type,
           value: record.value,
           valueLabel: record.valueLabel,
+          personExternalId: record.personExternalId || "",
+          devicePath: record.devicePath || "",
           photoUrl: record.photoUrl || "",
           deviceId: device.id,
           source: "DEVICE_IMPORT",
@@ -2325,7 +2331,7 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
       lastRunAt: now()
     };
     credentialSyncJobs.unshift(syncJob);
-    report.syncJob = processCredentialSyncJob(syncJob);
+    report.syncJob = await processCredentialSyncJob(syncJob);
   }
 
   if (!dryRun) savePersistentState("device-credentials-imported");
@@ -3039,7 +3045,332 @@ function upsertDeviceImportPerson(record = {}, device = {}, dryRun = true, unitI
   return updated || person;
 }
 
-function processCredentialSyncJob(job) {
+function personForStoredCredential(credential = {}) {
+  if (credential.personId) {
+    const person = residents.find((item) => item.id === credential.personId);
+    if (person) return person;
+  }
+  return residents.find((person) =>
+    person.tenantId === credential.tenantId &&
+    (
+      (credential.unitId && person.unitId === credential.unitId && credential.personName && normalizeLookup(person.name) === normalizeLookup(credential.personName)) ||
+      (credential.personName && normalizeLookup(person.name) === normalizeLookup(credential.personName))
+    )
+  ) || null;
+}
+
+function hikvisionEmployeeNoForCredential(credential = {}, person = null) {
+  const explicit = String(
+    credential.personExternalId ||
+    credential.externalId ||
+    person?.externalId ||
+    person?.hikvisionEmployeeNo ||
+    ""
+  ).trim();
+  if (explicit) return explicit.slice(0, 32);
+  if (credential.type === "APP" && credential.value) return String(credential.value).trim().slice(0, 32);
+  const fallback = normalizeLookup(person?.cpf || person?.rg || person?.id || credential.personId || credential.personName || credential.id || credential.value);
+  return (fallback || normalizeLookup(credential.id || randomBytes(4).toString("hex"))).slice(0, 32);
+}
+
+function hikvisionUserNameForCredential(credential = {}, person = null) {
+  return String(person?.name || credential.personName || credential.valueLabel || credential.value || "Usuario").trim().slice(0, 96);
+}
+
+function hikvisionUserPayload(credential = {}, person = null, employeeNo = "") {
+  const payload = {
+    employeeNo,
+    employeeNoString: employeeNo,
+    name: hikvisionUserNameForCredential(credential, person),
+    userType: "normal",
+    Valid: {
+      enable: true,
+      beginTime: credential.validFrom || "2020-01-01T00:00:00",
+      endTime: credential.validUntil || "2037-12-31T23:59:59",
+      timeType: "local"
+    },
+    doorRight: "1",
+    RightPlan: [{ doorNo: 1, planTemplateNo: "1" }]
+  };
+  if (credential.type === "PIN" && credential.value) payload.password = String(credential.value);
+  return payload;
+}
+
+async function hikvisionTryJsonWrites(device, attempts = []) {
+  const errors = [];
+  for (const attempt of attempts) {
+    try {
+      const result = await authenticatedDeviceRequest(device, attempt.path, {
+        method: attempt.method || "POST",
+        body: JSON.stringify(attempt.body),
+        contentType: "application/json",
+        timeoutMs: attempt.timeoutMs || 12000
+      });
+      return {
+        ok: true,
+        status: result.status,
+        path: attempt.path,
+        label: attempt.label,
+        message: `${attempt.label} respondeu ${result.status}`,
+        attempts: [{ label: attempt.label, path: attempt.path, ok: true, status: result.status }]
+      };
+    } catch (error) {
+      errors.push({
+        label: attempt.label,
+        path: attempt.path,
+        ok: false,
+        error: error instanceof Error ? error.message : "Falha ao enviar para Hikvision"
+      });
+    }
+  }
+  return {
+    ok: false,
+    message: errors.at(-1)?.error || "Nenhum endpoint Hikvision aceitou a credencial",
+    attempts: errors
+  };
+}
+
+async function ensureHikvisionCredentialUser(device, credential = {}, person = null, employeeNo = "") {
+  const userInfo = hikvisionUserPayload(credential, person, employeeNo);
+  return hikvisionTryJsonWrites(device, [
+    {
+      label: "Hikvision usuario Record",
+      path: "/ISAPI/AccessControl/UserInfo/Record?format=json",
+      method: "POST",
+      body: { UserInfo: userInfo }
+    },
+    {
+      label: "Hikvision usuario SetUp",
+      path: "/ISAPI/AccessControl/UserInfo/SetUp?format=json",
+      method: "PUT",
+      body: { UserInfo: userInfo }
+    }
+  ]);
+}
+
+function dataUrlImageBuffer(dataUrl = "") {
+  const match = String(dataUrl).match(/^data:([^;,]+)?;base64,(.+)$/i);
+  if (!match) return null;
+  return {
+    mimeType: match[1] || "image/jpeg",
+    buffer: Buffer.from(match[2], "base64")
+  };
+}
+
+async function fetchCredentialPhotoBytes(device, photoUrl = "") {
+  const clean = String(photoUrl || "").trim();
+  const dataImage = dataUrlImageBuffer(clean);
+  if (dataImage?.buffer?.length) return dataImage;
+  const targetUrl = absoluteDeviceImageUrl(device, clean);
+  const headers = /[\?&]token=/i.test(clean) ? {} : await hikvisionAuthHeaders(device, targetUrl, "GET");
+  const request = withTimeout(12000);
+  try {
+    const response = await fetch(targetUrl, { method: "GET", headers, signal: request.signal });
+    if (!response.ok) throw new Error(`Foto respondeu ${response.status}`);
+    const mimeType = response.headers.get("content-type")?.split(";")[0] || "image/jpeg";
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!buffer.length) throw new Error("Foto vazia");
+    return { mimeType, buffer };
+  } finally {
+    request.done();
+  }
+}
+
+async function hikvisionTryMultipartFaceWrite(device, faceInfo = {}, photoUrl = "") {
+  const pathName = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
+  const targetUrl = `${deviceBaseUrl(device)}${pathName}`;
+  try {
+    const photo = await fetchCredentialPhotoBytes(device, photoUrl);
+    const maxBytes = Number(process.env.HIKVISION_FACE_UPLOAD_MAX_BYTES || 900000);
+    if (photo.buffer.length > maxBytes) throw new Error(`Foto facial maior que ${maxBytes} bytes`);
+    const headers = await hikvisionAuthHeaders(device, targetUrl, "POST");
+    const form = new FormData();
+    form.append("FaceDataRecord", new Blob([JSON.stringify({
+      faceLibType: faceInfo.faceLibType || "blackFD",
+      FDID: faceInfo.FDID || "1",
+      FPID: faceInfo.FPID,
+      name: faceInfo.name
+    })], { type: "application/json" }), "FaceDataRecord.json");
+    form.append("img", new Blob([photo.buffer], { type: photo.mimeType || "image/jpeg" }), "face.jpg");
+    const request = withTimeout(15000);
+    try {
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers,
+        body: form,
+        signal: request.signal
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`Equipamento respondeu ${response.status}: ${text.slice(0, 240)}`);
+      return {
+        ok: true,
+        status: response.status,
+        message: `Upload facial multipart respondeu ${response.status}`,
+        attempts: [{ label: "Hikvision FDLib multipart", path: pathName, ok: true, status: response.status }]
+      };
+    } finally {
+      request.done();
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Falha no upload facial multipart",
+      attempts: [{
+        label: "Hikvision FDLib multipart",
+        path: pathName,
+        ok: false,
+        error: error instanceof Error ? error.message : "Falha no upload facial multipart"
+      }]
+    };
+  }
+}
+
+async function sendHikvisionStoredCredential(device, credential = {}) {
+  const person = personForStoredCredential(credential);
+  const employeeNo = hikvisionEmployeeNoForCredential(credential, person);
+  const userResult = await ensureHikvisionCredentialUser(device, credential, person, employeeNo);
+  if (!userResult.ok) {
+    return {
+      ok: false,
+      deviceId: device.id,
+      adapter: "HIKVISION_ISAPI",
+      message: `Usuario Hikvision ${employeeNo}: ${userResult.message}`,
+      attempts: userResult.attempts || []
+    };
+  }
+
+  const type = normalizeCredentialType(credential.type);
+  if (["APP", "QR_CODE"].includes(type)) {
+    return {
+      ok: true,
+      deviceId: device.id,
+      adapter: "HIKVISION_ISAPI",
+      message: `Usuario Hikvision ${employeeNo} enviado`,
+      attempts: userResult.attempts || []
+    };
+  }
+
+  if (type === "PIN") {
+    return {
+      ok: true,
+      deviceId: device.id,
+      adapter: "HIKVISION_ISAPI",
+      message: `PIN do usuario Hikvision ${employeeNo} enviado`,
+      attempts: userResult.attempts || []
+    };
+  }
+
+  if (type === "RFID") {
+    const cardInfo = {
+      employeeNo,
+      employeeNoString: employeeNo,
+      cardNo: String(credential.value || "").trim(),
+      cardType: "normalCard"
+    };
+    const cardResult = await hikvisionTryJsonWrites(device, [
+      {
+        label: "Hikvision cartao Record",
+        path: "/ISAPI/AccessControl/CardInfo/Record?format=json",
+        method: "POST",
+        body: { CardInfo: cardInfo }
+      },
+      {
+        label: "Hikvision cartao SetUp",
+        path: "/ISAPI/AccessControl/CardInfo/SetUp?format=json",
+        method: "PUT",
+        body: { CardInfo: cardInfo }
+      },
+      {
+        label: "Hikvision cartao SetUp lista",
+        path: "/ISAPI/AccessControl/CardInfo/SetUp?format=json",
+        method: "PUT",
+        body: { CardInfo: [cardInfo] }
+      }
+    ]);
+    return {
+      ...cardResult,
+      deviceId: device.id,
+      adapter: "HIKVISION_ISAPI",
+      message: cardResult.ok ? `Cartao ${cardInfo.cardNo} enviado para ${employeeNo}` : cardResult.message,
+      attempts: [...(userResult.attempts || []), ...(cardResult.attempts || [])]
+    };
+  }
+
+  if (type === "FACE") {
+    const photoUrl = String(credential.photoUrl || person?.photoUrl || "").trim();
+    if (!photoUrl) {
+      return {
+        ok: false,
+        deviceId: device.id,
+        adapter: "HIKVISION_ISAPI",
+        message: "Facial sem foto vinculada para enviar ao Hikvision",
+        attempts: userResult.attempts || []
+      };
+    }
+    const faceInfo = {
+      employeeNo,
+      employeeNoString: employeeNo,
+      FPID: employeeNo,
+      name: hikvisionUserNameForCredential(credential, person),
+      faceLibType: "blackFD",
+      faceURL: photoUrl,
+      URL: photoUrl
+    };
+    const faceResult = await hikvisionTryJsonWrites(device, [
+      {
+        label: "Hikvision face Record",
+        path: "/ISAPI/AccessControl/FaceInfo/Record?format=json",
+        method: "POST",
+        body: { FaceInfo: faceInfo }
+      },
+      {
+        label: "Hikvision FDLib FaceDataRecord",
+        path: "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json",
+        method: "POST",
+        body: { FaceDataRecord: faceInfo }
+      }
+    ]);
+    if (!faceResult.ok) {
+      const multipartResult = await hikvisionTryMultipartFaceWrite(device, faceInfo, photoUrl);
+      return {
+        ...multipartResult,
+        deviceId: device.id,
+        adapter: "HIKVISION_ISAPI",
+        message: multipartResult.ok ? `Face de ${employeeNo} enviada` : multipartResult.message,
+        attempts: [...(userResult.attempts || []), ...(faceResult.attempts || []), ...(multipartResult.attempts || [])]
+      };
+    }
+    return {
+      ...faceResult,
+      deviceId: device.id,
+      adapter: "HIKVISION_ISAPI",
+      message: faceResult.ok ? `Face de ${employeeNo} enviada` : faceResult.message,
+      attempts: [...(userResult.attempts || []), ...(faceResult.attempts || [])]
+    };
+  }
+
+  return {
+    ok: false,
+    deviceId: device.id,
+    adapter: "HIKVISION_ISAPI",
+    message: `Tipo ${type} ainda nao possui envio Hikvision homologado`,
+    attempts: userResult.attempts || []
+  };
+}
+
+async function sendStoredCredentialToDevice(device, credential = {}) {
+  const adapter = deviceAdapter(device);
+  if (adapter === "HIKVISION_ISAPI") return sendHikvisionStoredCredential(device, credential);
+  return {
+    ok: true,
+    deviceId: device.id,
+    adapter,
+    message: "Sincronismo local concluido; envio fisico depende do conector do fabricante",
+    attempts: []
+  };
+}
+
+async function processCredentialSyncJob(job) {
   const targetDevices = job.deviceId
     ? devices.filter((device) => device.id === job.deviceId)
     : devices.filter((device) => !job.tenantId || device.tenantId === job.tenantId);
@@ -3056,12 +3387,12 @@ function processCredentialSyncJob(job) {
   job.errors = 0;
   job.results = [];
 
-  selectedCredentials.forEach((credential) => {
+  for (const credential of selectedCredentials) {
     if (!targetDevices.length) {
       credential.syncStatus = "PENDING";
       job.errors += 1;
       job.results.push({ credentialId: credential.id, ok: false, message: "Nenhum equipamento alvo cadastrado" });
-      return;
+      continue;
     }
 
     const compatible = targetDevices.find((device) => {
@@ -3074,22 +3405,30 @@ function processCredentialSyncJob(job) {
       credential.syncStatus = "ERROR";
       job.errors += 1;
       job.results.push({ credentialId: credential.id, ok: false, message: "Nenhum equipamento compativel com o tipo da credencial" });
-      return;
+      continue;
     }
 
-    credential.syncStatus = "SYNCED";
-    credential.deviceId = compatible.id;
-    credential.lastSyncedAt = now();
-    credential.syncMessage = `${credential.type} enfileirada para ${compatible.manufacturer}`;
-    job.synced += 1;
+    const sendResult = await sendStoredCredentialToDevice(compatible, credential);
+    if (sendResult.ok) {
+      credential.syncStatus = "SYNCED";
+      credential.deviceId = compatible.id;
+      credential.lastSyncedAt = now();
+      credential.syncMessage = sendResult.message || `${credential.type} enviada para ${compatible.manufacturer}`;
+      job.synced += 1;
+    } else {
+      credential.syncStatus = "ERROR";
+      credential.syncMessage = sendResult.message || "Falha ao enviar credencial";
+      job.errors += 1;
+    }
     job.results.push({
       credentialId: credential.id,
-      ok: true,
+      ok: Boolean(sendResult.ok),
       deviceId: compatible.id,
       adapter: deviceAdapter(compatible),
-      message: "Sincronismo local concluido; envio fisico depende do conector do fabricante"
+      message: sendResult.message,
+      attempts: sendResult.attempts || []
     });
-  });
+  }
 
   job.status = job.errors && job.synced ? "PARTIAL" : job.errors ? "ERROR" : "DONE";
   job.lastRunAt = now();
@@ -5060,7 +5399,7 @@ async function handleRequest(request, response) {
       lastRunAt: now()
     };
     credentialSyncJobs.unshift(job);
-    const result = processCredentialSyncJob(job);
+    const result = await processCredentialSyncJob(job);
     savePersistentState("credential-sync-created");
     return json(response, 201, result);
   }

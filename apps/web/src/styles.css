@@ -2057,6 +2057,10 @@ nav button:hover {
   font-size: 13px;
 }
 
+.sync-job-card .error-text {
+  color: #b42318;
+}
+
 .permission-list {
   display: grid;
   gap: 8px;

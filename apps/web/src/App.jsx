@@ -2262,6 +2262,7 @@ function App() {
       })
     });
     const job = await response.json().catch(() => null);
+    console.log("[CREDENTIAL_SYNC_JOB]", job);
     if (!response.ok) {
       setMessage(job?.message || "Falha ao sincronizar credencial.");
       return;
@@ -2274,7 +2275,8 @@ function App() {
         return result?.ok ? { ...credential, syncStatus: "SYNCED", deviceId: result.deviceId, lastSyncedAt: job.lastRunAt } : credential;
       })
     }));
-    setMessage(`Sincronismo ${job.status}: ${job.synced}/${job.total} credenciais.`);
+    const failedResult = job.results?.find((item) => !item.ok);
+    setMessage(`Sincronismo ${job.status}: ${job.synced}/${job.total} credenciais.${failedResult?.message ? ` ${failedResult.message}` : ""}`);
     void refreshApiCache();
   }
 
@@ -3603,6 +3605,17 @@ function App() {
                 {equipmentIntegration.loading && <div className="empty-state">Lendo informacoes do equipamento...</div>}
                 {!equipmentIntegration.loading && equipmentIntegration.payload && !equipmentIntegration.payload.records?.length && <div className="empty-state">Nenhum registro encontrado para esta leitura.</div>}
                 {!equipmentIntegration.payload && !equipmentIntegration.loading && <div className="empty-state">Execute uma leitura para carregar os dados.</div>}
+                {equipmentIntegration.payload?.attempts?.length ? (
+                  <div className="simple-list">
+                    {equipmentIntegration.payload.attempts.map((attempt, index) => (
+                      <div className="simple-row" key={`${attempt.path}-${index}`}>
+                        <ServerCog size={18} />
+                        <div><strong>{attempt.label}</strong><span>{attempt.path}{attempt.bodyFormat ? ` - ${attempt.bodyFormat}` : ""}</span>{attempt.error && <small>{attempt.error}</small>}{attempt.bodyPreview && <small>{attempt.bodyPreview}</small>}</div>
+                        <span className={`status ${attempt.ok ? "" : "offline"}`}>{attempt.ok ? `${attempt.records || 0} registro(s)` : "Falhou"}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </article>
 
               {equipmentIntegration.importReport && (
@@ -4162,6 +4175,9 @@ function App() {
                   <strong>{job.manufacturer}</strong>
                   <span>{job.target}</span>
                   <small>{job.direction} {job.credentialType} - {job.synced}/{job.total} enviados, {job.errors} erro(s)</small>
+                  {(job.results || []).slice(0, 3).map((result) => (
+                    <small key={`${job.id}-${result.credentialId}`} className={result.ok ? "" : "error-text"}>{result.ok ? "OK" : "Erro"}: {result.message || result.adapter}</small>
+                  ))}
                   <em className="status">{job.status}</em>
                 </div>
               ))}
