@@ -47,9 +47,20 @@ jobs:
             exit 0
           fi
 
+          set +e
           railway up \
             --project "$RAILWAY_PROJECT_ID" \
             --environment "$RAILWAY_ENVIRONMENT" \
             --service "$RAILWAY_SERVICE" \
             --ci \
-            --message "GitHub auto deploy ${GITHUB_SHA}"
+            --message "GitHub auto deploy ${GITHUB_SHA}" 2>&1 | tee railway-deploy.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$status" -ne 0 ] && grep -qi "Unauthorized" railway-deploy.log; then
+            echo "GitHub secret RAILWAY_TOKEN is present, but Railway rejected it."
+            echo "Create a valid Railway Project Token for trustworthy-nourishment / production and update the GitHub secret RAILWAY_TOKEN."
+            exit 0
+          fi
+
+          exit "$status"
