@@ -1405,6 +1405,56 @@ function collectObjectsByKeys(source, keys = [], found = []) {
   return found;
 }
 
+function collectRecordValuesByKeys(source, keys = [], found = []) {
+  if (!source || typeof source !== "object") return found;
+  if (Array.isArray(source)) {
+    source.forEach((item) => collectRecordValuesByKeys(item, keys, found));
+    return found;
+  }
+  Object.entries(source).forEach(([key, value]) => {
+    if (keys.includes(key)) {
+      if (Array.isArray(value)) {
+        value.filter((item) => item && typeof item === "object").forEach((item) => found.push(item));
+      } else if (value && typeof value === "object") {
+        found.push(value);
+      }
+    }
+    collectRecordValuesByKeys(value, keys, found);
+  });
+  return found;
+}
+
+function looksLikeDeviceCredentialRow(record = {}) {
+  return Boolean(valueFromKeys(record, [
+    "value",
+    "cardNo",
+    "CardNo",
+    "cardNumber",
+    "card",
+    "password",
+    "Password",
+    "pin",
+    "QRCode",
+    "qrCode",
+    "plateNo",
+    "employeeNoString",
+    "employeeNo",
+    "userId",
+    "UserID",
+    "FPID",
+    "id",
+    "name",
+    "employeeName",
+    "userName",
+    "UserName",
+    "CardName",
+    "personName",
+    "faceURL",
+    "faceUrl",
+    "photoUrl"
+  ]));
+}
+
 function findFirstNumberByKeys(source, keys = []) {
   if (!source || typeof source !== "object") return 0;
   if (Array.isArray(source)) {
@@ -1807,7 +1857,7 @@ function parseDeviceCredentialResponse(text = "", source = {}, fallbackType = "A
   const parsed = tryParseJson(text);
   let rows = [];
   if (parsed) {
-    rows = collectObjectsByKeys(parsed, [
+    rows = collectRecordValuesByKeys(parsed, [
       "CardInfo",
       "UserInfo",
       "FaceInfo",
@@ -1820,8 +1870,8 @@ function parseDeviceCredentialResponse(text = "", source = {}, fallbackType = "A
       "cards",
       "faces",
       "records"
-    ]);
-    if (!rows.length && parsed && typeof parsed === "object") rows = [parsed];
+    ]).filter(looksLikeDeviceCredentialRow);
+    if (!rows.length && looksLikeDeviceCredentialRow(parsed)) rows = [parsed];
   } else if (text.includes("<")) {
     rows = xmlBlocks(text, ["CardInfo", "UserInfo", "FaceInfo", "MatchInfo", "Info"]).map((block) => ({
       cardNo: xmlValue(block, ["cardNo", "cardNumber", "CardNo"]),
@@ -2078,11 +2128,6 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
 
     const existingPerson = matchResidentForDeviceCredential(record, device);
     const selectedUnitPayload = record.type === "FACE" ? unitPayloadFromFaceSelection(record, device, selection || {}) : null;
-    if (record.type === "FACE" && !selectedUnitPayload && !existingPerson?.unitId) {
-      report.invalid += 1;
-      report.items.push({ row: rowNumber, status: "INVALID", payload: record, errors: ["Informe a unidade para importar a facial"] });
-      return;
-    }
     const existingSelectedUnit = selectedUnitPayload ? findUnitByNumber(device.tenantId, selectedUnitPayload.unitNumber, selectedUnitPayload.blockName) : null;
     const selectedUnit = selectedUnitPayload ? upsertImportUnit(selectedUnitPayload, dryRun) : null;
     const person = (record.personName || record.personExternalId)
