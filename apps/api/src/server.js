@@ -360,6 +360,8 @@ const accessRoutes = [];
 
 const permissionProfiles = [];
 
+const companies = [];
+
 const licenses = [];
 
 const resources = [
@@ -372,12 +374,15 @@ const resources = [
   { id: "maintenance", name: "Manutencao", enabled: true, group: "Atendimento", configurable: true, description: "Abra e acompanhe solicitacoes de manutencao pelo app." },
   { id: "personalData", name: "Dados pessoais", enabled: true, group: "Cadastro", configurable: true, description: "Permita que moradores atualizem seus dados cadastrais." },
   { id: "unitData", name: "Dados da unidade", enabled: true, group: "Cadastro", configurable: true, description: "Permita consulta e atualizacao dos dados da unidade." },
+  { id: "residents", name: "Cadastro de moradores", enabled: false, group: "Cadastro", configurable: true, description: "Permita cadastrar novos moradores vinculados a unidade pelo aplicativo." },
   { id: "temporaryFace", name: "Face Temporaria", enabled: false, group: "Controle de acesso", configurable: true, description: "Acesso facial com validade limitada e exclusao automatica no equipamento." },
   { id: "qrScanner", name: "QR Scanner", enabled: true, group: "Controle de acesso", configurable: true, description: "Leitura de QR Code pelo app ou convite para abertura e notificacao." },
   { id: "deliveries", name: "Entregas", enabled: true, group: "Digitalizacao dos processos", configurable: true, description: "Controle de encomendas com fotos e informacoes adicionais." },
-  { id: "shiftLog", name: "Registro de turno", enabled: true, group: "Digitalizacao dos processos", configurable: false, description: "Registro digital das atividades da portaria e troca de turno." },
+  { id: "shiftLog", name: "Registro de turno", enabled: true, group: "Digitalizacao dos processos", configurable: true, description: "Registro digital das atividades da portaria e troca de turno." },
   { id: "nomenclatures", name: "Nomenclaturas", enabled: true, group: "Personalizacoes", configurable: true, description: "Nomes de agentes e unidades para ambientes residenciais, corporativos e educacionais." }
 ];
+
+const resourceConfigurations = [];
 
 const accessLogs = [];
 
@@ -631,8 +636,10 @@ function bootstrap() {
     deviceCategories,
     permissionProfiles,
     accessRoutes,
+    companies,
     licenses,
     resources,
+    resourceConfigurations,
     accessLogs,
     intercomCalls,
     extensionStatus: extensionStatus()
@@ -1126,6 +1133,52 @@ function activeMobileTenantId() {
   }
 
   return allTenants().find((item) => unitList().some((unit) => unit.tenantId === item.id))?.id || tenant.id;
+}
+
+function defaultLicensedResourceIds() {
+  return resources.filter((resource) => resource.enabled !== false).map((resource) => resource.id);
+}
+
+function findCompany(companyId = "") {
+  return companies.find((company) => company.id === companyId) || null;
+}
+
+function companyResourceIds(company) {
+  return Array.isArray(company?.resourceIds) ? company.resourceIds : resources.map((resource) => resource.id);
+}
+
+function companyTenantCount(companyId = "", ignoredTenantId = "") {
+  return allTenants().filter((item) => item.companyId === companyId && item.id !== ignoredTenantId).length;
+}
+
+function tenantLicense(tenantId = "") {
+  return licenses.find((license) => license.tenantId === tenantId && license.active !== false) || null;
+}
+
+function licensedResourceIds(license) {
+  return Array.isArray(license?.resourceIds) ? license.resourceIds : defaultLicensedResourceIds();
+}
+
+function resourceConfiguration(tenantId = "", resourceId = "") {
+  return resourceConfigurations.find((item) => item.tenantId === tenantId && item.resourceId === resourceId) || null;
+}
+
+function effectiveResources(tenantId = "") {
+  if (!tenantId) return resources;
+  const tenantData = findTenant(tenantId);
+  const company = findCompany(tenantData?.companyId);
+  const license = tenantLicense(tenantId);
+  const companyIds = new Set(companyResourceIds(company));
+  const enabledIds = new Set(licensedResourceIds(license).filter((id) => !company || companyIds.has(id)));
+  return resources.map((resource) => ({
+    ...resource,
+    tenantId,
+    companyId: company?.id || "",
+    licenseId: license?.id || "",
+    contracted: !company || companyIds.has(resource.id),
+    enabled: Boolean(license?.active !== false && enabledIds.has(resource.id)),
+    configuration: resourceConfiguration(tenantId, resource.id)?.settings || {}
+  }));
 }
 
 function isMobileTenantUnit(unit) {
@@ -4170,8 +4223,10 @@ function persistentState() {
     unitInvites,
     accessRoutes,
     permissionProfiles,
+    companies,
     licenses,
     resources,
+    resourceConfigurations,
     accessLogs,
     intercomCalls
   };
@@ -4193,8 +4248,10 @@ function applyPersistentState(state = {}) {
   replaceCollection(unitInvites, state.unitInvites);
   replaceCollection(accessRoutes, state.accessRoutes);
   replaceCollection(permissionProfiles, state.permissionProfiles);
+  replaceCollection(companies, state.companies);
   replaceCollection(licenses, state.licenses);
   replaceCollection(resources, mergeResourceState(state.resources));
+  replaceCollection(resourceConfigurations, state.resourceConfigurations);
   replaceCollection(accessLogs, state.accessLogs);
   replaceCollection(intercomCalls, state.intercomCalls);
 }
@@ -4582,6 +4639,56 @@ async function handleRequest(request, response) {
 
   if (request.method === "GET" && url.pathname === "/api/condominiums") {
     return json(response, 200, allTenants());
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/companies") {
+    return json(response, 200, companies);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/companies") {
+    const body = await readBody(request);
+    const existingCompany = body.id ? findCompany(body.id) : null;
+    const resourceIds = Array.isArray(body.resourceIds)
+      ? body.resourceIds.filter((id) => resources.some((resource) => resource.id === id))
+      : companyResourceIds(existingCompany);
+    const company = {
+      id: body.id || makeId("company"),
+      name: body.name || existingCompany?.name || "Nova empresa",
+      document: body.document ?? body.cnpj ?? existingCompany?.document ?? "",
+      status: body.status || existingCompany?.status || "ACTIVE",
+      contactName: body.contactName ?? existingCompany?.contactName ?? "",
+      contactEmail: body.contactEmail ?? existingCompany?.contactEmail ?? "",
+      contactPhone: body.contactPhone ?? existingCompany?.contactPhone ?? "",
+      billingModel: body.billingModel || existingCompany?.billingModel || "PER_CONDOMINIUM",
+      maxCondominiums: parsePositiveInteger(body.maxCondominiums, existingCompany?.maxCondominiums || 1),
+      baseMonthlyPrice: Number(body.baseMonthlyPrice ?? existingCompany?.baseMonthlyPrice ?? 0),
+      condominiumUnitPrice: Number(body.condominiumUnitPrice ?? existingCompany?.condominiumUnitPrice ?? 0),
+      voipBillingModel: body.voipBillingModel || existingCompany?.voipBillingModel || "PER_EXTENSION",
+      includedExtensions: Number(body.includedExtensions ?? existingCompany?.includedExtensions ?? 0),
+      maxExtensions: Number(body.maxExtensions ?? existingCompany?.maxExtensions ?? 0),
+      extensionUnitPrice: Number(body.extensionUnitPrice ?? existingCompany?.extensionUnitPrice ?? 0),
+      resourceIds,
+      updatedAt: now()
+    };
+    const currentUsage = companyTenantCount(company.id);
+    if (company.maxCondominiums < currentUsage) {
+      return json(response, 409, {
+        message: `A empresa ja possui ${currentUsage} condominio(s). O limite nao pode ser menor que o uso atual.`
+      });
+    }
+    const updated = existingCompany ? updateById(companies, company.id, company) : null;
+    if (!updated) companies.unshift(company);
+
+    const allowedIds = new Set(resourceIds);
+    licenses.forEach((license) => {
+      const tenantData = allTenants().find((item) => item.id === license.tenantId);
+      if (license.companyId === company.id || tenantData?.companyId === company.id) {
+        license.companyId = company.id;
+        license.resourceIds = licensedResourceIds(license).filter((id) => allowedIds.has(id));
+      }
+    });
+    savePersistentState("company-saved");
+    return json(response, existingCompany ? 200 : 201, updated || company);
   }
 
   if (request.method === "GET" && url.pathname === "/api/condominiums/residents") {
@@ -5206,6 +5313,22 @@ async function handleRequest(request, response) {
       ? [tenant, showroomTenant, ...allTenants()].find((item) => item.id === requestedTenantId)
       : null;
     const isNewTenant = !existingTenant;
+    const requestedCompanyId = String(body.companyId ?? existingTenant?.companyId ?? "").trim();
+    const requestedCompany = requestedCompanyId ? findCompany(requestedCompanyId) : null;
+    if (requestedCompanyId && !requestedCompany) {
+      return json(response, 400, { message: "Empresa cliente nao encontrada." });
+    }
+    if (requestedCompany && requestedCompany.status === "INACTIVE") {
+      return json(response, 409, { message: "A empresa cliente esta inativa." });
+    }
+    if (requestedCompany) {
+      const usedCondominiums = companyTenantCount(requestedCompany.id, requestedTenantId);
+      if (usedCondominiums >= requestedCompany.maxCondominiums) {
+        return json(response, 409, {
+          message: `Limite de ${requestedCompany.maxCondominiums} condominio(s) atingido para ${requestedCompany.name}.`
+        });
+      }
+    }
     const targetTenant = existingTenant || {
       id: requestedTenantId || makeId("tenant"),
       name: body.name || "Novo condominio",
@@ -5247,6 +5370,15 @@ async function handleRequest(request, response) {
     targetTenant.state = body.state ?? targetTenant.state ?? "";
     targetTenant.latitude = body.latitude ?? targetTenant.latitude ?? "";
     targetTenant.longitude = body.longitude ?? targetTenant.longitude ?? "";
+    targetTenant.companyId = requestedCompanyId;
+    const currentTenantLicense = tenantLicense(targetTenant.id);
+    if (currentTenantLicense) {
+      currentTenantLicense.companyId = requestedCompanyId;
+      if (requestedCompany) {
+        const allowedIds = new Set(companyResourceIds(requestedCompany));
+        currentTenantLicense.resourceIds = licensedResourceIds(currentTenantLicense).filter((id) => allowedIds.has(id));
+      }
+    }
     syncTenantTelephony(body, targetTenant);
     const generatedUnits = ensureTenantUnitsFromStructure(targetTenant, body);
     targetTenant.updatedAt = now();
@@ -5418,8 +5550,14 @@ async function handleRequest(request, response) {
 
   if (request.method === "GET" && url.pathname === "/api/resources") {
     const tenantId = url.searchParams.get("tenantId") || "";
-    const tenantResources = resources.filter((resource) => !resource.tenantId || !tenantId || resource.tenantId === tenantId);
-    return json(response, 200, tenantResources);
+    return json(response, 200, effectiveResources(tenantId));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/resource-configurations") {
+    const tenantId = url.searchParams.get("tenantId") || "";
+    return json(response, 200, tenantId
+      ? resourceConfigurations.filter((item) => item.tenantId === tenantId)
+      : resourceConfigurations);
   }
 
   if (request.method === "GET" && url.pathname === "/api/credential-sync") {
@@ -5452,19 +5590,57 @@ async function handleRequest(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/licenses") {
     const body = await readBody(request);
+    const existingLicense = body.id ? licenses.find((item) => item.id === body.id) : null;
+    const targetTenantId = body.tenantId || existingLicense?.tenantId || tenant.id;
+    const targetTenant = [tenant, showroomTenant, ...allTenants()].find((item) => item.id === targetTenantId);
+    if (!targetTenant) return json(response, 400, { message: "Condominio nao encontrado." });
+    const companyId = String(body.companyId || targetTenant?.companyId || existingLicense?.companyId || "").trim();
+    const company = companyId ? findCompany(companyId) : null;
+    if (companyId && !company) return json(response, 400, { message: "Empresa cliente nao encontrada." });
+    if (company && targetTenant?.companyId && targetTenant.companyId !== company.id) {
+      return json(response, 409, { message: "O condominio pertence a outra empresa cliente." });
+    }
+    const allowedResourceIds = new Set(companyResourceIds(company));
+    const requestedResourceIds = Array.isArray(body.resourceIds)
+      ? body.resourceIds.filter((id) => resources.some((resource) => resource.id === id))
+      : licensedResourceIds(existingLicense);
+    const invalidResourceIds = company
+      ? requestedResourceIds.filter((id) => !allowedResourceIds.has(id))
+      : [];
+    if (invalidResourceIds.length) {
+      return json(response, 409, {
+        message: `A empresa nao contratou: ${invalidResourceIds.map((id) => resources.find((resource) => resource.id === id)?.name || id).join(", ")}.`
+      });
+    }
+    const extensionLimit = Number(body.extensionLimit ?? existingLicense?.extensionLimit ?? 0);
+    if (company?.maxExtensions > 0) {
+      const allocatedExtensions = licenses
+        .filter((item) => item.id !== existingLicense?.id && item.companyId === company.id && item.active !== false)
+        .reduce((total, item) => total + Number(item.extensionLimit || 0), 0);
+      if (allocatedExtensions + extensionLimit > company.maxExtensions) {
+        return json(response, 409, {
+          message: `O limite de ${company.maxExtensions} ramais da empresa seria excedido.`
+        });
+      }
+    }
     const license = {
       id: body.id || makeId("license"),
-      code: body.code || String(Math.floor(10000 + Math.random() * 80000)),
-      tenantId: body.tenantId || tenant.id,
-      name: body.name || "Nova licenca",
-      type: body.type || "Condominio",
-      city: body.city || "",
-      plan: body.plan || body.attendance || "Full",
-      residents: Number(body.residents || 0),
-      contractor: body.contractor || body.contract || "",
-      visible: body.visible ?? true,
-      active: body.active ?? true
+      code: body.code || existingLicense?.code || String(Math.floor(10000 + Math.random() * 80000)),
+      tenantId: targetTenant.id,
+      companyId,
+      name: body.name || existingLicense?.name || "Nova licenca",
+      type: body.type || existingLicense?.type || "Condominio",
+      city: body.city ?? existingLicense?.city ?? "",
+      plan: body.plan || body.attendance || existingLicense?.plan || "Full",
+      residents: Number(body.residents ?? existingLicense?.residents ?? 0),
+      extensionLimit,
+      contractor: body.contractor || body.contract || existingLicense?.contractor || "",
+      visible: body.visible ?? existingLicense?.visible ?? true,
+      active: body.active ?? existingLicense?.active ?? true,
+      resourceIds: requestedResourceIds,
+      updatedAt: now()
     };
+    if (company && !targetTenant.companyId) targetTenant.companyId = company.id;
     const updated = body.id ? updateById(licenses, body.id, license) : null;
     if (!updated) licenses.unshift(license);
     savePersistentState("license-saved");
@@ -5739,10 +5915,89 @@ async function handleRequest(request, response) {
   const resourceMatch = url.pathname.match(/^\/api\/resources\/([^/]+)$/);
   if (request.method === "PATCH" && resourceMatch) {
     const body = await readBody(request);
-    const resource = updateById(resources, resourceMatch[1], body);
+    const resource = resources.find((item) => item.id === resourceMatch[1]);
     if (!resource) return json(response, 404, { message: "Recurso nao encontrado" });
-    savePersistentState("resource-updated");
-    return json(response, 200, resource);
+    const tenantId = String(body.tenantId || "").trim();
+    if (!tenantId) {
+      Object.assign(resource, body, { id: resource.id });
+      savePersistentState("resource-catalog-updated");
+      return json(response, 200, resource);
+    }
+
+    let license = tenantLicense(tenantId);
+    const tenantData = findTenant(tenantId);
+    const company = findCompany(tenantData?.companyId);
+    if (company && !companyResourceIds(company).includes(resource.id)) {
+      return json(response, 409, {
+        message: `${resource.name} nao faz parte do contrato da empresa ${company.name}.`
+      });
+    }
+    if (!license) {
+      license = {
+        id: makeId("license"),
+        code: String(Math.floor(10000 + Math.random() * 80000)),
+        tenantId,
+        companyId: company?.id || "",
+        name: findTenant(tenantId).name || "Licenca do condominio",
+        type: "Condominio",
+        city: "",
+        plan: "Personalizado",
+        residents: 0,
+        contractor: "",
+        visible: true,
+        active: true,
+        resourceIds: defaultLicensedResourceIds()
+      };
+      licenses.unshift(license);
+    }
+    const enabledIds = new Set(licensedResourceIds(license));
+    if (body.enabled === false) enabledIds.delete(resource.id);
+    else enabledIds.add(resource.id);
+    license.resourceIds = Array.from(enabledIds);
+    savePersistentState("license-resource-updated");
+    return json(response, 200, {
+      ...resource,
+      tenantId,
+      licenseId: license.id,
+      enabled: enabledIds.has(resource.id),
+      resourceIds: license.resourceIds
+    });
+  }
+
+  const resourceConfigurationMatch = url.pathname.match(/^\/api\/resources\/([^/]+)\/configuration$/);
+  if (resourceConfigurationMatch && ["GET", "PUT", "PATCH"].includes(request.method || "")) {
+    const resourceId = decodeURIComponent(resourceConfigurationMatch[1]);
+    const resource = resources.find((item) => item.id === resourceId);
+    if (!resource) return json(response, 404, { message: "Recurso nao encontrado" });
+
+    if (request.method === "GET") {
+      const tenantId = url.searchParams.get("tenantId") || "";
+      if (!tenantId) return json(response, 400, { message: "Condominio obrigatorio" });
+      return json(response, 200, resourceConfiguration(tenantId, resourceId) || {
+        tenantId,
+        resourceId,
+        settings: {},
+        updatedAt: null
+      });
+    }
+
+    const body = await readBody(request);
+    const tenantId = String(body.tenantId || "").trim();
+    if (!tenantId) return json(response, 400, { message: "Condominio obrigatorio" });
+    const current = resourceConfiguration(tenantId, resourceId);
+    const next = {
+      id: current?.id || makeId("resource-config"),
+      tenantId,
+      resourceId,
+      settings: body.settings && typeof body.settings === "object" && !Array.isArray(body.settings)
+        ? body.settings
+        : {},
+      updatedAt: now()
+    };
+    if (current) Object.assign(current, next);
+    else resourceConfigurations.unshift(next);
+    savePersistentState("resource-configuration-updated");
+    return json(response, current ? 200 : 201, next);
   }
 
   if (request.method === "GET" && url.pathname === "/api/units") {

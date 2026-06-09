@@ -59,6 +59,7 @@ const condoSections = [
 ];
 
 const settingsSections = [
+  { id: "companies", label: "Empresas e planos", icon: Building2 },
   { id: "licenses", label: "Licencas", icon: FileKey2 },
   { id: "payments", label: "Pagamentos", icon: CreditCard }
 ];
@@ -89,8 +90,10 @@ const emptyData = {
   unitInvites: [],
   manufacturerProfiles: [],
   accessRoutes: [],
+  companies: [],
   licenses: [],
   resources: [],
+  resourceConfigurations: [],
   intercomCalls: [],
   extensionStatus: []
 };
@@ -214,14 +217,37 @@ const emptyDeviceForm = {
 
 const emptyLicenseForm = {
   id: "",
-  contract: "DINAMUS SERVICOS DE SEGURANCA PRIVADA",
+  companyId: "",
+  tenantId: "",
+  contract: "",
   name: "",
   cnpj: "",
   type: "Condominio",
   structure: "Residencial",
   attendance: "Full",
   city: "",
-  residents: "0"
+  residents: "0",
+  extensionLimit: "0",
+  resourceIds: []
+};
+
+const emptyCompanyForm = {
+  id: "",
+  name: "",
+  document: "",
+  status: "ACTIVE",
+  contactName: "",
+  contactEmail: "",
+  contactPhone: "",
+  billingModel: "PER_CONDOMINIUM",
+  maxCondominiums: "1",
+  baseMonthlyPrice: "0",
+  condominiumUnitPrice: "0",
+  voipBillingModel: "PER_EXTENSION",
+  includedExtensions: "0",
+  maxExtensions: "0",
+  extensionUnitPrice: "0",
+  resourceIds: []
 };
 
 const emptyCameraForm = {
@@ -266,6 +292,77 @@ const emptyCredentialForm = {
   valueLabel: "",
   deviceId: ""
 };
+
+const resourceConfigurationFields = {
+  voicy: [
+    { id: "callLabel", label: "Nome exibido da portaria", type: "text", defaultValue: "Portaria" },
+    { id: "defaultAudioRoute", label: "Audio inicial", type: "select", options: [["EARPIECE", "Auricular"], ["SPEAKER", "Viva-voz"]], defaultValue: "EARPIECE" },
+    { id: "allowResidentCalls", label: "Permitir ligacao do morador", type: "boolean", defaultValue: true }
+  ],
+  clickApprove: [
+    { id: "approvalTimeoutSeconds", label: "Tempo para aprovar (segundos)", type: "number", defaultValue: "30" },
+    { id: "requireCamera", label: "Exigir camera na aprovacao", type: "boolean", defaultValue: true },
+    { id: "requireReason", label: "Exigir motivo ao negar", type: "boolean", defaultValue: false }
+  ],
+  invites: [
+    { id: "defaultValidityHours", label: "Validade padrao (horas)", type: "number", defaultValue: "24" },
+    { id: "allowRecurring", label: "Permitir convite recorrente", type: "boolean", defaultValue: true },
+    { id: "requireDocument", label: "Exigir documento do visitante", type: "boolean", defaultValue: false },
+    { id: "sendWhatsApp", label: "Oferecer envio por WhatsApp", type: "boolean", defaultValue: true }
+  ],
+  notices: [
+    { id: "defaultPriority", label: "Prioridade padrao", type: "select", options: [["NORMAL", "Normal"], ["IMPORTANT", "Importante"], ["URGENT", "Urgente"]], defaultValue: "NORMAL" },
+    { id: "allowAttachments", label: "Permitir anexos", type: "boolean", defaultValue: true },
+    { id: "notifyResidents", label: "Notificar moradores", type: "boolean", defaultValue: true }
+  ],
+  maintenance: [
+    { id: "categories", label: "Categorias (separadas por virgula)", type: "text", defaultValue: "Eletrica,Hidraulica,Elevador,Limpeza,Geral" },
+    { id: "allowPhoto", label: "Permitir foto", type: "boolean", defaultValue: true },
+    { id: "notifyManager", label: "Notificar responsavel", type: "boolean", defaultValue: true }
+  ],
+  personalData: [
+    { id: "allowProfilePhoto", label: "Permitir foto de perfil", type: "boolean", defaultValue: true },
+    { id: "editableFields", label: "Campos editaveis", type: "text", defaultValue: "name,email,phone,cpf,rg,birthDate,photoUrl" },
+    { id: "requireApproval", label: "Exigir aprovacao da administracao", type: "boolean", defaultValue: false }
+  ],
+  unitData: [
+    { id: "editableFields", label: "Campos editaveis", type: "text", defaultValue: "ownerName,ownerDocument,documents" },
+    { id: "showDocuments", label: "Exibir documentos da unidade", type: "boolean", defaultValue: true }
+  ],
+  residents: [
+    { id: "requireCpf", label: "Exigir CPF", type: "boolean", defaultValue: true },
+    { id: "requirePhoto", label: "Exigir foto", type: "boolean", defaultValue: false },
+    { id: "requireApproval", label: "Exigir aprovacao da administracao", type: "boolean", defaultValue: true }
+  ],
+  temporaryFace: [
+    { id: "defaultValidityHours", label: "Validade padrao (horas)", type: "number", defaultValue: "8" },
+    { id: "maxValidityHours", label: "Validade maxima (horas)", type: "number", defaultValue: "72" },
+    { id: "autoDelete", label: "Excluir automaticamente no equipamento", type: "boolean", defaultValue: true }
+  ],
+  qrScanner: [
+    { id: "validityMinutes", label: "Validade da leitura (minutos)", type: "number", defaultValue: "5" },
+    { id: "allowOffline", label: "Permitir validacao offline", type: "boolean", defaultValue: false },
+    { id: "notifyOnRead", label: "Notificar ao ler QR Code", type: "boolean", defaultValue: true }
+  ],
+  deliveries: [
+    { id: "requirePhoto", label: "Exigir foto da entrega", type: "boolean", defaultValue: true },
+    { id: "requireRecipientConfirmation", label: "Exigir confirmacao do recebedor", type: "boolean", defaultValue: true },
+    { id: "notifyResident", label: "Notificar morador", type: "boolean", defaultValue: true }
+  ],
+  shiftLog: [
+    { id: "requireClosingNote", label: "Exigir observacao no encerramento", type: "boolean", defaultValue: true },
+    { id: "allowAttachments", label: "Permitir anexos", type: "boolean", defaultValue: true }
+  ],
+  nomenclatures: [
+    { id: "residentLabel", label: "Nome para morador", type: "text", defaultValue: "Morador" },
+    { id: "unitLabel", label: "Nome para unidade", type: "text", defaultValue: "Unidade" },
+    { id: "porterLabel", label: "Nome para portaria", type: "text", defaultValue: "Portaria" }
+  ]
+};
+
+function defaultResourceSettings(resourceId) {
+  return Object.fromEntries((resourceConfigurationFields[resourceId] || []).map((field) => [field.id, field.defaultValue]));
+}
 
 function Field({ label, children }) {
   return (
@@ -1036,6 +1133,7 @@ function App() {
   const [porterSearchTerm, setPorterSearchTerm] = useState("");
   const [resourceTab, setResourceTab] = useState("portaria");
   const [resourceConfig, setResourceConfig] = useState("");
+  const [resourceConfigForm, setResourceConfigForm] = useState({});
   const [deviceTab, setDeviceTab] = useState("inicio");
   const [unitTab, setUnitTab] = useState("geral");
   const [personSubtab, setPersonSubtab] = useState("moradores");
@@ -1054,6 +1152,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [actionFeedback, setActionFeedback] = useState(null);
   const [deviceForm, setDeviceForm] = useState(emptyDeviceForm);
+  const [companyForm, setCompanyForm] = useState(emptyCompanyForm);
   const [licenseForm, setLicenseForm] = useState(emptyLicenseForm);
   const [cameraForm, setCameraForm] = useState(emptyCameraForm);
   const [showCameraForm, setShowCameraForm] = useState(false);
@@ -1106,6 +1205,7 @@ function App() {
   const allSections = [...sections, ...condoSections, ...settingsSections];
   const active = allSections.find((section) => section.id === activeSection) || sections[0];
   const selectedTenant = data.condominiums.find((item) => item.id === selectedTenantId) || data.condominiums[0];
+  const selectedLicenseCompany = data.companies.find((item) => item.id === licenseForm.companyId) || null;
   const condoFormTenant = condoFormMode === "new" ? null : selectedTenant;
   const units = useMemo(() => data.units.filter((unit) => unit.tenantId === selectedTenant?.id), [data.units, selectedTenant?.id]);
   const filteredUnits = useMemo(() => {
@@ -1643,8 +1743,8 @@ function App() {
   }, [selectedUnit]);
 
   const filteredCondos = data.condominiums.filter((item) => `${item.name} ${item.document}`.toLowerCase().includes(search.toLowerCase()));
-  const condoPager = usePaged(filteredCondos, 4);
-  const unitPager = usePaged(filteredUnits, 6);
+  const condoPager = usePaged(filteredCondos, 12);
+  const unitPager = usePaged(filteredUnits, 12);
   const tenantCameras = useMemo(() => data.cameras.filter((camera) => camera.tenantId === selectedTenant?.id), [data.cameras, selectedTenant?.id]);
   const tenantCameraGroups = tenantCameras;
   const tenantMosaicOptions = useMemo(() => tenantCameraGroups.flatMap((camera) => cameraChannels(camera).map((channel) => ({
@@ -1660,6 +1760,22 @@ function App() {
   const tenantDevices = useMemo(() => data.devices.filter((device) => device.tenantId === selectedTenant?.id), [data.devices, selectedTenant?.id]);
   const tenantCredentials = useMemo(() => data.credentials.filter((credential) => credential.tenantId === selectedTenant?.id), [data.credentials, selectedTenant?.id]);
   const tenantActions = useMemo(() => data.actions.filter((action) => action.tenantId === selectedTenant?.id), [data.actions, selectedTenant?.id]);
+  const selectedTenantLicense = useMemo(() => data.licenses.find((license) => license.tenantId === selectedTenant?.id && license.active !== false), [data.licenses, selectedTenant?.id]);
+  const selectedTenantCompany = useMemo(() => data.companies.find((company) => company.id === selectedTenant?.companyId) || null, [data.companies, selectedTenant?.companyId]);
+  const tenantResources = useMemo(() => {
+    const contractedIds = new Set(Array.isArray(selectedTenantCompany?.resourceIds)
+      ? selectedTenantCompany.resourceIds
+      : data.resources.map((resource) => resource.id));
+    const enabledIds = new Set(Array.isArray(selectedTenantLicense?.resourceIds)
+      ? selectedTenantLicense.resourceIds
+      : data.resources.filter((resource) => resource.enabled !== false).map((resource) => resource.id));
+    return data.resources.map((resource) => ({
+      ...resource,
+      contracted: contractedIds.has(resource.id),
+      enabled: contractedIds.has(resource.id) && enabledIds.has(resource.id)
+    }));
+  }, [data.resources, selectedTenantCompany, selectedTenantLicense]);
+  const selectedResource = tenantResources.find((resource) => resource.id === resourceConfig);
   const tenantCalls = useMemo(() => data.intercomCalls.filter((call) => !call.tenantId || call.tenantId === selectedTenant?.id), [data.intercomCalls, selectedTenant?.id]);
   const activeTenantCalls = useMemo(() => tenantCalls.filter((call) => !["ENDED", "MISSED", "FAILED"].includes(call.status)), [tenantCalls]);
   const tenantEvents = useMemo(() => (data.accessLogs || []).filter((log) => !log.tenantId || log.tenantId === selectedTenant?.id), [data.accessLogs, selectedTenant?.id]);
@@ -1954,6 +2070,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: form.get("id"),
+        companyId: form.get("companyId"),
         name: form.get("name"),
         document: form.get("document"),
         status: form.get("status"),
@@ -2416,13 +2533,17 @@ function App() {
     const response = await fetch(`${apiUrl}/api/licenses`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(licenseForm)
+      body: JSON.stringify({
+        ...licenseForm,
+        tenantId: licenseForm.tenantId || selectedTenant?.id,
+        contractor: selectedLicenseCompany?.name || licenseForm.contract
+      })
     });
+    const saved = await response.json().catch(() => null);
     if (!response.ok) {
-      setMessage("Falha ao salvar licenca.");
+      setMessage(saved?.message || "Falha ao salvar licenca.");
       return;
     }
-    const saved = await response.json().catch(() => null);
     if (saved?.id) {
       setData((current) => {
         const exists = current.licenses.some((license) => license.id === saved.id);
@@ -2436,6 +2557,39 @@ function App() {
     }
     setLicenseForm(emptyLicenseForm);
     setMessage("Licenca salva.");
+    void refreshApiCache();
+  }
+
+  async function saveCompanyForm(event) {
+    event.preventDefault();
+    const response = await fetch(`${apiUrl}/api/companies`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(companyForm)
+    });
+    const saved = await response.json().catch(() => null);
+    if (!response.ok) {
+      setMessage(saved?.message || "Falha ao salvar empresa e plano.");
+      return;
+    }
+    setData((current) => {
+      const exists = current.companies.some((company) => company.id === saved.id);
+      const allowedIds = new Set(saved.resourceIds || []);
+      return {
+        ...current,
+        companies: exists
+          ? current.companies.map((company) => company.id === saved.id ? saved : company)
+          : [saved, ...current.companies],
+        licenses: current.licenses.map((license) => {
+          const tenantData = current.condominiums.find((condo) => condo.id === license.tenantId);
+          return license.companyId === saved.id || tenantData?.companyId === saved.id
+            ? { ...license, companyId: saved.id, resourceIds: (license.resourceIds || []).filter((id) => allowedIds.has(id)) }
+            : license;
+        })
+      };
+    });
+    setCompanyForm(emptyCompanyForm);
+    setMessage("Empresa e plano comercial salvos.");
     void refreshApiCache();
   }
 
@@ -2984,16 +3138,64 @@ function App() {
   }
 
   async function toggleResource(resource, enabled) {
-    setData((current) => ({
-      ...current,
-      resources: current.resources.map((item) => item.id === resource.id ? { ...item, enabled } : item)
-    }));
-    await fetch(`${apiUrl}/api/resources/${resource.id}`, {
+    const response = await fetch(`${apiUrl}/api/resources/${resource.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled })
+      body: JSON.stringify({ tenantId: selectedTenant?.id, enabled })
     });
+    const saved = await response.json().catch(() => null);
+    if (!response.ok) {
+      setMessage(saved?.message || "Falha ao atualizar recurso da licenca.");
+      return;
+    }
+    if (saved?.licenseId) {
+      setData((current) => {
+        const nextLicense = {
+          id: saved.licenseId,
+          tenantId: selectedTenant?.id,
+          name: selectedTenant?.name || "Licenca do condominio",
+          active: true,
+          resourceIds: saved.resourceIds
+        };
+        return {
+          ...current,
+          licenses: current.licenses.some((license) => license.id === saved.licenseId)
+            ? current.licenses.map((license) => license.id === saved.licenseId ? { ...license, resourceIds: saved.resourceIds } : license)
+            : [nextLicense, ...current.licenses]
+        };
+      });
+    }
     setMessage(`Recurso ${resource.name} ${enabled ? "habilitado" : "desabilitado"}.`);
+    void refreshApiCache();
+  }
+
+  function openResourceConfiguration(resource) {
+    const saved = data.resourceConfigurations.find((item) => item.tenantId === selectedTenant?.id && item.resourceId === resource.id);
+    setResourceConfigForm({ ...defaultResourceSettings(resource.id), ...(saved?.settings || resource.configuration || {}) });
+    setResourceConfig(resource.id);
+  }
+
+  async function saveResourceConfiguration(event) {
+    event.preventDefault();
+    if (!selectedTenant || !resourceConfig) return;
+    const response = await fetch(`${apiUrl}/api/resources/${encodeURIComponent(resourceConfig)}/configuration`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenantId: selectedTenant.id, settings: resourceConfigForm })
+    });
+    const saved = await response.json().catch(() => null);
+    if (!response.ok) {
+      setMessage(saved?.message || "Falha ao salvar configuracao do modulo.");
+      return;
+    }
+    setData((current) => ({
+      ...current,
+      resourceConfigurations: [
+        saved,
+        ...current.resourceConfigurations.filter((item) => !(item.tenantId === saved.tenantId && item.resourceId === saved.resourceId))
+      ]
+    }));
+    setMessage(`Configuracao de ${selectedResource?.name || resourceConfig} salva.`);
   }
 
   async function enqueueCredentialSync(profile, type = "FACE") {
@@ -3237,7 +3439,7 @@ function App() {
                   <button className="icon-button secondary-button" onClick={(event) => event.stopPropagation()}><MoreVertical size={18} /></button>
                 </header>
                 <div className="condo-card-body">
-                  <span><Building2 size={16} /> Condominio</span>
+                  <span><Building2 size={16} /> {data.companies.find((company) => company.id === condo.companyId)?.name || "Sem empresa vinculada"}</span>
                   <span><Users size={16} /> {data.units.filter((unit) => unit.tenantId === condo.id).length} unidades</span>
                   <span><RadioTower size={16} /> {data.devices.filter((device) => device.tenantId === condo.id).length} equipamentos</span>
                   <span><KeySquare size={16} /> Documento {condo.document || "nao informado"}</span>
@@ -3262,6 +3464,14 @@ function App() {
             <div className="panel-heading"><h2>Cadastro do condominio</h2><Building2 size={20} /></div>
             <div className="form-grid">
               <input type="hidden" name="id" value={condoFormTenant?.id || ""} />
+              <Field label="Empresa cliente">
+                <select name="companyId" defaultValue={condoFormTenant?.companyId || ""}>
+                  <option value="">Sem empresa vinculada</option>
+                  {data.companies.filter((company) => company.status !== "INACTIVE" || company.id === condoFormTenant?.companyId).map((company) => (
+                    <option key={company.id} value={company.id}>{company.name} ({data.condominiums.filter((condo) => condo.companyId === company.id).length}/{company.maxCondominiums})</option>
+                  ))}
+                </select>
+              </Field>
               <Field label="Nome"><input name="name" defaultValue={condoFormTenant?.name || ""} /></Field>
               <Field label="Documento"><input name="document" defaultValue={condoFormTenant?.document || ""} /></Field>
               <Field label="Status"><select name="status" defaultValue={condoFormTenant?.status || "ACTIVE"}><option>ACTIVE</option><option>INACTIVE</option></select></Field>
@@ -3992,7 +4202,7 @@ function App() {
       return (
         <section className="resource-page">
           <div className="resource-hero panel">
-            <div><span>Central por condominio</span><h2>{selectedTenant?.name || "-"}</h2><small>{data.resources.filter((item) => item.enabled).length} de {data.resources.length} recursos ativos</small></div>
+            <div><span>Central por condominio</span><h2>{selectedTenant?.name || "-"}</h2><small>{tenantResources.filter((item) => item.enabled).length} de {tenantResources.length} recursos ativos na licenca</small></div>
             <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{data.condominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
           </div>
           <div className="subtabs resource-tabs">
@@ -4033,8 +4243,8 @@ function App() {
               {resourceConfig && (
                 <div className="config-panel">
                   <div className="panel-heading compact-heading">
-                    <h2>{resourceConfig === "cameras" ? "Cameras" : resourceConfig === "actions" ? "Acionamentos" : "Configuracao do recurso"}</h2>
-                    <button className="secondary-button" onClick={() => setResourceConfig("")}>Voltar</button>
+                    <h2>{selectedResource?.name || "Configuracao do recurso"}</h2>
+                    <button className="secondary-button" onClick={() => { setResourceConfig(""); setResourceConfigForm({}); }}>Voltar</button>
                   </div>
                   {resourceConfig === "cameras" && (
                     <CameraConfig
@@ -4069,17 +4279,51 @@ function App() {
                       })}
                     />
                   )}
-                  {!["cameras", "actions"].includes(resourceConfig) && <div className="empty-state">Configuracao especifica mantida por modulo, perfil e permissao.</div>}
+                  {!["cameras", "actions"].includes(resourceConfig) && (
+                    <form className="form-grid resource-config-form" onSubmit={saveResourceConfiguration}>
+                      {(resourceConfigurationFields[resourceConfig] || []).map((field) => (
+                        <Field key={field.id} label={field.label}>
+                          {field.type === "boolean" ? (
+                            <select
+                              value={String(resourceConfigForm[field.id] ?? field.defaultValue)}
+                              onChange={(event) => setResourceConfigForm((current) => ({ ...current, [field.id]: event.target.value === "true" }))}
+                            >
+                              <option value="true">Sim</option>
+                              <option value="false">Nao</option>
+                            </select>
+                          ) : field.type === "select" ? (
+                            <select
+                              value={resourceConfigForm[field.id] ?? field.defaultValue}
+                              onChange={(event) => setResourceConfigForm((current) => ({ ...current, [field.id]: event.target.value }))}
+                            >
+                              {field.options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                            </select>
+                          ) : (
+                            <input
+                              type={field.type}
+                              value={resourceConfigForm[field.id] ?? field.defaultValue}
+                              onChange={(event) => setResourceConfigForm((current) => ({ ...current, [field.id]: event.target.value }))}
+                            />
+                          )}
+                        </Field>
+                      ))}
+                      {(resourceConfigurationFields[resourceConfig] || []).length ? (
+                        <button type="submit"><Save size={16} /> Salvar configuracao</button>
+                      ) : (
+                        <div className="empty-state">Este modulo usa apenas a liberacao da licenca.</div>
+                      )}
+                    </form>
+                  )}
                 </div>
               )}
               <div className="resource-module-list">
-                {data.resources.map((item) => (
+                {tenantResources.map((item) => (
                   <div className="resource-module-row" key={item.id}>
-                    <input type="checkbox" checked={item.enabled} onChange={(event) => void toggleResource(item, event.target.checked)} />
+                    <input type="checkbox" checked={item.enabled} disabled={!item.contracted} onChange={(event) => void toggleResource(item, event.target.checked)} />
                     <span><strong>{item.name}</strong><small>{item.group} - {item.description}</small></span>
                     <div className="resource-row-actions">
-                      {item.configurable && <button className="secondary-button" onClick={() => setResourceConfig(item.id)}>Configurar</button>}
-                      <em>{item.enabled ? "Ativo" : "Pendente"}</em>
+                      {item.configurable && item.contracted && <button className="secondary-button" onClick={() => openResourceConfiguration(item)}>Configurar</button>}
+                      <em>{!item.contracted ? "Nao contratado" : item.enabled ? "Ativo" : "Disponivel"}</em>
                     </div>
                   </div>
                 ))}
@@ -4258,21 +4502,123 @@ function App() {
       );
     }
 
+    if (activeSection === "companies") {
+      return (
+        <section className="company-plan-page">
+          <form className="panel form-panel" onSubmit={saveCompanyForm}>
+            <div className="panel-heading"><h2>{companyForm.id ? "Editar empresa e plano" : "Nova empresa e plano"}</h2><Building2 size={20} /></div>
+            <div className="form-grid">
+              <Field label="Empresa"><input value={companyForm.name} onChange={(event) => setCompanyForm((current) => ({ ...current, name: event.target.value }))} required /></Field>
+              <Field label="CNPJ/Documento"><input value={companyForm.document} onChange={(event) => setCompanyForm((current) => ({ ...current, document: event.target.value }))} /></Field>
+              <Field label="Status"><select value={companyForm.status} onChange={(event) => setCompanyForm((current) => ({ ...current, status: event.target.value }))}><option value="ACTIVE">Ativa</option><option value="INACTIVE">Inativa</option></select></Field>
+              <Field label="Responsavel"><input value={companyForm.contactName} onChange={(event) => setCompanyForm((current) => ({ ...current, contactName: event.target.value }))} /></Field>
+              <Field label="E-mail"><input type="email" value={companyForm.contactEmail} onChange={(event) => setCompanyForm((current) => ({ ...current, contactEmail: event.target.value }))} /></Field>
+              <Field label="Telefone"><input value={companyForm.contactPhone} onChange={(event) => setCompanyForm((current) => ({ ...current, contactPhone: event.target.value }))} /></Field>
+              <Field label="Cobranca dos condominios"><select value={companyForm.billingModel} onChange={(event) => setCompanyForm((current) => ({ ...current, billingModel: event.target.value }))}><option value="PER_CONDOMINIUM">Por condominio</option><option value="PACKAGE">Pacote de condominios</option></select></Field>
+              <Field label="Limite de condominios"><input type="number" min="1" value={companyForm.maxCondominiums} onChange={(event) => setCompanyForm((current) => ({ ...current, maxCondominiums: event.target.value }))} /></Field>
+              <Field label="Mensalidade base"><input type="number" min="0" step="0.01" value={companyForm.baseMonthlyPrice} onChange={(event) => setCompanyForm((current) => ({ ...current, baseMonthlyPrice: event.target.value }))} /></Field>
+              <Field label="Valor por condominio"><input type="number" min="0" step="0.01" value={companyForm.condominiumUnitPrice} onChange={(event) => setCompanyForm((current) => ({ ...current, condominiumUnitPrice: event.target.value }))} /></Field>
+              <Field label="Cobranca VoIP"><select value={companyForm.voipBillingModel} onChange={(event) => setCompanyForm((current) => ({ ...current, voipBillingModel: event.target.value }))}><option value="PER_EXTENSION">Por ramal</option><option value="PACKAGE">Pacote de ramais</option><option value="DISABLED">Sem VoIP</option></select></Field>
+              <Field label="Ramais incluidos"><input type="number" min="0" value={companyForm.includedExtensions} onChange={(event) => setCompanyForm((current) => ({ ...current, includedExtensions: event.target.value }))} /></Field>
+              <Field label="Limite total de ramais"><input type="number" min="0" value={companyForm.maxExtensions} onChange={(event) => setCompanyForm((current) => ({ ...current, maxExtensions: event.target.value }))} /></Field>
+              <Field label="Valor por ramal"><input type="number" min="0" step="0.01" value={companyForm.extensionUnitPrice} onChange={(event) => setCompanyForm((current) => ({ ...current, extensionUnitPrice: event.target.value }))} /></Field>
+            </div>
+            <div className="module-license-grid">
+              {data.resources.map((resource) => (
+                <label className="module-license-option" key={resource.id}>
+                  <input
+                    type="checkbox"
+                    checked={companyForm.resourceIds.includes(resource.id)}
+                    onChange={(event) => setCompanyForm((current) => ({
+                      ...current,
+                      resourceIds: event.target.checked
+                        ? [...new Set([...current.resourceIds, resource.id])]
+                        : current.resourceIds.filter((id) => id !== resource.id)
+                    }))}
+                  />
+                  <span><strong>{resource.name}</strong><small>{resource.group}</small></span>
+                </label>
+              ))}
+            </div>
+            <div className="form-actions">
+              <button type="submit"><Save size={16} /> Salvar empresa e plano</button>
+              {companyForm.id && <button className="secondary-button" type="button" onClick={() => setCompanyForm(emptyCompanyForm)}>Cancelar edicao</button>}
+            </div>
+          </form>
+
+          <article className="panel">
+            <div className="panel-heading"><h2>Empresas clientes</h2><span className="toolbar-note">{data.companies.length} cadastrada(s)</span></div>
+            <div className="company-card-grid">
+              {data.companies.map((company) => {
+                const companyCondos = data.condominiums.filter((condo) => condo.companyId === company.id);
+                const allocatedExtensions = data.licenses.filter((license) => license.companyId === company.id && license.active !== false).reduce((total, license) => total + Number(license.extensionLimit || 0), 0);
+                return (
+                  <article className="company-plan-card" key={company.id}>
+                    <header><strong>{company.name}</strong><em>{company.status === "INACTIVE" ? "Inativa" : "Ativa"}</em></header>
+                    <span>Condominios: <strong>{companyCondos.length}/{company.maxCondominiums}</strong></span>
+                    <span>Modulos contratados: <strong>{company.resourceIds?.length || 0}</strong></span>
+                    <span>VoIP: <strong>{company.voipBillingModel === "PACKAGE" ? "Pacote" : company.voipBillingModel === "DISABLED" ? "Desativado" : "Por ramal"}</strong></span>
+                    <span>Ramais: <strong>{allocatedExtensions}/{company.maxExtensions || "sem teto"}</strong></span>
+                    <span>Mensalidade base: <strong>R$ {Number(company.baseMonthlyPrice || 0).toFixed(2)}</strong></span>
+                    <button className="secondary-button" type="button" onClick={() => setCompanyForm({
+                      ...emptyCompanyForm,
+                      ...company,
+                      maxCondominiums: String(company.maxCondominiums || 1),
+                      baseMonthlyPrice: String(company.baseMonthlyPrice || 0),
+                      condominiumUnitPrice: String(company.condominiumUnitPrice || 0),
+                      includedExtensions: String(company.includedExtensions || 0),
+                      maxExtensions: String(company.maxExtensions || 0),
+                      extensionUnitPrice: String(company.extensionUnitPrice || 0),
+                      resourceIds: company.resourceIds || []
+                    })}>Editar contrato</button>
+                  </article>
+                );
+              })}
+              {!data.companies.length && <div className="empty-state">Cadastre a primeira empresa cliente e defina o pacote comercial.</div>}
+            </div>
+          </article>
+        </section>
+      );
+    }
+
     if (activeSection === "licenses") {
       return (
         <section className="crud-grid">
           <form className="panel form-panel" onSubmit={saveLicenseForm}>
-            <div className="panel-heading"><h2>Nova licenca</h2><FileKey2 size={20} /></div>
+            <div className="panel-heading"><h2>Liberacao por condominio</h2><FileKey2 size={20} /></div>
             <div className="form-grid">
-              <Field label="Contrato"><select value={licenseForm.contract} onChange={(event) => setLicenseForm((current) => ({ ...current, contract: event.target.value, contractor: event.target.value }))}><option>DINAMUS SERVICOS DE SEGURANCA PRIVADA</option><option>AGP SISTEMAS CORP</option></select></Field>
-              <Field label="Nome"><input value={licenseForm.name} onChange={(event) => setLicenseForm((current) => ({ ...current, name: event.target.value }))} /></Field>
-              <Field label="CNPJ"><input value={licenseForm.cnpj} onChange={(event) => setLicenseForm((current) => ({ ...current, cnpj: event.target.value }))} /></Field>
-              <Field label="Tipo"><select value={licenseForm.type} onChange={(event) => setLicenseForm((current) => ({ ...current, type: event.target.value }))}><option>Condominio</option><option>Empresa</option></select></Field>
-              <Field label="Estrutura"><select value={licenseForm.structure} onChange={(event) => setLicenseForm((current) => ({ ...current, structure: event.target.value }))}><option>Residencial</option><option>Corporativo</option></select></Field>
+              <Field label="Empresa cliente"><select required value={licenseForm.companyId} onChange={(event) => setLicenseForm((current) => ({ ...current, companyId: event.target.value, tenantId: "", resourceIds: [] }))}><option value="">Selecione</option>{data.companies.filter((company) => company.status !== "INACTIVE").map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></Field>
+              <Field label="Condominio"><select required value={licenseForm.tenantId} onChange={(event) => setLicenseForm((current) => ({ ...current, tenantId: event.target.value }))}><option value="">Selecione</option>{data.condominiums.filter((condo) => licenseForm.companyId && condo.companyId === licenseForm.companyId).map((condo) => <option key={condo.id} value={condo.id}>{condo.name}</option>)}</select></Field>
+              <Field label="Nome"><input required value={licenseForm.name} onChange={(event) => setLicenseForm((current) => ({ ...current, name: event.target.value }))} /></Field>
               <Field label="Atendimento"><select value={licenseForm.attendance} onChange={(event) => setLicenseForm((current) => ({ ...current, attendance: event.target.value, plan: event.target.value }))}><option>Full</option><option>Showroom</option></select></Field>
               <Field label="Cidade/UF"><input value={licenseForm.city} onChange={(event) => setLicenseForm((current) => ({ ...current, city: event.target.value }))} /></Field>
               <Field label="Moradores"><input value={licenseForm.residents} onChange={(event) => setLicenseForm((current) => ({ ...current, residents: event.target.value }))} /></Field>
+              <Field label="Ramais liberados"><input type="number" min="0" value={licenseForm.extensionLimit} onChange={(event) => setLicenseForm((current) => ({ ...current, extensionLimit: event.target.value }))} /></Field>
+            </div>
+            <div className="module-license-grid">
+              {data.resources.map((resource) => {
+                const contracted = Boolean(selectedLicenseCompany && (selectedLicenseCompany.resourceIds || []).includes(resource.id));
+                return (
+                  <label className={`module-license-option ${contracted ? "" : "disabled"}`} key={resource.id}>
+                    <input
+                      type="checkbox"
+                      disabled={!contracted}
+                      checked={licenseForm.resourceIds.includes(resource.id)}
+                      onChange={(event) => setLicenseForm((current) => ({
+                        ...current,
+                        resourceIds: event.target.checked
+                          ? [...new Set([...current.resourceIds, resource.id])]
+                          : current.resourceIds.filter((id) => id !== resource.id)
+                      }))}
+                    />
+                    <span><strong>{resource.name}</strong><small>{contracted ? "Disponivel no contrato" : "Nao contratado pela empresa"}</small></span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="form-actions">
               <button type="submit"><Save size={16} /> Salvar licenca</button>
+              {licenseForm.id && <button className="secondary-button" type="button" onClick={() => setLicenseForm(emptyLicenseForm)}>Cancelar edicao</button>}
             </div>
           </form>
           <article className="panel">
@@ -4282,8 +4628,9 @@ function App() {
               {data.licenses.map((license) => (
                 <article className="license-card" key={license.id}>
                   <strong>{license.name}</strong>
-                  <span>{license.type}</span>
+                  <span>{data.companies.find((company) => company.id === license.companyId)?.name || "Contrato legado"}</span>
                   <span>{license.residents} moradores</span>
+                  <span>{license.extensionLimit || 0} ramais liberados</span>
                   <span>{license.city}</span>
                   <em>{license.plan} - {license.code}</em>
                   <small>{license.contractor}</small>
@@ -4294,8 +4641,10 @@ function App() {
                   <button className="secondary-button" onClick={() => navigateTo(`/licencas/${license.code}/credenciais`)}><BadgeCheck size={15} /> Credenciais</button>
                   <button className="secondary-button" onClick={() => setLicenseForm({
                     id: license.id,
-                    contract: license.contractor || "DINAMUS SERVICOS DE SEGURANCA PRIVADA",
-                    contractor: license.contractor || "DINAMUS SERVICOS DE SEGURANCA PRIVADA",
+                    companyId: license.companyId || data.condominiums.find((condo) => condo.id === license.tenantId)?.companyId || "",
+                    tenantId: license.tenantId || "",
+                    contract: license.contractor || "",
+                    contractor: license.contractor || "",
                     name: license.name || "",
                     cnpj: license.cnpj || "",
                     type: license.type || "Condominio",
@@ -4303,7 +4652,9 @@ function App() {
                     attendance: license.plan || "Full",
                     plan: license.plan || "Full",
                     city: license.city || "",
-                    residents: String(license.residents || 0)
+                    residents: String(license.residents || 0),
+                    extensionLimit: String(license.extensionLimit || 0),
+                    resourceIds: Array.isArray(license.resourceIds) ? license.resourceIds : []
                   })}>Editar</button>
                 </article>
               ))}

@@ -397,7 +397,7 @@ nav button:hover {
 .condo-cards,
 .unit-cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(240px, 1fr));
+  grid-template-columns: repeat(4, minmax(210px, 1fr));
   gap: 16px;
   margin-top: 14px;
 }
@@ -477,6 +477,77 @@ nav button:hover {
 
 .unit-card {
   min-height: 164px;
+}
+
+.company-plan-page {
+  display: grid;
+  gap: 16px;
+}
+
+.module-license-grid,
+.company-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(190px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.module-license-option {
+  min-height: 66px;
+  border: 1px solid #d9e2e4;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  background: #f8fbfa;
+}
+
+.module-license-option.disabled {
+  opacity: 0.55;
+  background: #f1f3f4;
+}
+
+.module-license-option span,
+.company-plan-card {
+  display: grid;
+  gap: 5px;
+}
+
+.module-license-option small,
+.company-plan-card span {
+  color: #60747a;
+  font-size: 12px;
+}
+
+.company-plan-card {
+  border: 1px solid #d9e2e4;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.company-plan-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #edf1f2;
+}
+
+.company-plan-card header em {
+  color: #0f7b63;
+  font-size: 12px;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
 }
 
 .clickable-card {
@@ -2310,6 +2381,8 @@ button.simple-row.selected {
   .metrics,
   .condo-cards,
   .unit-cards,
+  .module-license-grid,
+  .company-card-grid,
   .camera-card-grid,
   .manufacturer-grid,
   .sync-job-grid,
@@ -2343,6 +2416,8 @@ button.simple-row.selected {
   .form-grid,
   .condo-cards,
   .unit-cards,
+  .module-license-grid,
+  .company-card-grid,
   .camera-card-grid,
   .summary-list,
   .simple-row,
