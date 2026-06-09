@@ -100,11 +100,18 @@ const emptyData = {
 
 const API_CACHE_KEY = "condo-clean-api-cache";
 
+function normalizeBootstrap(payload = {}) {
+  return Object.fromEntries(Object.entries(emptyData).map(([key, fallback]) => {
+    const value = payload?.[key];
+    return [key, Array.isArray(fallback) ? (Array.isArray(value) ? value : fallback) : (value ?? fallback)];
+  }));
+}
+
 function readCachedBootstrap() {
   try {
     const raw = window.localStorage.getItem(API_CACHE_KEY);
     const cached = raw ? JSON.parse(raw) : null;
-    return cached?.payload ? { ...emptyData, ...cached.payload } : emptyData;
+    return cached?.payload ? normalizeBootstrap(cached.payload) : emptyData;
   } catch {
     return emptyData;
   }
@@ -1663,11 +1670,12 @@ function App() {
   }, [applyRoute]);
 
   const storeApiCache = useCallback((payload) => {
-    apiCacheRef.current = payload;
+    const normalized = normalizeBootstrap(payload);
+    apiCacheRef.current = normalized;
     try {
       window.localStorage.setItem(API_CACHE_KEY, JSON.stringify({
         savedAt: new Date().toISOString(),
-        payload
+        payload: normalized
       }));
     } catch {
       // Cache silencioso: se o navegador negar armazenamento, a tela segue normal.
@@ -1678,7 +1686,7 @@ function App() {
     try {
       const response = await fetch(`${apiUrl}/api/bootstrap`);
       if (!response.ok) return null;
-      const payload = await response.json();
+      const payload = normalizeBootstrap(await response.json());
       storeApiCache(payload);
       return payload;
     } catch {
@@ -1693,7 +1701,7 @@ function App() {
     try {
       const response = await fetch(`${apiUrl}/api/bootstrap`);
       if (!response.ok) throw new Error(`API ${response.status}`);
-      const payload = await response.json();
+      const payload = normalizeBootstrap(await response.json());
       const selectedTenantIdSnapshot = selectedTenantIdRef.current;
       const currentTenantId = payload.condominiums.some((item) => item.id === selectedTenantIdSnapshot)
         ? selectedTenantIdSnapshot
