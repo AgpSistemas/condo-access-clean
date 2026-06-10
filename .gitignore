@@ -2,6 +2,8 @@
 .env.*
 !.env.example
 node_modules/
+.npm-cache/
+.npm-cache17/
 apps/*/node_modules/
 dist/
 build/
