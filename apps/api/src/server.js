@@ -91,6 +91,7 @@ const standardSipPassword = process.env.SIP_DEFAULT_PASSWORD || "CondoAccess@202
 const oneSignalAppId = String(process.env.ONESIGNAL_APP_ID || "").trim();
 const oneSignalRestApiKey = String(process.env.ONESIGNAL_REST_API_KEY || "").trim();
 const defaultCompanyPassword = "123456";
+const masterAdminEmail = String(process.env.MASTER_ADMIN_EMAIL || "agpsistemascorp@gmail.com").trim().toLowerCase();
 
 function resolvePostgresSslMode(connectionString) {
   const explicitSslMode = String(process.env.PGSSLMODE || "").trim().toLowerCase();
@@ -360,6 +361,8 @@ const unitInvites = [];
 const accessRoutes = [];
 
 const permissionProfiles = [];
+
+const systemUsers = [];
 
 const companies = [];
 
@@ -1239,6 +1242,23 @@ function validPassword(record, password = "") {
 function publicCompany(company = {}) {
   const { passwordHash: _passwordHash, passwordSalt: _passwordSalt, ...safeCompany } = company;
   return safeCompany;
+}
+
+function ensureMasterAdmin() {
+  let master = systemUsers.find((user) => user.role === "SUPER_ADMIN");
+  if (master) return master;
+  master = {
+    id: "user-master",
+    name: "Master Administrador",
+    email: masterAdminEmail,
+    role: "SUPER_ADMIN",
+    mustChangePassword: true,
+    ...createPasswordRecord(),
+    updatedAt: now()
+  };
+  systemUsers.unshift(master);
+  savePersistentState("master-admin-created");
+  return master;
 }
 
 function updateById(collection, id, body) {
@@ -4255,6 +4275,7 @@ function persistentState() {
     unitInvites,
     accessRoutes,
     permissionProfiles,
+    systemUsers,
     companies,
     licenses,
     resources,
@@ -4280,6 +4301,7 @@ function applyPersistentState(state = {}) {
   replaceCollection(unitInvites, state.unitInvites);
   replaceCollection(accessRoutes, state.accessRoutes);
   replaceCollection(permissionProfiles, state.permissionProfiles);
+  replaceCollection(systemUsers, state.systemUsers);
   replaceCollection(companies, state.companies);
   replaceCollection(licenses, state.licenses);
   replaceCollection(resources, mergeResourceState(state.resources));
@@ -4651,9 +4673,23 @@ async function handleRequest(request, response) {
     const loginId = String(body.email || body.login || "").trim() || "agpsistemascorp@gmail.com";
     const loginKey = normalizeLookup(loginId);
     const password = String(body.password || "");
+    if (normalizeLookup(masterAdminEmail) === loginKey) {
+      const master = ensureMasterAdmin();
+      if (!validPassword(master, password)) return json(response, 401, { message: "Login ou senha invalidos." });
+      return json(response, 200, {
+        accessToken: randomBytes(24).toString("hex"),
+        refreshToken: randomBytes(24).toString("hex"),
+        user: {
+          id: master.id,
+          name: master.name,
+          email: master.email,
+          role: "SUPER_ADMIN",
+          mustChangePassword: master.mustChangePassword !== false
+        }
+      });
+    }
     const matchedCompany = companies.find((company) =>
-      normalizeLookup(company.login) === loginKey ||
-      normalizeLookup(company.contactEmail) === loginKey
+      normalizeLookup(company.login) === loginKey
     );
     if (matchedCompany) {
       if (matchedCompany.status === "INACTIVE") return json(response, 403, { message: "Empresa inativa. Entre em contato com o suporte." });
@@ -4677,15 +4713,17 @@ async function handleRequest(request, response) {
       normalizeLookup(person.phone) === loginKey ||
       normalizeLookup(person.id) === loginKey
     );
+    if (!matchedResident) return json(response, 401, { message: "Login ou senha invalidos." });
     return json(response, 200, {
       accessToken: "local-demo-token",
       refreshToken: "local-demo-refresh",
       user: {
         id: matchedResident?.email || loginId,
-        name: matchedResident?.name || "Master Administrador",
-        email: matchedResident?.email || loginId,
-        role: matchedResident ? "RESIDENT" : "SUPER_ADMIN",
-        tenantId: matchedResident?.tenantId || activeMobileTenantId()
+        name: matchedResident.name,
+        email: matchedResident.email || loginId,
+        role: "RESIDENT",
+        tenantId: matchedResident.tenantId || activeMobileTenantId(),
+        unitId: matchedResident.unitId || ""
       }
     });
   }
@@ -4761,19 +4799,20 @@ async function handleRequest(request, response) {
   if (request.method === "POST" && url.pathname === "/api/auth/change-password") {
     const body = await readBody(request);
     const loginKey = normalizeLookup(body.login || body.email);
-    const company = companies.find((item) => normalizeLookup(item.login) === loginKey);
-    if (!company || !validPassword(company, String(body.currentPassword || ""))) {
+    const account = systemUsers.find((item) => normalizeLookup(item.email) === loginKey) ||
+      companies.find((item) => normalizeLookup(item.login) === loginKey);
+    if (!account || !validPassword(account, String(body.currentPassword || ""))) {
       return json(response, 401, { message: "Senha atual invalida." });
     }
     const nextPassword = String(body.newPassword || "");
     if (nextPassword.length < 6 || nextPassword === defaultCompanyPassword) {
       return json(response, 400, { message: "A nova senha deve ter ao menos 6 caracteres e ser diferente da senha temporaria." });
     }
-    Object.assign(company, createPasswordRecord(nextPassword), {
+    Object.assign(account, createPasswordRecord(nextPassword), {
       mustChangePassword: false,
       updatedAt: now()
     });
-    savePersistentState("company-password-changed");
+    savePersistentState("account-password-changed");
     return json(response, 200, { ok: true, mustChangePassword: false });
   }
 
@@ -5481,7 +5520,8 @@ async function handleRequest(request, response) {
   if (request.method === "DELETE" && deleteTenantMatch) {
     const tenantId = deleteTenantMatch[1];
     const index = extraTenants.findIndex((item) => item.id === tenantId);
-    const [removed] = index >= 0 ? extraTenants.splice(index, 1) : [findTenant(tenantId)];
+    const builtInTenant = [tenant, showroomTenant].find((item) => item.id === tenantId) || null;
+    const [removed] = index >= 0 ? extraTenants.splice(index, 1) : [builtInTenant];
     if (!removed) return json(response, 404, { message: "Condominio nao encontrado" });
     if (index === -1) deletedTenantIds.add(tenantId);
     const tenantUnitIds = new Set(unitList().filter((unit) => unit.tenantId === tenantId).map((unit) => unit.unitId));
