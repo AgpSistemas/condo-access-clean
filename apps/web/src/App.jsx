@@ -1,7 +1,5 @@
-import Hls from "hls.js";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import readXlsxFile from "read-excel-file/browser";
 import { Invitation, Inviter, Registerer, RegistererState, SessionState, UserAgent } from "sip.js";
 import {
   Activity,
@@ -37,1176 +35,71 @@ import {
 import Logo from "./logo.png";
 import "./styles.css";
 
-const railwayApiUrl = "https://api-production-441f.up.railway.app";
-const apiUrl = import.meta.env.VITE_API_URL || railwayApiUrl;
-const WEB_PORTER_EXTENSION = "9000";
-const WEB_PORTER_PASSWORD = "CondoAccess@2026";
-
-const sections = [
-  { id: "dashboard", label: "Dashboard", icon: Activity },
-  { id: "condominiums", label: "Condominios", icon: Building2 },
-  { id: "remotePorter", label: "Portaria Remota", icon: PhoneCall }
-];
-
-const condoSections = [
-  { id: "syndic", label: "Sindico", icon: ShieldCheck },
-  { id: "units", label: "Unidades", icon: Home },
-  { id: "residents", label: "Pessoas", icon: UserRound },
-  { id: "devices", label: "Equipamentos", icon: RadioTower },
-  { id: "credentials", label: "Credenciais", icon: BadgeCheck },
-  { id: "permissions", label: "Permissoes", icon: KeySquare },
-  { id: "resources", label: "Recursos", icon: ClipboardList },
-  { id: "sdk", label: "SDK equipamentos", icon: ServerCog }
-];
-
-const settingsSections = [
-  { id: "companies", label: "Empresas e planos", icon: Building2 },
-  { id: "licenses", label: "Licencas", icon: FileKey2 },
-  { id: "payments", label: "Pagamentos", icon: CreditCard }
-];
-
-const equipmentIntegrationResources = [
-  ["events", "Ler eventos", Activity],
-  ["credentials", "Buscar credenciais", BadgeCheck],
-  ["schedules", "Horarios", ClipboardList],
-  ["faces", "Faciais", UserRound],
-  ["users", "Usuarios", Users]
-];
-
-const emptyData = {
-  generatedAt: null,
-  session: null,
-  condominiums: [],
-  units: [],
-  residents: [],
-  vehicles: [],
-  deviceCategories: [],
-  permissionProfiles: [],
-  devices: [],
-  cameras: [],
-  actions: [],
-  credentials: [],
-  credentialSyncJobs: [],
-  accessLogs: [],
-  unitLogins: [],
-  unitInvites: [],
-  manufacturerProfiles: [],
-  accessRoutes: [],
-  companies: [],
-  licenses: [],
-  resources: [],
-  resourceConfigurations: [],
-  intercomCalls: [],
-  extensionStatus: []
-};
-
-const API_CACHE_KEY = "condo-clean-api-cache";
-
-function normalizeBootstrap(payload = {}) {
-  return Object.fromEntries(Object.entries(emptyData).map(([key, fallback]) => {
-    const value = payload?.[key];
-    return [key, Array.isArray(fallback) ? (Array.isArray(value) ? value : fallback) : (value ?? fallback)];
-  }));
-}
-
-function readCachedBootstrap() {
-  try {
-    const raw = window.localStorage.getItem(API_CACHE_KEY);
-    const cached = raw ? JSON.parse(raw) : null;
-    return cached?.payload ? normalizeBootstrap(cached.payload) : emptyData;
-  } catch {
-    return emptyData;
-  }
-}
-
-function parsePositiveInteger(value, fallback = 0) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function condoTotalUnits(source = {}) {
-  const safeSource = source || {};
-  const groups = parsePositiveInteger(safeSource.structureGroupCount ?? safeSource.floorCount ?? safeSource.blockCount, 0);
-  const perGroup = parsePositiveInteger(safeSource.unitsPerGroup ?? safeSource.unitsPerFloor ?? safeSource.unitsPerBlock, 0);
-  return groups * perGroup;
-}
-
-async function geocodeAddressFields({ address, addressNumber, city, state }) {
-  const query = [address, addressNumber, city, state, "Brasil"].filter(Boolean).join(", ");
-  if (!query.trim()) return null;
-  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, { headers: { "Accept": "application/json" } });
-  const payload = await response.json().catch(() => []);
-  const first = Array.isArray(payload) ? payload[0] : null;
-  if (!first?.lat || !first?.lon) return null;
-  return { latitude: String(first.lat), longitude: String(first.lon) };
-}
-
-const emptyTelephony = {
-  enabled: false,
-  provider: "NATIVE_SIP",
-  sipDomain: "",
-  sipWebSocketUrl: "",
-  sipTransport: "UDP",
-  extension: "",
-  extensionPassword: "",
-  porterExtension: ""
-};
-
-function normalizeWebSocketForWebPhone(value, domain) {
-  const cleanDomain = String(domain || "granportalresidency.ddns.net").trim() || "granportalresidency.ddns.net";
-  const cleanValue = String(value || "").trim();
-  if (!cleanValue) return `wss://${cleanDomain}:8089/ws`;
-
-  try {
-    const url = new URL(cleanValue);
-    url.protocol = "wss:";
-    url.hostname = url.hostname || cleanDomain;
-    url.port = "8089";
-    if (!url.pathname || url.pathname === "/" || url.pathname === "/sw" || url.pathname === "/wss") {
-      url.pathname = "/ws";
-    }
-    return url.toString().replace(/\/$/, "");
-  } catch {
-    return `wss://${cleanDomain}:8089/ws`;
-  }
-}
-
-function sameText(left, right) {
-  return String(left || "").trim().toLowerCase() === String(right || "").trim().toLowerCase();
-}
-
-function PersonAvatar({ name = "", photoUrl = "" }) {
-  const initial = String(name || "?").trim().slice(0, 1).toUpperCase() || "?";
-  return (
-    <span className={`avatar ${photoUrl ? "has-photo" : ""}`}>
-      {photoUrl ? <img src={photoUrl} alt="" onError={(event) => { event.currentTarget.style.display = "none"; event.currentTarget.parentElement?.classList.remove("has-photo"); }} /> : null}
-      <em>{initial}</em>
-    </span>
-  );
-}
-
-function credentialPhotoUrl(credential = {}, person = {}) {
-  if (person?.photoUrl) return person.photoUrl;
-  const photoUrl = String(credential?.photoUrl || "").trim();
-  if (!photoUrl) return "";
-  if (photoUrl.startsWith("data:") || photoUrl.startsWith("https://")) return photoUrl;
-  return `${apiUrl}/api/credentials/${encodeURIComponent(credential.id)}/photo`;
-}
-
-function equipmentPreviewPhotoUrl(deviceId = "", photoUrl = "") {
-  const clean = String(photoUrl || "").trim();
-  if (!clean || !deviceId) return "";
-  if (clean.startsWith("data:")) return clean;
-  return `${apiUrl}/api/devices/${encodeURIComponent(deviceId)}/integration/photo?url=${encodeURIComponent(clean)}`;
-}
-
-function callTime(call = {}) {
-  return new Date(call.createdAt || call.answeredAt || 0).getTime() || 0;
-}
-
-function unitExtension(unit = {}) {
-  return String(unit.telephony?.extension || unit.extension || "").trim();
-}
-
-function resolveCallUnit(call, allUnits = [], selectedTenantId = "") {
-  if (!call) return null;
-  const tenantId = call.tenantId || selectedTenantId || "";
-  const scopedUnits = tenantId ? allUnits.filter((unit) => unit.tenantId === tenantId) : allUnits;
-  const candidates = scopedUnits.length ? scopedUnits : allUnits;
-
-  return candidates.find((unit) => sameText(unit.unitId, call.unitId)) ||
-    candidates.find((unit) => sameText(unit.unitNumber, call.unitNumber)) ||
-    candidates.find((unit) => call.sourceExtension && unitExtension(unit) === String(call.sourceExtension).trim()) ||
-    null;
-}
-
-const emptyDeviceForm = {
-  id: "",
-  category: "access-control",
-  manufacturer: "Hikvision",
-  name: "",
-  model: "",
-  ipAddress: "",
-  apiProtocol: "http",
-  username: "admin",
-  password: "",
-  apiPort: "80",
-  rtspPort: "554",
-  channelCount: "",
-  intercomExtension: "",
-  intercomType: "FACIAL",
-  intercomEnabled: true
-};
-
-const emptyLicenseForm = {
-  id: "",
-  companyId: "",
-  tenantId: "",
-  contract: "",
-  name: "",
-  cnpj: "",
-  type: "Condominio",
-  structure: "Residencial",
-  attendance: "Full",
-  city: "",
-  residents: "0",
-  extensionLimit: "0",
-  resourceIds: []
-};
-
-const emptyCompanyForm = {
-  id: "",
-  name: "",
-  document: "",
-  status: "ACTIVE",
-  contactName: "",
-  contactEmail: "",
-  contactPhone: "",
-  login: "",
-  logoUrl: "",
-  billingModel: "PER_CONDOMINIUM",
-  maxCondominiums: "1",
-  baseMonthlyPrice: "0",
-  condominiumUnitPrice: "0",
-  voipBillingModel: "PER_EXTENSION",
-  includedExtensions: "0",
-  maxExtensions: "0",
-  extensionUnitPrice: "0",
-  resourceIds: []
-};
-
-const emptyCameraForm = {
-  id: "",
-  deviceId: "",
-  description: "",
-  type: "NVR",
-  manufacturer: "Hikvision",
-  model: "",
-  host: "",
-  rtspPort: "554",
-  httpPort: "80",
-  rtspPath: "",
-  username: "admin",
-  password: "",
-  channel: "1",
-  channelCount: "16",
-  channelDescription: "",
-  stream: "SUB",
-  aspectRatio: "WIDESCREEN",
-  loadMethod: "HLS_GATEWAY",
-  photoCaptureEnabled: false
-};
-
-const emptyActionForm = {
-  id: "",
-  name: "",
-  manufacturer: "Hikvision",
-  deviceId: "",
-  relay: "1",
-  route: "",
-  status: "ACTIVE"
-};
-
-const emptyCredentialForm = {
-  id: "",
-  tenantId: "",
-  unitId: "",
-  personId: "",
-  type: "APP",
-  value: "",
-  valueLabel: "",
-  deviceId: ""
-};
-
-const emptyVehicleForm = {
-  id: "",
-  unitId: "",
-  personId: "",
-  plate: "",
-  brand: "",
-  model: "",
-  color: "",
-  type: "CARRO",
-  notes: ""
-};
-
-const resourceConfigurationFields = {
-  voicy: [
-    { id: "callLabel", label: "Nome exibido da portaria", type: "text", defaultValue: "Portaria" },
-    { id: "defaultAudioRoute", label: "Audio inicial", type: "select", options: [["EARPIECE", "Auricular"], ["SPEAKER", "Viva-voz"]], defaultValue: "EARPIECE" },
-    { id: "allowResidentCalls", label: "Permitir ligacao do morador", type: "boolean", defaultValue: true }
-  ],
-  clickApprove: [
-    { id: "approvalTimeoutSeconds", label: "Tempo para aprovar (segundos)", type: "number", defaultValue: "30" },
-    { id: "requireCamera", label: "Exigir camera na aprovacao", type: "boolean", defaultValue: true },
-    { id: "requireReason", label: "Exigir motivo ao negar", type: "boolean", defaultValue: false }
-  ],
-  invites: [
-    { id: "defaultValidityHours", label: "Validade padrao (horas)", type: "number", defaultValue: "24" },
-    { id: "allowRecurring", label: "Permitir convite recorrente", type: "boolean", defaultValue: true },
-    { id: "requireDocument", label: "Exigir documento do visitante", type: "boolean", defaultValue: false },
-    { id: "sendWhatsApp", label: "Oferecer envio por WhatsApp", type: "boolean", defaultValue: true }
-  ],
-  notices: [
-    { id: "defaultPriority", label: "Prioridade padrao", type: "select", options: [["NORMAL", "Normal"], ["IMPORTANT", "Importante"], ["URGENT", "Urgente"]], defaultValue: "NORMAL" },
-    { id: "allowAttachments", label: "Permitir anexos", type: "boolean", defaultValue: true },
-    { id: "notifyResidents", label: "Notificar moradores", type: "boolean", defaultValue: true }
-  ],
-  maintenance: [
-    { id: "categories", label: "Categorias (separadas por virgula)", type: "text", defaultValue: "Eletrica,Hidraulica,Elevador,Limpeza,Geral" },
-    { id: "allowPhoto", label: "Permitir foto", type: "boolean", defaultValue: true },
-    { id: "notifyManager", label: "Notificar responsavel", type: "boolean", defaultValue: true }
-  ],
-  personalData: [
-    { id: "allowProfilePhoto", label: "Permitir foto de perfil", type: "boolean", defaultValue: true },
-    { id: "editableFields", label: "Campos editaveis", type: "text", defaultValue: "name,email,phone,cpf,rg,birthDate,photoUrl" },
-    { id: "requireApproval", label: "Exigir aprovacao da administracao", type: "boolean", defaultValue: false }
-  ],
-  unitData: [
-    { id: "editableFields", label: "Campos editaveis", type: "text", defaultValue: "ownerName,ownerDocument,documents" },
-    { id: "showDocuments", label: "Exibir documentos da unidade", type: "boolean", defaultValue: true }
-  ],
-  residents: [
-    { id: "requireCpf", label: "Exigir CPF", type: "boolean", defaultValue: true },
-    { id: "requirePhoto", label: "Exigir foto", type: "boolean", defaultValue: false },
-    { id: "requireApproval", label: "Exigir aprovacao da administracao", type: "boolean", defaultValue: true }
-  ],
-  temporaryFace: [
-    { id: "defaultValidityHours", label: "Validade padrao (horas)", type: "number", defaultValue: "8" },
-    { id: "maxValidityHours", label: "Validade maxima (horas)", type: "number", defaultValue: "72" },
-    { id: "autoDelete", label: "Excluir automaticamente no equipamento", type: "boolean", defaultValue: true }
-  ],
-  qrScanner: [
-    { id: "validityMinutes", label: "Validade da leitura (minutos)", type: "number", defaultValue: "5" },
-    { id: "allowOffline", label: "Permitir validacao offline", type: "boolean", defaultValue: false },
-    { id: "notifyOnRead", label: "Notificar ao ler QR Code", type: "boolean", defaultValue: true }
-  ],
-  deliveries: [
-    { id: "requirePhoto", label: "Exigir foto da entrega", type: "boolean", defaultValue: true },
-    { id: "requireRecipientConfirmation", label: "Exigir confirmacao do recebedor", type: "boolean", defaultValue: true },
-    { id: "notifyResident", label: "Notificar morador", type: "boolean", defaultValue: true }
-  ],
-  shiftLog: [
-    { id: "requireClosingNote", label: "Exigir observacao no encerramento", type: "boolean", defaultValue: true },
-    { id: "allowAttachments", label: "Permitir anexos", type: "boolean", defaultValue: true }
-  ],
-  nomenclatures: [
-    { id: "residentLabel", label: "Nome para morador", type: "text", defaultValue: "Morador" },
-    { id: "unitLabel", label: "Nome para unidade", type: "text", defaultValue: "Unidade" },
-    { id: "porterLabel", label: "Nome para portaria", type: "text", defaultValue: "Portaria" }
-  ]
-};
-
-function defaultResourceSettings(resourceId) {
-  return Object.fromEntries((resourceConfigurationFields[resourceId] || []).map((field) => [field.id, field.defaultValue]));
-}
-
-function Field({ label, children }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function intelbrasDeviceDefaults(category, manufacturer) {
-  if (manufacturer === "Hikvision") {
-    if (category === "cameras") {
-      return {
-        model: "DS-7616NI-E2 / 16P",
-        apiProtocol: "http",
-        apiPort: "80",
-        rtspPort: "554",
-        channelCount: "16",
-        intercomEnabled: false
-      };
-    }
-
-    if (category === "access-control") {
-      return {
-        model: "DS-K1T342MWX",
-        apiProtocol: "http",
-        apiPort: "80",
-        rtspPort: "554",
-        channelCount: "",
-        intercomType: "FACIAL",
-        intercomEnabled: true
-      };
-    }
-  }
-
-  if (manufacturer !== "Intelbras") return {};
-  if (category === "cameras") {
-    return {
-      model: "MHDX 3116-C",
-      apiProtocol: "http",
-      apiPort: "80",
-      rtspPort: "554",
-      channelCount: "16",
-      intercomEnabled: false
-    };
-  }
-
-  if (category === "access-control") {
-    return {
-      model: "SS 3532 MF W",
-      apiProtocol: "http",
-      apiPort: "80",
-      rtspPort: "554",
-      channelCount: "",
-      intercomType: "FACIAL",
-      intercomEnabled: true
-    };
-  }
-
-  return {};
-}
-
-function intelbrasModelDefaults(model) {
-  if (model === "DS-7616NI-E2 / 16P") {
-    return {
-      category: "cameras",
-      manufacturer: "Hikvision",
-      model,
-      apiProtocol: "http",
-      apiPort: "80",
-      rtspPort: "554",
-      channelCount: "16",
-      intercomEnabled: false
-    };
-  }
-
-  if (model === "DS-K1T342MWX") {
-    return {
-      category: "access-control",
-      manufacturer: "Hikvision",
-      model,
-      apiProtocol: "http",
-      apiPort: "80",
-      rtspPort: "554",
-      channelCount: "",
-      intercomType: "FACIAL",
-      intercomEnabled: true
-    };
-  }
-
-  if (model === "MHDX 3116-C") {
-    return {
-      category: "cameras",
-      manufacturer: "Intelbras",
-      model,
-      apiProtocol: "http",
-      apiPort: "80",
-      rtspPort: "554",
-      channelCount: "16",
-      intercomEnabled: false
-    };
-  }
-
-  if (model === "SS 3532 MF W") {
-    return {
-      category: "access-control",
-      manufacturer: "Intelbras",
-      model,
-      apiProtocol: "http",
-      apiPort: "80",
-      rtspPort: "554",
-      channelCount: "",
-      intercomType: "FACIAL",
-      intercomEnabled: true
-    };
-  }
-
-  return { model };
-}
-
-function homologatedModelOptions(manufacturer, categoryOrType) {
-  const key = String(categoryOrType || "").toLowerCase();
-  if (manufacturer === "Hikvision") {
-    if (key.includes("camera") || key === "dvr" || key === "nvr") return ["DS-7616NI-E2 / 16P"];
-    if (key.includes("access") || key.includes("facial")) return ["DS-K1T342MWX"];
-    return ["DS-K1T342MWX", "DS-7616NI-E2 / 16P"];
-  }
-
-  if (manufacturer === "Intelbras") {
-    if (key.includes("camera") || key === "dvr" || key === "nvr") return ["MHDX 3116-C"];
-    if (key.includes("access") || key.includes("facial")) return ["SS 3532 MF W"];
-    return ["SS 3532 MF W", "MHDX 3116-C"];
-  }
-
-  return [];
-}
-
-function intelbrasCameraDefaults(type, manufacturer) {
-  if (manufacturer === "Hikvision") {
-    if (type === "DVR" || type === "NVR") {
-      return {
-        model: "DS-7616NI-E2 / 16P",
-        rtspPort: "554",
-        httpPort: "80",
-        channelCount: "16",
-        stream: "SUB",
-        loadMethod: "HLS_GATEWAY"
-      };
-    }
-
-    if (type === "FACIAL") {
-      return {
-        model: "DS-K1T342MWX",
-        rtspPort: "554",
-        httpPort: "80",
-        channelCount: "1",
-        stream: "SUB",
-        loadMethod: "HLS_GATEWAY"
-      };
-    }
-  }
-
-  if (manufacturer !== "Intelbras") return {};
-  if (type === "DVR" || type === "NVR") {
-    return {
-      model: "MHDX 3116-C",
-      rtspPort: "554",
-      httpPort: "80",
-      channelCount: "16",
-      stream: "SUB",
-      loadMethod: "HLS_GATEWAY"
-    };
-  }
-
-  if (type === "FACIAL") {
-    return {
-      model: "SS 3532 MF W",
-      rtspPort: "554",
-      httpPort: "80",
-      channelCount: "1",
-      stream: "SUB",
-      loadMethod: "HLS_GATEWAY"
-    };
-  }
-
-  return {};
-}
-
-function formatDateTime(value) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
-}
-
-function csvCell(value) {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
-}
-
-function downloadCsv(filename, rows) {
-  const csv = rows.map((row) => row.map(csvCell).join(";")).join("\n");
-  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-async function readImportRows(file) {
-  const extension = file.name.split(".").pop()?.toLowerCase();
-  if (extension === "csv") {
-    const text = await file.text();
-    const delimiter = text.includes(";") ? ";" : ",";
-    const lines = text.split(/\r?\n/).filter((line) => line.trim());
-    const headers = (lines.shift() || "").split(delimiter).map((header) => header.trim());
-    return lines.map((line) => {
-      const values = line.split(delimiter).map((value) => value.trim());
-      return Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
-    });
-  }
-
-  const rows = await readXlsxFile(file);
-  const headers = (rows.shift() || []).map((header) => String(header || "").trim());
-  return rows
-    .filter((row) => row.some((cell) => String(cell || "").trim()))
-    .map((row) => Object.fromEntries(headers.map((header, index) => [header, row[index] == null ? "" : String(row[index]).trim()])));
-}
-
-function StatusBanner({ status, error, lastSyncAt }) {
-  if (status !== "offline" && !error) return null;
-
-  return (
-    <div className="sync-banner offline">
-      <div>
-        <WifiOff size={20} />
-        <strong>Nao foi possivel atualizar</strong>
-        <span>Ultima sincronizacao {formatDateTime(lastSyncAt)}</span>
-      </div>
-      <small>{error || "Verifique a conexao com a API e tente novamente."}</small>
-    </div>
-  );
-}
-
-function cameraStreamKey(camera, channel) {
-  if (!camera) return "";
-  const selectedChannel = Number(channel || camera.channel || camera.activeChannels?.[0]?.channel || 1);
-  return selectedChannel ? `${camera.id}--ch-${selectedChannel}` : camera.id;
-}
-
-function cameraSnapshotUrl(camera, channel) {
-  if (!camera) return "";
-  const selectedChannel = Number(channel || camera.channel || camera.activeChannels?.[0]?.channel || 1);
-  return `${apiUrl}/api/cameras/${camera.id}/snapshot.jpg?channel=${selectedChannel}`;
-}
-
-function cameraChannels(camera) {
-  const channels = camera?.activeChannels?.length
-    ? camera.activeChannels
-    : [{ channel: camera?.channel || 1, description: camera?.description || "Canal 1" }];
-  return channels
-    .map((item) => ({ channel: Number(item.channel || 1), description: item.description || `Canal ${item.channel || 1}` }))
-    .sort((a, b) => a.channel - b.channel);
-}
-
-function cameraMosaicLabel(item) {
-  const base = item.camera.groupName || item.camera.description || item.camera.name || "Camera";
-  return `${base.slice(0, 14)} C${item.channel}`;
-}
-
-function faceImportSelectionKey(item = {}) {
-  return item.payload?.recordId || `${item.row}-${item.payload?.value || ""}`;
-}
-
-function importSelectionBase(item = {}, selection = {}) {
-  return {
-    key: faceImportSelectionKey(item),
-    row: item.row,
-    recordId: item.payload?.recordId || "",
-    type: item.payload?.type || "",
-    value: item.payload?.value || "",
-    selected: selection.selected !== false,
-    unitId: selection.unitId || item.unitId || "",
-    unitNumber: selection.unitNumber ?? item.payload?.unitNumber ?? "",
-    blockName: selection.blockName ?? item.payload?.blockName ?? ""
-  };
-}
-
-function groupCameraDevices(cameras) {
-  const groups = new Map();
-  cameras.forEach((camera) => {
-    const key = camera.deviceId || camera.groupId || `${camera.tenantId || ""}-${camera.host || camera.ipAddress || ""}-${camera.rtspPort || ""}-${camera.type || ""}-${camera.manufacturer || ""}`;
-    if (!groups.has(key)) {
-      groups.set(key, { ...camera, id: camera.id, groupKey: key, activeChannels: [], groupedIds: [] });
-    }
-    const group = groups.get(key);
-    group.groupedIds.push(camera.id);
-    const sourceChannels = camera.activeChannels?.length
-      ? camera.activeChannels
-      : [{ channel: camera.channel || group.activeChannels.length + 1, description: camera.description || camera.name }];
-    sourceChannels.forEach((channel) => {
-      const channelNumber = Number(channel.channel || 1);
-      if (!group.activeChannels.some((item) => Number(item.channel) === channelNumber)) {
-        group.activeChannels.push({ channel: channelNumber, description: channel.description || `Canal ${channelNumber}` });
-      }
-    });
-  });
-
-  return Array.from(groups.values()).map((camera) => ({
-    ...camera,
-    activeChannels: cameraChannels(camera)
-  }));
-}
-
-function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
-  const videoRef = useRef(null);
-  const [status, setStatus] = useState("Carregando camera...");
-  const selectedChannel = Number(channel || camera?.channel || camera?.activeChannels?.[0]?.channel || 1);
-  const streamKey = cameraStreamKey(camera, selectedChannel);
-  const streamUrl = camera ? `${apiUrl}/streams/${streamKey}/index.m3u8` : "";
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !streamUrl) return undefined;
-
-    let hls = null;
-    let fallbackTimer = null;
-    let usingFallback = false;
-    const fallbackDelayMs = 25000;
-
-    setStatus("Abrindo stream HLS da API local...");
-
-    function markConnected() {
-      setStatus("Stream conectado");
-    }
-
-    function startHlsFallback(reason = "timeout") {
-      if (usingFallback) return;
-      usingFallback = true;
-
-      if (!Hls.isSupported()) {
-        setStatus(reason === "timeout" ? "Aguardando player nativo do navegador..." : "Navegador sem suporte HLS. Abra pelo botao HLS ou VLC.");
-        return;
-      }
-
-      setStatus("Abrindo stream com fallback HLS.js...");
-      video.removeAttribute("src");
-      video.load();
-
-      hls = new Hls({
-        lowLatencyMode: true,
-        backBufferLength: 10,
-        liveSyncDurationCount: 2
-      });
-
-      hls.loadSource(streamUrl);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        markConnected();
-        void video.play().catch(() => undefined);
-      });
-      hls.on(Hls.Events.FRAG_BUFFERED, markConnected);
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          setStatus("Reconectando stream HLS...");
-          hls.startLoad();
-          return;
-        }
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          setStatus("Recuperando decodificacao do video...");
-          hls.recoverMediaError();
-          return;
-        }
-        setStatus("Falha ao carregar. Verifique senha RTSP e FFmpeg.");
-      });
-    }
-
-    function handleLoadedMetadata() {
-      markConnected();
-      void video.play().catch(() => undefined);
-    }
-
-    video.addEventListener("loadedmetadata", handleLoadedMetadata);
-    video.addEventListener("playing", markConnected);
-    const handleVideoError = () => startHlsFallback("error");
-
-    video.addEventListener("error", handleVideoError);
-
-    video.src = streamUrl;
-    video.load();
-    void video.play().catch(() => undefined);
-
-    fallbackTimer = window.setTimeout(() => {
-      if (video.readyState < 2) startHlsFallback();
-    }, fallbackDelayMs);
-
-    return () => {
-      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
-      video.removeEventListener("playing", markConnected);
-      video.removeEventListener("error", handleVideoError);
-      if (fallbackTimer) window.clearTimeout(fallbackTimer);
-      if (hls) hls.destroy();
-      video.removeAttribute("src");
-      video.load();
-      if (streamKey) {
-        void fetch(`${apiUrl}/streams/${encodeURIComponent(streamKey)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
-      }
-    };
-  }, [streamKey, streamUrl]);
-
-  if (!camera) {
-    return <div className="empty-state">Selecione uma camera do condominio.</div>;
-  }
-
-  const failed = status.startsWith("Falha") || status.startsWith("Nao foi possivel");
-  const connected = status === "Stream conectado";
-  const previewImageUrl = cameraSnapshotUrl(camera, selectedChannel);
-
-  return (
-    <div className="camera-preview">
-      <div
-        className={`camera-preview-frame ${connected ? "connected" : "loading"} ${failed ? "failed" : ""} ${onFrameClick ? "clickable" : ""}`}
-        role={onFrameClick ? "button" : undefined}
-        tabIndex={onFrameClick ? 0 : undefined}
-        onClick={onFrameClick}
-        onKeyDown={(event) => {
-          if (onFrameClick && (event.key === "Enter" || event.key === " ")) {
-            event.preventDefault();
-            onFrameClick();
-          }
-        }}
-        aria-label={frameLabel}
-      >
-        <img className="camera-preview-snapshot" src={previewImageUrl} alt={camera.description || camera.name || "Camera"} />
-        <video ref={videoRef} controls muted playsInline autoPlay />
-        <span className={`camera-live-badge ${connected ? "online" : failed ? "offline" : ""}`}>
-          {connected ? "AO VIVO" : failed ? "Falha ao carregar" : "Carregando"}
-        </span>
-      </div>
-      <div className="camera-preview-meta">
-        <strong>{camera.description || camera.name}</strong>
-        <span>{camera.host}:{camera.rtspPort} - Canal {selectedChannel}</span>
-        <small>{status}</small>
-      </div>
-      <div className="camera-preview-actions">
-        <a className="secondary-button" href={`${apiUrl}/api/cameras/${camera.id}/vlc.m3u`} download><Camera size={16} /> Abrir no VLC</a>
-        <a className="secondary-button" href={streamUrl} target="_blank" rel="noreferrer"><Camera size={16} /> HLS</a>
-      </div>
-    </div>
-  );
-}
-
-function CameraTile({ camera, channel, description, index, onSelect }) {
-  const videoRef = useRef(null);
-  const selectedChannel = Number(channel || camera?.channel || camera?.activeChannels?.[0]?.channel || index + 1);
-  const streamKey = cameraStreamKey(camera, selectedChannel);
-  const streamUrl = camera ? `${apiUrl}/streams/${streamKey}/index.m3u8` : "";
-  const snapshotUrl = cameraSnapshotUrl(camera, selectedChannel);
-  const [status, setStatus] = useState("loading");
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !streamUrl) return undefined;
-
-    let hls = null;
-    let mounted = true;
-
-    setStatus("loading");
-
-    function markReady() {
-      if (mounted) setStatus("online");
-    }
-
-    function markFailed() {
-      if (mounted) setStatus("offline");
-    }
-
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = streamUrl;
-      video.load();
-      void video.play().catch(markFailed);
-    } else if (Hls.isSupported()) {
-      hls = new Hls({
-        lowLatencyMode: true,
-        backBufferLength: 4,
-        liveSyncDurationCount: 2,
-        maxBufferLength: 8
-      });
-      hls.loadSource(streamUrl);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().then(markReady).catch(markFailed));
-      hls.on(Hls.Events.FRAG_BUFFERED, markReady);
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          hls.startLoad();
-          return;
-        }
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          hls.recoverMediaError();
-          return;
-        }
-        markFailed();
-      });
-    } else {
-      markFailed();
-    }
-
-    video.addEventListener("playing", markReady);
-    video.addEventListener("error", markFailed);
-
-    return () => {
-      mounted = false;
-      video.removeEventListener("playing", markReady);
-      video.removeEventListener("error", markFailed);
-      if (hls) hls.destroy();
-      video.removeAttribute("src");
-      video.load();
-      if (streamKey) {
-        void fetch(`${apiUrl}/streams/${encodeURIComponent(streamKey)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
-      }
-    };
-  }, [streamKey, streamUrl]);
-
-  if (!camera) return null;
-
-  return (
-    <button className={`camera-tile live-tile tile-tone-${index % 4}`} type="button" onClick={onSelect}>
-      <img className="camera-tile-snapshot" src={snapshotUrl} alt={description || camera.description || camera.name || `Camera ${index + 1}`} loading="eager" />
-      <video ref={videoRef} className="camera-tile-video" muted playsInline autoPlay />
-      <span className="camera-tile-channel">Canal {selectedChannel}</span>
-      <span className={`camera-tile-live ${status}`}>{status === "online" ? "AO VIVO" : status === "offline" ? "Falha" : "Carregando"}</span>
-      <strong>{description || camera.description || camera.name || `Camera ${index + 1}`}</strong>
-    </button>
-  );
-}
-
-function Pagination({ page, totalPages, onPage }) {
-  return (
-    <div className="pagination-bar">
-      <button className="secondary-button" disabled={page <= 1} onClick={() => onPage(page - 1)}>Anterior</button>
-      <span>Pagina {page} de {totalPages}</span>
-      <button className="secondary-button" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>Proxima</button>
-    </div>
-  );
-}
-
-function usePaged(items, pageSize = 6) {
-  const [page, setPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
-  const safePage = Math.min(page, totalPages);
-  const pageItems = items.slice((safePage - 1) * pageSize, safePage * pageSize);
-  return { page: safePage, setPage, totalPages, pageItems };
-}
-
-function Metric({ label, value, icon: Icon }) {
-  return (
-    <article className="metric">
-      <Icon size={22} />
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </article>
-  );
-}
-
-function LocalLogin({ onLogin }) {
-  const [mode, setMode] = useState("choice");
-  const [email, setEmail] = useState("agpsistemascorp@gmail.com");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  if (mode === "choice") {
-    return (
-      <main className="login-shell">
-        <section className="login-panel">
-          <div className="login-brand">
-            <img src={Logo} alt="Condo Access" style={{ width: 44, height: 44, objectFit: "contain" }} />
-            <div><strong>Condo Access</strong><span>Acesso seguro</span></div>
-          </div>
-          <button onClick={() => setMode("login")}><LogIn size={18} />Ja sou cliente</button>
-          <button className="secondary-button" onClick={() => setMode("signup")}><UserPlus size={18} />Quero me cadastrar</button>
-        </section>
-      </main>
-    );
-  }
-
-  return (
-    <main className="login-shell">
-      <form className="login-panel" onSubmit={(event) => {
-        event.preventDefault();
-        setLoading(true);
-        setError("");
-        void fetch(`${apiUrl}/api/auth/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password })
-        }).then(async (response) => {
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(result.message || "Falha ao entrar.");
-          onLogin({ ...result.user, accessToken: result.accessToken, refreshToken: result.refreshToken });
-        }).catch((loginError) => {
-          setError(loginError instanceof Error ? loginError.message : "Falha ao entrar.");
-        }).finally(() => setLoading(false));
-      }}>
-        <div className="login-brand">
-          <img src={Logo} alt="Condo Access" style={{ width: 44, height: 44, objectFit: "contain" }} />
-          <div><strong>Condo Access</strong><span>{mode === "signup" ? "Cadastro inicial" : "Acesso seguro"}</span></div>
-        </div>
-        <Field label="E-mail"><input value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
-        <Field label="Senha"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
-        {error && <div className="form-error">{error}</div>}
-        {mode === "signup" && <div className="form-hint">Fluxo local de demonstracao. Na API real, este cadastro cria ou solicita acesso ao condominio.</div>}
-        <button type="submit" disabled={loading}><LogIn size={18} />{loading ? "Entrando..." : "Entrar"}</button>
-        <button className="secondary-button" type="button" onClick={() => setMode("choice")}>Voltar</button>
-      </form>
-    </main>
-  );
-}
-
-function ChangePassword({ session, onChanged }) {
-  const [currentPassword, setCurrentPassword] = useState("123456");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmation, setConfirmation] = useState("");
-  const [error, setError] = useState("");
-
-  return (
-    <main className="login-shell">
-      <form className="login-panel" onSubmit={async (event) => {
-        event.preventDefault();
-        if (newPassword !== confirmation) {
-          setError("A confirmacao da nova senha nao confere.");
-          return;
-        }
-        const response = await fetch(`${apiUrl}/api/auth/change-password`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ login: session.email, currentPassword, newPassword })
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          setError(result.message || "Falha ao alterar senha.");
-          return;
-        }
-        onChanged({ ...session, mustChangePassword: false });
-      }}>
-        <div className="login-brand">
-          <img src={Logo} alt="Condo Access" style={{ width: 44, height: 44, objectFit: "contain" }} />
-          <div><strong>Troca obrigatoria de senha</strong><span>Proteja o primeiro acesso da empresa</span></div>
-        </div>
-        <Field label="Senha temporaria"><input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></Field>
-        <Field label="Nova senha"><input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field>
-        <Field label="Confirmar nova senha"><input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></Field>
-        {error && <div className="form-error">{error}</div>}
-        <button type="submit"><Save size={18} /> Alterar senha e continuar</button>
-      </form>
-    </main>
-  );
-}
-
-function CameraConfig({ cameras, devices = [], form, setForm, showForm, onSave, onEdit, onNew, onDelete }) {
-  const isMultiChannel = form.type === "DVR" || form.type === "NVR";
-  const cameraModelOptions = homologatedModelOptions(form.manufacturer, form.type);
-  return (
-    <section className="config-stack">
-      {showForm && <form className="nested-form" onSubmit={onSave}>
-        <div className="panel-heading compact-heading">
-          <h2>{form.id ? "Editar camera" : "Nova camera"}</h2>
-          <div className="toolbar-actions compact-actions">
-            {form.id && <button className="secondary-button" type="button" onClick={onNew}><Plus size={16} /> Nova</button>}
-            <button type="submit"><Save size={16} /> Salvar camera</button>
-          </div>
-        </div>
-        <div className="form-hint">Cadastre Camera IP como canal unico, ou DVR/NVR multicanal como um equipamento com lista de canais. A API entrega HLS por canal para Web/APK e mantem RTSP sob demanda.</div>
-        <div className="form-grid">
-          <Field label="Equipamento"><select name="deviceId" value={form.deviceId || ""} onChange={(event) => {
-            const device = devices.find((item) => item.id === event.target.value);
-            setForm((current) => ({
-              ...current,
-              deviceId: event.target.value,
-              manufacturer: device?.manufacturer || current.manufacturer,
-              model: device?.model || current.model,
-              type: device?.category === "cameras" ? "DVR" : current.type,
-              host: device?.ipAddress || current.host,
-              rtspPort: String(device?.rtspPort || current.rtspPort),
-              httpPort: String(device?.apiPort || current.httpPort),
-              username: device?.username || current.username,
-              channelCount: String(device?.channelCount || current.channelCount),
-              channelDescription: current.channelDescription || device?.name || ""
-            }));
-          }}><option value="">Sem vinculo</option>{devices.filter((device) => device.category === "cameras" || device.channelCount).map((device) => <option key={device.id} value={device.id}>{device.name} - {device.model || device.manufacturer}</option>)}</select></Field>
-          <Field label="Descricao"><input name="description" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></Field>
-          <Field label="Fabricante"><select name="manufacturer" value={form.manufacturer} onChange={(event) => setForm((current) => ({ ...current, manufacturer: event.target.value, ...intelbrasCameraDefaults(current.type, event.target.value) }))}><option>Hikvision</option><option>Intelbras</option><option>Uniview</option><option>Tecvoz</option><option>Motorola</option><option>Anko</option><option>Master Digital</option><option>TRX</option><option>ONVIF</option><option>RTSP Generico</option><option>Control iD</option><option>Linear HCS</option><option>Bravas</option><option>SIM Next Cloud</option><option>Generico</option></select></Field>
-          <Field label="Modelo homologacao">{cameraModelOptions.length
-            ? <select name="model" value={form.model || ""} onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))}><option value="">Selecione o modelo</option>{cameraModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}</select>
-            : <input name="model" value={form.model || ""} onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))} placeholder="Modelo do equipamento" />}</Field>
-          <Field label="Tipo"><select name="type" value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value, channelCount: event.target.value === "CAMERA_IP" ? "1" : current.channelCount || "16", ...intelbrasCameraDefaults(event.target.value, current.manufacturer) }))}><option value="CAMERA_IP">Camera IP</option><option value="DVR">DVR multicanal</option><option value="NVR">NVR multicanal</option><option value="VIDEO_PORTEIRO">Video porteiro</option><option value="FACIAL">Facial</option><option value="CLOUD">Cloud</option></select></Field>
-          <Field label="IP / DDNS"><input name="host" value={form.host} onChange={(event) => setForm((current) => ({ ...current, host: event.target.value }))} /></Field>
-          <Field label="Porta RTSP"><input name="rtspPort" value={form.rtspPort} onChange={(event) => setForm((current) => ({ ...current, rtspPort: event.target.value }))} /></Field>
-          <Field label="Porta HTTP"><input name="httpPort" value={form.httpPort} onChange={(event) => setForm((current) => ({ ...current, httpPort: event.target.value }))} /></Field>
-          <Field label="Path RTSP"><input name="rtspPath" value={form.rtspPath || ""} onChange={(event) => setForm((current) => ({ ...current, rtspPath: event.target.value }))} placeholder="/Streaming/channels/101" /></Field>
-          <Field label="Usuario"><input name="username" value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} /></Field>
-          <Field label="Senha"><input name="password" type="password" autoComplete="new-password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} /></Field>
-          <Field label="Canal inicial"><input name="channel" value={form.channel} onChange={(event) => setForm((current) => ({ ...current, channel: event.target.value }))} /></Field>
-          <Field label="Quantidade de canais"><input name="channelCount" disabled={form.id || !isMultiChannel} value={isMultiChannel ? form.channelCount : "1"} onChange={(event) => setForm((current) => ({ ...current, channelCount: event.target.value }))} /></Field>
-          <Field label="Descricao base"><input name="channelDescription" value={form.channelDescription} onChange={(event) => setForm((current) => ({ ...current, channelDescription: event.target.value }))} placeholder="Ex.: NVR portaria, garagem, torre A" /></Field>
-          <Field label="Stream"><select name="stream" value={form.stream} onChange={(event) => setForm((current) => ({ ...current, stream: event.target.value }))}><option value="MAIN">Principal</option><option value="SUB">Substream</option></select></Field>
-          <Field label="Proporcao"><select name="aspectRatio" value={form.aspectRatio} onChange={(event) => setForm((current) => ({ ...current, aspectRatio: event.target.value }))}><option value="WIDESCREEN">16:9</option><option value="STANDARD">4:3</option><option value="PORTRAIT">Vertical</option></select></Field>
-          <Field label="Metodo no app"><select name="loadMethod" value={form.loadMethod} onChange={(event) => setForm((current) => ({ ...current, loadMethod: event.target.value }))}><option value="SNAPSHOT_TEMPO_REAL">RTSP tempo real</option><option value="HLS_GATEWAY">HLS pela API</option><option value="CLOUD">Cloud/fabricante</option></select></Field>
-          <Field label="Captura de foto"><select name="photoCaptureEnabled" value={form.photoCaptureEnabled ? "true" : "false"} onChange={(event) => setForm((current) => ({ ...current, photoCaptureEnabled: event.target.value === "true" }))}><option value="false">Desativada</option><option value="true">Ativada</option></select></Field>
-        </div>
-      </form>}
-      {cameras.length ? (
-        <div className="camera-card-grid">
-          {cameras.map((camera) => (
-            <article className="config-card camera-card" key={camera.id}>
-              <header>
-                <div>
-                  <strong>{camera.description || camera.name}</strong>
-                  <span>{camera.manufacturer} {camera.model || ""} - {camera.type}</span>
-                </div>
-                <span className={`status ${camera.status === "ONLINE" ? "" : "offline"}`}>{camera.status === "ONLINE" ? "Online" : "Offline"}</span>
-              </header>
-              <div className="summary-list">
-                <span><strong>Host</strong>{camera.host || camera.ipAddress || "-"}</span>
-                <span><strong>Portas</strong>RTSP {camera.rtspPort} / HTTP {camera.httpPort}</span>
-                <span><strong>Canais ativos</strong>{cameraChannels(camera).length}</span>
-                <span><strong>Stream</strong>{camera.stream}</span>
-                <span><strong>Metodo</strong>{camera.loadMethod}</span>
-                <span><strong>RTSP no APK</strong>{camera.passwordSet ? "Pronto" : "Salvar senha"}</span>
-              </div>
-              <div className="channel-list">
-                {cameraChannels(camera).map((channel) => <em key={channel.channel}>Canal {channel.channel} - {channel.description || camera.groupName || "sem descricao"}</em>)}
-              </div>
-              <div className="toolbar-actions compact-actions">
-                <button className="secondary-button" onClick={() => onEdit(camera)}>Editar camera</button>
-                <button className="danger-button" type="button" onClick={() => onDelete(camera)}><Trash2 size={16} /> Excluir</button>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : <div className="empty-state">Nenhuma camera cadastrada neste condominio.</div>}
-    </section>
-  );
-}
-
-function ActionConfig({ actions, devices, form, setForm, onSave, onEdit, onTrigger, onDelete }) {
-  const selectedDevice = devices.find((device) => device.id === form.deviceId);
-  return (
-    <section className="config-stack">
-      <form className="nested-form" onSubmit={onSave}>
-        <div className="panel-heading compact-heading">
-          <h2>{form.id ? "Editar acionamento" : "Novo acionamento"}</h2>
-          <button type="submit"><Save size={16} /> Salvar acionamento</button>
-        </div>
-        <div className="form-hint">
-          {devices.length
-            ? `Equipamentos disponiveis neste condominio: ${devices.length}. ${selectedDevice ? `Configurando ${selectedDevice.name}.` : "Selecione um equipamento para vincular o rele/porta."}`
-            : "Nenhum equipamento cadastrado neste condominio. Cadastre o equipamento antes de configurar acionamentos."}
-        </div>
-        <div className="form-grid">
-          <Field label="Nome"><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} /></Field>
-          <Field label="Equipamento"><select value={form.deviceId} onChange={(event) => {
-            const device = devices.find((item) => item.id === event.target.value);
-            setForm((current) => ({ ...current, deviceId: event.target.value, manufacturer: device?.manufacturer || current.manufacturer }));
-          }}><option value="">{devices.length ? "Selecione o equipamento" : "Sem equipamento neste condominio"}</option>{devices.map((device) => <option key={device.id} value={device.id}>{device.name} - {device.manufacturer} - {device.ipAddress || "sem IP"}</option>)}</select></Field>
-          <Field label="Rele / porta"><input value={form.relay} onChange={(event) => setForm((current) => ({ ...current, relay: event.target.value }))} /></Field>
-          <Field label="Rota"><input value={form.route} onChange={(event) => setForm((current) => ({ ...current, route: event.target.value }))} /></Field>
-          <Field label="Status"><select value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value }))}><option>ACTIVE</option><option>DISABLED</option></select></Field>
-        </div>
-      </form>
-      <div className="equipment-choice-list">
-        {devices.length ? devices.map((device) => (
-          <button
-            key={device.id}
-            className={form.deviceId === device.id ? "" : "secondary-button"}
-            type="button"
-            onClick={() => setForm((current) => ({ ...current, deviceId: device.id, manufacturer: device.manufacturer || current.manufacturer }))}
-          >
-            <RadioTower size={16} />
-            <span><strong>{device.name}</strong><small>{device.manufacturer} - {device.ipAddress || "sem IP"} - {device.passwordSet ? "senha salva" : "sem senha"}</small></span>
-          </button>
-        )) : <div className="empty-state">Cadastre primeiro os equipamentos do condominio.</div>}
-      </div>
-      {actions.map((action) => (
-        <article className="action-row" key={action.id}>
-          <button className="secondary-button" disabled={action.status === "DISABLED"} onClick={() => onTrigger(action)}>Acionar</button>
-          <span><strong>{action.name}</strong><small>{action.route}</small></span>
-          <span>{devices.find((device) => device.id === action.deviceId)?.name || action.manufacturer}{action.relay ? ` / rele ${action.relay}` : ""}</span>
-          <span className="status offline">{action.status === "DISABLED" ? "Desabilitado" : "Ativo"}</span>
-          <button className="secondary-button" onClick={() => onEdit(action)}>Editar</button>
-          <button className="danger-button" type="button" onClick={() => onDelete(action)}><Trash2 size={16} /> Excluir</button>
-        </article>
-      ))}
-    </section>
-  );
-}
+import {
+  railwayApiUrl,
+  apiUrl,
+  WEB_PORTER_EXTENSION,
+  WEB_PORTER_PASSWORD,
+  sections,
+  condoSections,
+  settingsSections,
+  equipmentIntegrationResources,
+  emptyData,
+  API_CACHE_KEY,
+  normalizeBootstrap,
+  readCachedBootstrap,
+  parsePositiveInteger,
+  condoTotalUnits,
+  geocodeAddressFields,
+  emptyTelephony,
+  normalizeWebSocketForWebPhone,
+  sameText,
+  credentialPhotoUrl,
+  equipmentPreviewPhotoUrl,
+  callTime,
+  unitExtension,
+  resolveCallUnit,
+  emptyDeviceForm,
+  emptyLicenseForm,
+  emptyCompanyForm,
+  emptyCameraForm,
+  emptyActionForm,
+  emptyCredentialForm,
+  emptyVehicleForm,
+  resourceConfigurationFields,
+  defaultResourceSettings,
+  intelbrasDeviceDefaults,
+  intelbrasModelDefaults,
+  homologatedModelOptions,
+  intelbrasCameraDefaults,
+  formatDateTime,
+  csvCell,
+  downloadCsv,
+  readImportRows,
+  faceImportSelectionKey,
+  importSelectionBase
+} from "./config/appConfig.jsx";
+import {
+  PersonAvatar,
+  Field,
+  StatusBanner,
+  Pagination,
+  usePaged,
+  Metric,
+  LocalLogin,
+  ChangePassword
+} from "./components/common.jsx";
+import {
+  cameraStreamKey,
+  cameraSnapshotUrl,
+  cameraChannels,
+  cameraMosaicLabel,
+  groupCameraDevices,
+  CameraPreview,
+  CameraTile,
+  CameraConfig,
+  ActionConfig
+} from "./components/cameras.jsx";
 
 function App() {
   const [session, setSession] = useState(() => {
@@ -1268,6 +161,7 @@ function App() {
     importReport: null
   });
   const [equipmentFaceSelections, setEquipmentFaceSelections] = useState({});
+  const [equipmentFacePreviewPage, setEquipmentFacePreviewPage] = useState(1);
   const selectedTenantIdRef = useRef("");
   const syncInFlightRef = useRef(false);
   const apiCacheRef = useRef(data);
@@ -1913,6 +807,15 @@ function App() {
   const tenantEvents = useMemo(() => (data.accessLogs || []).filter((log) => !log.tenantId || log.tenantId === selectedTenant?.id), [data.accessLogs, selectedTenant?.id]);
   const disconnectedDevices = useMemo(() => tenantDevices.filter((device) => device.status && device.status !== "ONLINE"), [tenantDevices]);
   const selectedIntegrationDevice = tenantDevices.find((device) => device.id === equipmentIntegration.deviceId) || tenantDevices[0];
+  const equipmentPreviewItems = (equipmentIntegration.importReport?.items || [])
+    .filter((item) => equipmentIntegration.resource !== "faces" || item.payload?.type === "FACE");
+  const equipmentPreviewPageSize = 25;
+  const equipmentPreviewTotalPages = Math.max(1, Math.ceil(equipmentPreviewItems.length / equipmentPreviewPageSize));
+  const equipmentPreviewSafePage = Math.min(equipmentFacePreviewPage, equipmentPreviewTotalPages);
+  const equipmentPreviewPageItems = equipmentPreviewItems.slice(
+    (equipmentPreviewSafePage - 1) * equipmentPreviewPageSize,
+    equipmentPreviewSafePage * equipmentPreviewPageSize
+  );
   const porterMosaicItems = useMemo(() => tenantMosaicOptions.slice(0, 16), [tenantMosaicOptions]);
   const porterMosaicLayout = porterMosaicItems.length <= 2 ? "two" : porterMosaicItems.length <= 4 ? "four" : porterMosaicItems.length <= 8 ? "eight" : "sixteen";
   const expandedPorterItem = porterMosaicItems.find((item) => item.key === expandedPorterCameraId) || null;
@@ -3033,12 +1936,18 @@ function App() {
     setMessage(`${result.device?.name || "Equipamento"}: ${count} registro(s) em ${resource}.`);
   }
 
+  function readEquipmentIntegrationResource(resource = equipmentIntegration.resource) {
+    if (resource === "faces") return importEquipmentCredentials(true, "faces");
+    return readEquipmentIntegration(resource);
+  }
+
   function updateEquipmentCredentialSelection(item, patch = {}) {
     const key = faceImportSelectionKey(item);
     setEquipmentFaceSelections((current) => {
       const currentSelection = current[key] || {};
       const unit = patch.unitId ? units.find((candidate) => candidate.unitId === patch.unitId) : null;
-      const clearedUnit = Object.prototype.hasOwnProperty.call(patch, "unitId") && !patch.unitId
+      const typedUnit = String(patch.unitNumber || "").trim();
+      const clearedUnit = Object.prototype.hasOwnProperty.call(patch, "unitId") && !patch.unitId && !typedUnit
         ? { unitId: "", unitNumber: "", blockName: "" }
         : {};
       return {
@@ -3053,7 +1962,35 @@ function App() {
     });
   }
 
-  async function importEquipmentCredentials(dryRun = true) {
+  function updateEquipmentCredentialUnit(item, value = "") {
+    const clean = String(value || "").trim();
+    const matchedUnit = units.find((unit) => sameText(
+      `Unidade ${unit.unitNumber}${unit.blockName ? ` - ${unit.blockName}` : ""}`,
+      clean
+    ) || sameText(unit.unitNumber, clean));
+    if (matchedUnit) {
+      updateEquipmentCredentialSelection(item, { unitId: matchedUnit.unitId });
+      return;
+    }
+    const [unitNumber = "", ...blockParts] = clean.replace(/^unidade\s+/i, "").split(/\s+-\s+/);
+    updateEquipmentCredentialSelection(item, {
+      unitId: "",
+      unitNumber: unitNumber.trim(),
+      blockName: blockParts.join(" - ").trim()
+    });
+  }
+
+  function updateAllEquipmentCredentialSelections(selected, items = []) {
+    const visibleKeys = new Set(items
+      .filter((item) => equipmentIntegration.resource !== "faces" || item.payload?.type === "FACE")
+      .map(faceImportSelectionKey));
+    setEquipmentFaceSelections((current) => Object.fromEntries(Object.entries(current).map(([key, selection]) => [
+      key,
+      visibleKeys.has(key) ? { ...selection, selected } : selection
+    ])));
+  }
+
+  async function importEquipmentCredentials(dryRun = true, resource = "credentials") {
     const deviceId = equipmentIntegration.deviceId || selectedIntegrationDevice?.id || "";
     if (!deviceId) {
       setMessage("Selecione um equipamento para buscar credenciais.");
@@ -3062,7 +1999,7 @@ function App() {
     setEquipmentIntegration((current) => ({
       ...current,
       deviceId,
-      resource: "credentials",
+      resource,
       importing: true,
       error: ""
     }));
@@ -3093,9 +2030,12 @@ function App() {
         .filter((item) => item.payload?.type && item.payload?.value)
         .forEach((item) => {
           const key = faceImportSelectionKey(item);
-          nextSelections[key] = importSelectionBase(item, { selected: true });
+          nextSelections[key] = importSelectionBase(item, {
+            selected: resource !== "faces" || item.payload?.type === "FACE"
+          });
         });
       setEquipmentFaceSelections(nextSelections);
+      setEquipmentFacePreviewPage(1);
     }
     if (!dryRun) {
       const payload = await refreshApiCache();
@@ -4080,13 +3020,17 @@ function App() {
                     <h2>Integracao de equipamentos</h2>
                     <small>{selectedTenant?.name} - leitura de eventos, credenciais, horarios, faciais e usuarios</small>
                   </div>
-                  <button className="secondary-button" type="button" disabled={equipmentIntegration.loading || !selectedIntegrationDevice} onClick={() => void readEquipmentIntegration(equipmentIntegration.resource)}>
+                  <button className="secondary-button" type="button" disabled={equipmentIntegration.loading || equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void readEquipmentIntegrationResource(equipmentIntegration.resource)}>
                     <RefreshCw size={16} /> Atualizar leitura
                   </button>
                 </div>
                 <div className="form-grid">
                   <Field label="Equipamento">
-                    <select value={equipmentIntegration.deviceId || selectedIntegrationDevice?.id || ""} onChange={(event) => setEquipmentIntegration((current) => ({ ...current, deviceId: event.target.value, payload: null, error: "", updatedAt: "" }))}>
+                    <select value={equipmentIntegration.deviceId || selectedIntegrationDevice?.id || ""} onChange={(event) => {
+                      setEquipmentIntegration((current) => ({ ...current, deviceId: event.target.value, payload: null, importReport: null, error: "", updatedAt: "" }));
+                      setEquipmentFaceSelections({});
+                      setEquipmentFacePreviewPage(1);
+                    }}>
                       {tenantDevices.map((device) => <option key={device.id} value={device.id}>{device.name} - {device.manufacturer} {device.model}</option>)}
                     </select>
                   </Field>
@@ -4096,16 +3040,16 @@ function App() {
                 </div>
                 <div className="equipment-read-actions">
                   {equipmentIntegrationResources.map(([resource, label, Icon]) => (
-                    <button key={resource} type="button" className={equipmentIntegration.resource === resource ? "" : "secondary-button"} disabled={equipmentIntegration.loading || !selectedIntegrationDevice} onClick={() => void readEquipmentIntegration(resource)}>
+                    <button key={resource} type="button" className={equipmentIntegration.resource === resource ? "" : "secondary-button"} disabled={equipmentIntegration.loading || equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void readEquipmentIntegrationResource(resource)}>
                       <Icon size={16} /> {label}
                     </button>
                   ))}
                 </div>
                 <div className="toolbar-actions unit-actions">
-                  <button className="secondary-button" type="button" disabled={equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void importEquipmentCredentials(true)}>
-                    <Search size={16} /> Previa credenciais do equipamento
+                  <button className="secondary-button" type="button" disabled={equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void importEquipmentCredentials(true, equipmentIntegration.resource === "faces" ? "faces" : "credentials")}>
+                    <Search size={16} /> {equipmentIntegration.resource === "faces" ? "Atualizar previa facial" : "Previa credenciais do equipamento"}
                   </button>
-                  <button type="button" disabled={equipmentIntegration.importing || !(equipmentIntegration.importReport?.total || equipmentIntegration.payload?.summary?.credentials)} onClick={() => void importEquipmentCredentials(false)}>
+                  <button type="button" disabled={equipmentIntegration.importing || !(equipmentIntegration.importReport?.total || equipmentIntegration.payload?.summary?.credentials)} onClick={() => void importEquipmentCredentials(false, equipmentIntegration.resource === "faces" ? "faces" : "credentials")}>
                     <Save size={16} /> Importar para o banco
                   </button>
                 </div>
@@ -4113,7 +3057,7 @@ function App() {
                 {!tenantDevices.length && <div className="empty-state">Nenhum equipamento cadastrado neste condominio.</div>}
               </article>
 
-              <article className="panel">
+              {!(equipmentIntegration.resource === "faces" && equipmentIntegration.importReport) && <article className="panel">
                 <div className="panel-heading">
                   <div>
                     <h2>Resultado da leitura</h2>
@@ -4123,7 +3067,7 @@ function App() {
                 </div>
                 <div className="integration-summary-grid">
                   {equipmentIntegrationResources.map(([resource, label, Icon]) => (
-                    <button key={resource} type="button" className={equipmentIntegration.resource === resource ? "integration-summary-card active" : "integration-summary-card"} onClick={() => void readEquipmentIntegration(resource)} disabled={equipmentIntegration.loading || !selectedIntegrationDevice}>
+                    <button key={resource} type="button" className={equipmentIntegration.resource === resource ? "integration-summary-card active" : "integration-summary-card"} onClick={() => void readEquipmentIntegrationResource(resource)} disabled={equipmentIntegration.loading || equipmentIntegration.importing || !selectedIntegrationDevice}>
                       <Icon size={18} />
                       <span><strong>{equipmentIntegration.payload?.summary?.[resource] ?? 0}</strong>{label}</span>
                     </button>
@@ -4156,14 +3100,16 @@ function App() {
                     ))}
                   </div>
                 ) : null}
-              </article>
+              </article>}
 
               {equipmentIntegration.importReport && (
                 <article className="panel">
                   <div className="panel-heading">
                     <div>
-                      <h2>Importacao do equipamento</h2>
-                      <small>{equipmentIntegration.importReport.message || "Relatorio de credenciais lidas no equipamento."}</small>
+                      <h2>{equipmentIntegration.resource === "faces" && equipmentIntegration.importReport.dryRun ? "Previa de cadastros faciais" : "Importacao do equipamento"}</h2>
+                      <small>{equipmentIntegration.resource === "faces" && equipmentIntegration.importReport.dryRun
+                        ? "Confira as fotos, marque quem sera importado e digite ou escolha a unidade."
+                        : equipmentIntegration.importReport.message || "Relatorio de credenciais lidas no equipamento."}</small>
                     </div>
                     <span className="status">{equipmentIntegration.importReport.dryRun ? "PREVIA" : "IMPORTADO"}</span>
                   </div>
@@ -4180,11 +3126,21 @@ function App() {
                   </div>
                   {(equipmentIntegration.importReport.items || []).length ? (
                     <div className="face-import-review">
-                      <div className="unit-table header credential-review-table"><span>Importar</span><span>Credencial</span><span>Facial</span><span>Pessoa</span><span>Unidade</span></div>
-                      {(equipmentIntegration.importReport.items || []).map((item) => {
+                      <datalist id="equipment-unit-options">
+                        {units.map((unit) => <option key={unit.unitId} value={`Unidade ${unit.unitNumber}${unit.blockName ? ` - ${unit.blockName}` : ""}`} />)}
+                      </datalist>
+                      <div className="unit-table header credential-review-table">
+                        <label className="check-cell"><input type="checkbox" checked={equipmentPreviewItems.length > 0 && equipmentPreviewItems.every((item) => equipmentFaceSelections[faceImportSelectionKey(item)]?.selected !== false)} onChange={(event) => updateAllEquipmentCredentialSelections(event.target.checked, equipmentIntegration.importReport.items || [])} />Importar</label>
+                        <span>Credencial</span><span>Facial</span><span>Pessoa</span><span>Unidade</span>
+                      </div>
+                      {equipmentPreviewPageItems.map((item) => {
                         const key = faceImportSelectionKey(item);
                         const selection = equipmentFaceSelections[key] || {};
                         const selected = selection.selected !== false;
+                        const selectedUnit = units.find((unit) => unit.unitId === selection.unitId);
+                        const unitValue = selectedUnit
+                          ? `Unidade ${selectedUnit.unitNumber}${selectedUnit.blockName ? ` - ${selectedUnit.blockName}` : ""}`
+                          : [selection.unitNumber, selection.blockName].filter(Boolean).join(" - ");
                         const photoUrl = equipmentPreviewPhotoUrl(
                           equipmentIntegration.deviceId || selectedIntegrationDevice?.id || "",
                           item.payload?.photoUrl || ""
@@ -4198,13 +3154,11 @@ function App() {
                               <small>{photoUrl ? "Foto facial" : "Sem foto facial"}</small>
                             </span>
                             <span>{item.payload?.personName || item.personId || "Sem nome"}</span>
-                            <select value={selection.unitId || ""} onChange={(event) => updateEquipmentCredentialSelection(item, { unitId: event.target.value })}>
-                              <option value="">Sem unidade</option>
-                              {units.map((unit) => <option key={unit.unitId} value={unit.unitId}>Unidade {unit.unitNumber}{unit.blockName ? ` - ${unit.blockName}` : ""}</option>)}
-                            </select>
+                            <input list="equipment-unit-options" value={unitValue} placeholder="Digite ou escolha a unidade" onChange={(event) => updateEquipmentCredentialUnit(item, event.target.value)} />
                           </div>
                         );
                       })}
+                      <Pagination page={equipmentPreviewSafePage} totalPages={equipmentPreviewTotalPages} onPage={setEquipmentFacePreviewPage} />
                     </div>
                   ) : null}
                   <div className="unit-table header integration-table"><span>Credencial</span><span>Pessoa</span><span>Status</span><span>Origem</span></div>

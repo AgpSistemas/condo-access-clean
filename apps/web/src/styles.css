@@ -2193,6 +2193,7 @@ nav button:hover {
 }
 
 .credential-review-table select,
+.credential-review-table input:not([type="checkbox"]),
 .face-review-table input:not([type="checkbox"]) {
   min-height: 38px;
   border: 1px solid #ccd8de;
