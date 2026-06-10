@@ -253,6 +253,8 @@ const units = new Map();
 
 const residents = [];
 
+const vehicles = [];
+
 const devices = [];
 
 const cameras = [];
@@ -615,6 +617,11 @@ function publicDevice(device) {
 }
 
 function bootstrap() {
+  unitList().forEach((unit) => {
+    if (residents.some((person) => person.unitId === unit.unitId && (person.kind || "RESIDENT") === "RESIDENT")) {
+      syncUnitResidentSummary(unit.unitId);
+    }
+  });
   return {
     generatedAt: now(),
     session: {
@@ -627,7 +634,8 @@ function bootstrap() {
     },
     condominiums: allTenants(),
     units: unitList(),
-    residents,
+    residents: residents.map(publicPerson),
+    vehicles,
     devices: devices.map(publicDevice),
     cameras: cameras.map(publicCamera),
     actions,
@@ -1244,6 +1252,11 @@ function publicCompany(company = {}) {
   return safeCompany;
 }
 
+function publicPerson(person = {}) {
+  const { passwordHash: _passwordHash, passwordSalt: _passwordSalt, ...safePerson } = person;
+  return safePerson;
+}
+
 function ensureMasterAdmin() {
   let master = systemUsers.find((user) => user.role === "SUPER_ADMIN");
   if (master) return master;
@@ -1335,14 +1348,11 @@ async function sendOneSignalPushToUnit(unit, payload = {}) {
     });
     const result = await pushResponse.json().catch(() => ({}));
     if (!pushResponse.ok) {
-      console.warn("[ONESIGNAL_PUSH_ERROR]", JSON.stringify({ status: pushResponse.status, result }));
       return { ok: false, status: pushResponse.status, result };
     }
-    console.log("[ONESIGNAL_PUSH_SENT]", JSON.stringify({ externalId, id: result.id || "", recipients: result.recipients || 0 }));
     return { ok: true, result };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn("[ONESIGNAL_PUSH_ERROR]", message);
     return { ok: false, error: message };
   }
 }
@@ -1684,22 +1694,6 @@ async function readPagedHikvisionCredentials(device, candidate) {
       bodyFormat: candidate.bodyFormat || "json",
       bodyPreview: parsedRecords.length ? undefined : responseSample(result.body)
     });
-    console.log("[HIKVISION_CREDENTIAL_SEARCH_DEBUG]", JSON.stringify({
-      generatedAt: now(),
-      deviceId: device.id,
-      deviceName: device.name,
-      candidate: candidate.label,
-      path: candidate.path,
-      bodyFormat: candidate.bodyFormat || "json",
-      position,
-      status: result.status,
-      parsedRecords: parsedRecords.length,
-      pageMatches,
-      totalMatches: totalMatches || undefined,
-      bodyPreview: responseSample(result.body),
-      sampleRecord: parsedRecords[0] || null
-    }));
-
     const step = Math.max(pageMatches || parsedRecords.length, 0);
     if (!step) break;
     position += step;
@@ -2100,39 +2094,6 @@ function parseDeviceCredentialResponse(text = "", source = {}, fallbackType = "A
 }
 
 function logControlIdImportDebug(device = {}, snapshot = {}, records = [], stage = "read") {
-  const objects = snapshot.objects || {};
-  const objectCounts = Object.fromEntries(
-    Object.entries(objects).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0])
-  );
-  const faceUsers = (objects.users || []).filter((user) => Number(user.image_timestamp || 0) > 0);
-  const faceTemplates = objects.face_templates || [];
-  const faceRecords = records.filter((record) => record.type === "FACE");
-
-  console.log("[CONTROL_ID_IMPORT_DEBUG]", JSON.stringify({
-    stage,
-    generatedAt: now(),
-    device: {
-      id: device.id,
-      name: device.name,
-      tenantId: device.tenantId,
-      manufacturer: device.manufacturer,
-      model: device.model,
-      ipAddress: device.ipAddress,
-      apiPort: device.apiPort
-    },
-    attempts: snapshot.attempts || [],
-    objectCounts,
-    rawObjects: objects,
-    faceDebug: {
-      usersWithImageTimestamp: faceUsers.length,
-      faceTemplates: faceTemplates.length,
-      normalizedFaceRecords: faceRecords.length,
-      usersWithImageTimestampSample: faceUsers.slice(0, 10),
-      faceTemplatesSample: faceTemplates.slice(0, 10),
-      normalizedFaceRecordsSample: faceRecords.slice(0, 20)
-    },
-    normalizedRecords: records
-  }, null, 2));
 }
 
 async function readDeviceCredentialsFromDevice(device) {
@@ -2439,67 +2400,13 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [] 
     });
   });
 
-  if (readResult.adapter === CONTROL_ID_ACCESS_ADAPTER) {
-    console.log("[CONTROL_ID_IMPORT_REPORT]", JSON.stringify({
-      generatedAt: now(),
-      dryRun,
-      device: report.device,
-      source: report.source,
-      total: report.total,
-      valid: report.valid,
-      invalid: report.invalid,
-      duplicates: report.duplicates,
-      peopleCreated: report.peopleCreated,
-      peopleUpdated: report.peopleUpdated,
-      credentialsCreated: report.credentialsCreated,
-      credentialsUpdated: report.credentialsUpdated,
-      attempts: report.attempts,
-      items: report.items
-    }, null, 2));
-  }
-
   if (!dryRun && readResult.events?.length) {
     const eventReport = persistDeviceEvents(device, readResult.events);
     report.eventsCreated = eventReport.created;
     report.eventsUpdated = eventReport.updated;
   }
 
-  if (!dryRun) {
-    const syncJob = {
-      id: makeId("sync"),
-      tenantId: device.tenantId || tenant.id,
-      manufacturer: device.manufacturer || "Hikvision",
-      target: device.name || "Equipamento importado",
-      direction: "SEND",
-      credentialType: "",
-      personId: "",
-      credentialId: "",
-      deviceId: device.id,
-      status: "PENDING",
-      total: 0,
-      synced: 0,
-      errors: 0,
-      lastRunAt: now()
-    };
-    credentialSyncJobs.unshift(syncJob);
-    report.syncJob = await processCredentialSyncJob(syncJob);
-  }
-
   if (!dryRun) savePersistentState("device-credentials-imported");
-  console.log("[DEVICE_CREDENTIAL_IMPORT_DEBUG]", JSON.stringify({
-    generatedAt: now(),
-    dryRun,
-    deviceId: device.id,
-    deviceName: device.name,
-    adapter: report.adapter,
-    total: report.total,
-    valid: report.valid,
-    invalid: report.invalid,
-    credentialsCreated: report.credentialsCreated,
-    credentialsUpdated: report.credentialsUpdated,
-    attempts: report.attempts,
-    itemsSample: report.items.slice(0, 10)
-  }));
   return report;
 }
 
@@ -3521,6 +3428,70 @@ async function sendStoredCredentialToDevice(device, credential = {}) {
   };
 }
 
+async function deleteStoredCredentialFromDevice(device, credential = {}) {
+  const adapter = deviceAdapter(device);
+  if (adapter !== "HIKVISION_ISAPI") {
+    return {
+      ok: true,
+      deviceId: device.id,
+      adapter,
+      message: "Evento de exclusao registrado; exclusao fisica depende do conector do fabricante",
+      attempts: []
+    };
+  }
+
+  const person = personForStoredCredential(credential);
+  const employeeNo = hikvisionEmployeeNoForCredential(credential, person);
+  const type = normalizeCredentialType(credential.type);
+  const attempts = type === "FACE"
+    ? [{
+        label: "Hikvision excluir face",
+        path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
+        method: "PUT",
+        body: { FaceInfoDelCond: { employeeNoList: [{ employeeNo }] } }
+      }]
+    : type === "RFID"
+      ? [{
+          label: "Hikvision excluir cartao",
+          path: "/ISAPI/AccessControl/CardInfo/Delete?format=json",
+          method: "PUT",
+          body: { CardInfoDelCond: { CardNoList: [{ cardNo: String(credential.value || "").trim() }] } }
+        }]
+      : [{
+          label: "Hikvision excluir usuario",
+          path: "/ISAPI/AccessControl/UserInfo/Delete?format=json",
+          method: "PUT",
+          body: { UserInfoDelCond: { EmployeeNoList: [{ employeeNo }] } }
+        }];
+  const result = await hikvisionTryJsonWrites(device, attempts);
+  return {
+    ...result,
+    deviceId: device.id,
+    adapter,
+    message: result.ok ? `Credencial ${type} excluida do equipamento` : result.message
+  };
+}
+
+function credentialTargetDevice(credential = {}) {
+  const targetDevices = credential.deviceId
+    ? devices.filter((device) => device.id === credential.deviceId)
+    : devices.filter((device) => device.tenantId === credential.tenantId);
+  return targetDevices.find((device) => {
+    const adapter = deviceAdapter(device);
+    if (credential.type === "FACE") return adapter === "HIKVISION_ISAPI" || adapter === INTELBRAS_SS_3532_MF_W_ADAPTER;
+    return adapter !== "GENERIC_TCP" || device.category === "access-control";
+  }) || null;
+}
+
+async function emitCredentialEvent(action, credential = {}) {
+  const device = credentialTargetDevice(credential);
+  if (!device) return { action, ok: false, message: "Nenhum equipamento compativel cadastrado" };
+  const result = action === "DELETE"
+    ? await deleteStoredCredentialFromDevice(device, credential)
+    : await sendStoredCredentialToDevice(device, credential);
+  return { action, ...result };
+}
+
 async function processCredentialSyncJob(job) {
   const targetDevices = job.deviceId
     ? devices.filter((device) => device.id === job.deviceId)
@@ -3625,6 +3596,56 @@ function syncUnitResidentFromPreRegistration(unit, body = {}) {
   const updated = updateById(residents, resident.id, resident);
   if (!updated) residents.unshift(resident);
   return updated || resident;
+}
+
+function syncUnitResidentSummary(unitId = "") {
+  const unit = unitForId(unitId);
+  if (!unit) return null;
+  const linkedResidents = residents.filter((person) =>
+    person.unitId === unit.unitId && (person.kind || "RESIDENT") === "RESIDENT"
+  );
+  const principal = linkedResidents.find((person) => person.id === unit.residentId) ||
+    linkedResidents.find((person) => ["Responsavel", "Proprietario"].includes(person.relation)) ||
+    linkedResidents[0];
+
+  if (!principal) {
+    Object.assign(unit, {
+      residentId: "",
+      residentName: "",
+      responsibleName: ""
+    });
+    return unit;
+  }
+
+  Object.assign(unit, {
+    residentId: principal.id,
+    residentName: principal.name || "",
+    responsibleName: principal.name || "",
+    residentCpf: principal.cpf || "",
+    residentRg: principal.rg || "",
+    residentPhone: principal.phone || "",
+    residentEmail: principal.email || ""
+  });
+  return unit;
+}
+
+function recordUnitLogin(person, sessionId) {
+  if (!person?.unitId) return null;
+  const login = {
+    id: makeId("login"),
+    sessionId,
+    tenantId: person.tenantId || unitForId(person.unitId)?.tenantId || tenant.id,
+    unitId: person.unitId,
+    userId: person.id,
+    guest: person.name || "Usuario",
+    profile: person.role || "RESIDENT",
+    sentTo: person.email || person.phone || person.cpf || "",
+    loginAt: now(),
+    logoutAt: "",
+    status: "ONLINE"
+  };
+  unitLogins.unshift(login);
+  return login;
 }
 
 function requestOrigin(request) {
@@ -4266,6 +4287,7 @@ function persistentState() {
     deletedTenantIds: Array.from(deletedTenantIds),
     units: unitList(),
     residents,
+    vehicles,
     devices,
     cameras,
     actions,
@@ -4292,6 +4314,7 @@ function applyPersistentState(state = {}) {
   units.clear();
   (state.units || []).forEach((unit) => units.set(unit.unitId || unit.id, unit));
   replaceCollection(residents, state.residents);
+  replaceCollection(vehicles, state.vehicles);
   replaceCollection(devices, state.devices);
   replaceCollection(cameras, state.cameras);
   replaceCollection(actions, state.actions);
@@ -4365,9 +4388,7 @@ function savePersistentState(reason = "update") {
   if (postgresPool) {
     postgresSaveQueue = postgresSaveQueue
       .then(() => savePersistentStateToPostgres(state, reason))
-      .catch((error) => {
-        console.error("Falha ao salvar estado persistente no Postgres", error);
-      });
+      .catch(() => undefined);
     return { ok: true, store: "postgres", queued: true };
   }
 
@@ -4376,7 +4397,6 @@ function savePersistentState(reason = "update") {
     fs.writeFileSync(dataFilePath, JSON.stringify({ ...state, reason }, null, 2), "utf8");
     return { ok: true, store: "file", path: dataFilePath };
   } catch (error) {
-    console.error("Falha ao salvar estado persistente", error);
     return {
       ok: false,
       path: dataFilePath,
@@ -4403,7 +4423,6 @@ async function loadPersistentState() {
       applyPersistentState(state);
       return { ok: true, store: "postgres", path: "postgres:condo_access_state/main", loadedAt: now(), updatedAt: result.rows[0].updated_at };
     } catch (error) {
-      console.error("Falha ao carregar estado persistente do Postgres", error);
       return {
         ok: false,
         store: "postgres",
@@ -4419,7 +4438,6 @@ async function loadPersistentState() {
     applyPersistentState(state);
     return { ok: true, store: "file", path: dataFilePath, loadedAt: now() };
   } catch (error) {
-    console.error("Falha ao carregar estado persistente", error);
     return {
       ok: false,
       path: dataFilePath,
@@ -4613,16 +4631,10 @@ function mobileTelephonyConfig(unit = units.get("unit-101")) {
   };
 }
 
-const persistentLoadResult = await loadPersistentState();
-if (persistentLoadResult.ok) {
-  console.log(`Estado persistente carregado de ${persistentLoadResult.path}`);
-} else {
-  console.log(`Estado persistente nao carregado (${persistentLoadResult.store || "file"}): ${persistentLoadResult.message}`);
-}
+await loadPersistentState();
 const cameraPlaybackMigrated = normalizeCameraRecordsForPlayback();
 if (cameraPlaybackMigrated) {
   savePersistentState("camera-playback-normalized");
-  console.log("Cameras normalizadas para perfis/substream HLS");
 }
 normalizeTelephonyState();
 
@@ -4641,7 +4653,6 @@ const server = http.createServer((request, response) => {
   void handleRequest(request, response).catch((error) => {
     if (isRequestAbortError(error)) return;
 
-    console.error("Falha ao processar requisicao HTTP", error);
     if (!response.headersSent && !response.destroyed) {
       return json(response, 500, { message: "Falha interna da API" });
     }
@@ -4676,8 +4687,9 @@ async function handleRequest(request, response) {
     if (normalizeLookup(masterAdminEmail) === loginKey) {
       const master = ensureMasterAdmin();
       if (!validPassword(master, password)) return json(response, 401, { message: "Login ou senha invalidos." });
+      const accessToken = randomBytes(24).toString("hex");
       return json(response, 200, {
-        accessToken: randomBytes(24).toString("hex"),
+        accessToken,
         refreshToken: randomBytes(24).toString("hex"),
         user: {
           id: master.id,
@@ -4694,8 +4706,9 @@ async function handleRequest(request, response) {
     if (matchedCompany) {
       if (matchedCompany.status === "INACTIVE") return json(response, 403, { message: "Empresa inativa. Entre em contato com o suporte." });
       if (!validPassword(matchedCompany, password)) return json(response, 401, { message: "Login ou senha invalidos." });
+      const accessToken = randomBytes(24).toString("hex");
       return json(response, 200, {
-        accessToken: randomBytes(24).toString("hex"),
+        accessToken,
         refreshToken: randomBytes(24).toString("hex"),
         user: {
           id: `company-user-${matchedCompany.id}`,
@@ -4714,18 +4727,38 @@ async function handleRequest(request, response) {
       normalizeLookup(person.id) === loginKey
     );
     if (!matchedResident) return json(response, 401, { message: "Login ou senha invalidos." });
+    if (!matchedResident.passwordHash || !matchedResident.passwordSalt) {
+      Object.assign(matchedResident, createPasswordRecord(), { mustChangePassword: true, updatedAt: now() });
+    }
+    if (!validPassword(matchedResident, password)) return json(response, 401, { message: "Login ou senha invalidos." });
+    const accessToken = randomBytes(24).toString("hex");
+    recordUnitLogin(matchedResident, accessToken);
+    savePersistentState("resident-login");
     return json(response, 200, {
-      accessToken: "local-demo-token",
-      refreshToken: "local-demo-refresh",
+      accessToken,
+      refreshToken: randomBytes(24).toString("hex"),
       user: {
-        id: matchedResident?.email || loginId,
+        id: matchedResident.id,
         name: matchedResident.name,
         email: matchedResident.email || loginId,
-        role: "RESIDENT",
+        role: matchedResident.role || "RESIDENT",
         tenantId: matchedResident.tenantId || activeMobileTenantId(),
-        unitId: matchedResident.unitId || ""
+        unitId: matchedResident.unitId || "",
+        mustChangePassword: matchedResident.mustChangePassword === true
       }
     });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+    const body = await readBody(request);
+    const sessionId = String(body.sessionId || body.accessToken || "").trim();
+    const login = unitLogins.find((item) => item.sessionId === sessionId && !item.logoutAt);
+    if (login) {
+      login.logoutAt = now();
+      login.status = "OFFLINE";
+      savePersistentState("resident-logout");
+    }
+    return json(response, 200, { ok: true, logoutAt: login?.logoutAt || now() });
   }
 
   if (request.method === "GET" && url.pathname === "/api/condominiums") {
@@ -4800,7 +4833,8 @@ async function handleRequest(request, response) {
     const body = await readBody(request);
     const loginKey = normalizeLookup(body.login || body.email);
     const account = systemUsers.find((item) => normalizeLookup(item.email) === loginKey) ||
-      companies.find((item) => normalizeLookup(item.login) === loginKey);
+      companies.find((item) => normalizeLookup(item.login) === loginKey) ||
+      residents.find((item) => [item.email, item.cpf, item.phone, item.id].some((value) => normalizeLookup(value) === loginKey));
     if (!account || !validPassword(account, String(body.currentPassword || ""))) {
       return json(response, 401, { message: "Senha atual invalida." });
     }
@@ -5532,6 +5566,7 @@ async function handleRequest(request, response) {
     const cleanup = {
       units: removedUnits,
       residents: removeMatching(residents, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
+      vehicles: removeMatching(vehicles, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
       devices: removeMatching(devices, (item) => item.tenantId === tenantId),
       cameras: removeMatching(cameras, (item) => item.tenantId === tenantId),
       actions: removeMatching(actions, (item) => item.tenantId === tenantId),
@@ -5598,6 +5633,15 @@ async function handleRequest(request, response) {
     const body = await readBody(request);
     const result = saveCredential(body);
     if (result.error) return json(response, result.duplicate ? 409 : 400, { message: result.error, duplicate: result.duplicate });
+    if (!body.id) {
+      const event = await emitCredentialEvent("CREATE", result.credential);
+      Object.assign(result.credential, {
+        syncStatus: event.ok ? "SYNCED" : "ERROR",
+        syncMessage: event.message || "",
+        deviceId: event.deviceId || result.credential.deviceId || "",
+        lastSyncedAt: event.ok ? now() : result.credential.lastSyncedAt
+      });
+    }
     savePersistentState("credential-saved");
     return json(response, body.id ? 200 : 201, result.credential);
   }
@@ -5619,6 +5663,13 @@ async function handleRequest(request, response) {
       source: "GENERATED"
     });
     if (result.error) return json(response, result.duplicate ? 409 : 400, { message: result.error, duplicate: result.duplicate });
+    const event = await emitCredentialEvent("CREATE", result.credential);
+    Object.assign(result.credential, {
+      syncStatus: event.ok ? "SYNCED" : "ERROR",
+      syncMessage: event.message || "",
+      deviceId: event.deviceId || result.credential.deviceId || "",
+      lastSyncedAt: event.ok ? now() : result.credential.lastSyncedAt
+    });
     savePersistentState("credential-generated");
     return json(response, 201, result.credential);
   }
@@ -5709,9 +5760,11 @@ async function handleRequest(request, response) {
     const credentialId = decodeURIComponent(deleteCredentialMatch[1]);
     const index = credentials.findIndex((item) => item.id === credentialId);
     if (index === -1) return json(response, 404, { message: "Credencial nao encontrada" });
+    const credential = credentials[index];
+    const event = await emitCredentialEvent("DELETE", credential);
     const [removed] = credentials.splice(index, 1);
     savePersistentState("credential-deleted");
-    return json(response, 200, { ok: true, removed });
+    return json(response, 200, { ok: true, removed, event });
   }
 
   if (request.method === "GET" && url.pathname === "/api/permissions") {
@@ -5735,27 +5788,9 @@ async function handleRequest(request, response) {
   }
 
   if (request.method === "POST" && url.pathname === "/api/credential-sync") {
-    const body = await readBody(request);
-    const job = {
-      id: body.id || makeId("sync"),
-      tenantId: body.tenantId || tenant.id,
-      manufacturer: body.manufacturer || "Generico",
-      target: body.target || "Fila manual",
-      direction: body.direction || "SEND",
-      credentialType: normalizeCredentialType(body.credentialType || body.type || "FACE"),
-      personId: body.personId || "",
-      credentialId: body.credentialId || "",
-      deviceId: body.deviceId || "",
-      status: "PENDING",
-      total: Number(body.total || 0),
-      synced: 0,
-      errors: 0,
-      lastRunAt: now()
-    };
-    credentialSyncJobs.unshift(job);
-    const result = await processCredentialSyncJob(job);
-    savePersistentState("credential-sync-created");
-    return json(response, 201, result);
+    return json(response, 409, {
+      message: "Sincronismo manual desativado. Credenciais sao enviadas somente nos eventos de criacao e exclusao."
+    });
   }
 
   if (request.method === "POST" && url.pathname === "/api/licenses") {
@@ -6206,10 +6241,13 @@ async function handleRequest(request, response) {
     const unitResident = syncUnitResidentFromPreRegistration(nextUnit, body);
     if (unitResident) {
       nextUnit.residentId = unitResident.id;
-      nextUnit.preRegisteredResident = unitResident;
     }
+    syncUnitResidentSummary(unitId);
     savePersistentState("unit-saved");
-    return json(response, existing ? 200 : 201, nextUnit);
+    return json(response, existing ? 200 : 201, {
+      ...nextUnit,
+      preRegisteredResident: unitResident ? publicPerson(unitResident) : undefined
+    });
   }
 
   const deleteUnitMatch = url.pathname.match(/^\/api\/units\/([^/]+)$/);
@@ -6218,8 +6256,20 @@ async function handleRequest(request, response) {
     const unit = units.get(unitId);
     if (!unit) return json(response, 404, { message: "Unidade nao encontrada" });
     units.delete(unitId);
+    for (let index = residents.length - 1; index >= 0; index -= 1) {
+      if (residents[index].unitId === unitId) residents.splice(index, 1);
+    }
+    for (let index = vehicles.length - 1; index >= 0; index -= 1) {
+      if (vehicles[index].unitId === unitId) vehicles.splice(index, 1);
+    }
     for (let index = credentials.length - 1; index >= 0; index -= 1) {
       if (credentials[index].unitId === unitId) credentials.splice(index, 1);
+    }
+    for (let index = unitLogins.length - 1; index >= 0; index -= 1) {
+      if (unitLogins[index].unitId === unitId) unitLogins.splice(index, 1);
+    }
+    for (let index = unitInvites.length - 1; index >= 0; index -= 1) {
+      if (unitInvites[index].unitId === unitId) unitInvites.splice(index, 1);
     }
     savePersistentState("unit-deleted");
     return json(response, 200, { ok: true, removed: unit });
@@ -6227,28 +6277,37 @@ async function handleRequest(request, response) {
 
   const unitPeopleMatch = url.pathname.match(/^\/api\/units\/([^/]+)\/people$/);
   if (request.method === "GET" && unitPeopleMatch) {
-    return json(response, 200, residents.filter((person) => person.unitId === unitPeopleMatch[1]));
+    return json(response, 200, residents.filter((person) => person.unitId === unitPeopleMatch[1]).map(publicPerson));
   }
 
   if (request.method === "POST" && url.pathname === "/api/people") {
     const body = await readBody(request);
     const id = body.id || makeId("person");
+    const existing = residents.find((person) => person.id === id);
     const unit = units.get(body.unitId) || units.get("unit-101");
+    const passwordRecord = body.newPassword
+      ? createPasswordRecord(String(body.newPassword))
+      : existing?.passwordHash
+        ? { passwordHash: existing.passwordHash, passwordSalt: existing.passwordSalt }
+        : createPasswordRecord();
     const person = {
       id,
       tenantId: body.tenantId || unit?.tenantId || tenant.id,
       unitId: body.unitId || unit?.unitId || "unit-101",
       name: body.name || "Nova pessoa",
-      email: body.email || "",
+      email: body.email ?? existing?.email ?? "",
       cpf: body.cpf || "",
       rg: body.rg || "",
       birthDate: body.birthDate || "",
-      photoUrl: body.photoUrl || "",
+      photoUrl: body.photoUrl ?? existing?.photoUrl ?? "",
       phone: body.phone || "",
       role: body.role || (body.kind === "RESIDENT" ? "RESIDENT" : body.kind || "VISITOR"),
       relation: body.relation || body.accessReason || "",
       kind: body.kind || "RESIDENT",
-      isSyndic: Boolean(body.isSyndic),
+      isSyndic: body.isSyndic === undefined ? Boolean(existing?.isSyndic) : Boolean(body.isSyndic),
+      syndicRole: existing?.syndicRole || "",
+      mandateStart: existing?.mandateStart || "",
+      mandateEnd: existing?.mandateEnd || "",
       authorizedBy: body.authorizedBy || "",
       company: body.company || "",
       cnpj: body.cnpj || "",
@@ -6258,12 +6317,17 @@ async function handleRequest(request, response) {
       credentialType: body.credentialType || "APP",
       allowedDays: body.allowedDays || "",
       allowedHours: body.allowedHours || "",
-      createdAt: now()
+      ...passwordRecord,
+      mustChangePassword: body.newPassword ? false : existing?.mustChangePassword ?? true,
+      createdAt: existing?.createdAt || now(),
+      updatedAt: now()
     };
     const updated = updateById(residents, id, person);
     if (!updated) residents.unshift(person);
+    if (existing?.unitId && existing.unitId !== person.unitId) syncUnitResidentSummary(existing.unitId);
+    syncUnitResidentSummary(person.unitId);
     savePersistentState("person-saved");
-    return json(response, updated ? 200 : 201, updated || person);
+    return json(response, updated ? 200 : 201, publicPerson(updated || person));
   }
 
   const deletePersonMatch = url.pathname.match(/^\/api\/people\/([^/]+)$/);
@@ -6274,6 +6338,10 @@ async function handleRequest(request, response) {
     for (let credentialIndex = credentials.length - 1; credentialIndex >= 0; credentialIndex -= 1) {
       if (credentials[credentialIndex].personId === removed.id) credentials.splice(credentialIndex, 1);
     }
+    vehicles.forEach((vehicle) => {
+      if (vehicle.personId === removed.id) vehicle.personId = "";
+    });
+    syncUnitResidentSummary(removed.unitId);
     savePersistentState("person-deleted");
     return json(response, 200, { ok: true, removed });
   }
@@ -6281,6 +6349,72 @@ async function handleRequest(request, response) {
   const unitLoginsMatch = url.pathname.match(/^\/api\/units\/([^/]+)\/logins$/);
   if (request.method === "GET" && unitLoginsMatch) {
     return json(response, 200, unitLogins.filter((login) => login.unitId === unitLoginsMatch[1]));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/syndics") {
+    const body = await readBody(request);
+    const tenantId = String(body.tenantId || "").trim();
+    const person = residents.find((item) => item.id === body.personId && item.tenantId === tenantId);
+    if (!person) return json(response, 404, { message: "Pessoa nao encontrada neste condominio." });
+    residents.forEach((item) => {
+      if (item.tenantId === tenantId) item.isSyndic = false;
+    });
+    Object.assign(person, {
+      isSyndic: true,
+      syndicRole: body.syndicRole || "SINDICO",
+      mandateStart: body.mandateStart || "",
+      mandateEnd: body.mandateEnd || "",
+      role: body.role || "CONDO_ADMIN",
+      updatedAt: now()
+    });
+    savePersistentState("syndic-saved");
+    return json(response, 200, publicPerson(person));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/vehicles") {
+    const tenantId = url.searchParams.get("tenantId") || "";
+    const unitId = url.searchParams.get("unitId") || "";
+    return json(response, 200, vehicles.filter((vehicle) =>
+      (!tenantId || vehicle.tenantId === tenantId) && (!unitId || vehicle.unitId === unitId)
+    ));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/vehicles") {
+    const body = await readBody(request);
+    const existing = body.id ? vehicles.find((vehicle) => vehicle.id === body.id) : null;
+    const unit = unitForId(body.unitId || existing?.unitId);
+    if (!unit) return json(response, 404, { message: "Unidade nao encontrada." });
+    const plate = String(body.plate || "").trim().toUpperCase();
+    if (!plate) return json(response, 400, { message: "Informe a placa do veiculo." });
+    const duplicate = vehicles.find((vehicle) => vehicle.id !== existing?.id && normalizeLookup(vehicle.plate) === normalizeLookup(plate));
+    if (duplicate) return json(response, 409, { message: "Esta placa ja esta cadastrada." });
+    const vehicle = {
+      id: existing?.id || makeId("vehicle"),
+      tenantId: unit.tenantId,
+      unitId: unit.unitId,
+      personId: body.personId || "",
+      plate,
+      brand: body.brand || "",
+      model: body.model || "",
+      color: body.color || "",
+      type: body.type || "CARRO",
+      notes: body.notes || "",
+      createdAt: existing?.createdAt || now(),
+      updatedAt: now()
+    };
+    const updated = existing ? updateById(vehicles, vehicle.id, vehicle) : null;
+    if (!updated) vehicles.unshift(vehicle);
+    savePersistentState("vehicle-saved");
+    return json(response, existing ? 200 : 201, updated || vehicle);
+  }
+
+  const deleteVehicleMatch = url.pathname.match(/^\/api\/vehicles\/([^/]+)$/);
+  if (request.method === "DELETE" && deleteVehicleMatch) {
+    const index = vehicles.findIndex((vehicle) => vehicle.id === deleteVehicleMatch[1]);
+    if (index === -1) return json(response, 404, { message: "Veiculo nao encontrado." });
+    const [removed] = vehicles.splice(index, 1);
+    savePersistentState("vehicle-deleted");
+    return json(response, 200, { ok: true, removed });
   }
 
   const unitInvitesMatch = url.pathname.match(/^\/api\/units\/([^/]+)\/invites$/);
@@ -6359,22 +6493,19 @@ async function handleRequest(request, response) {
   return json(response, 404, { message: "Rota nao encontrada" });
 }
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(`Condo Access Clean API em http://localhost:${port}`);
-});
+server.listen(port, "0.0.0.0");
 
-async function shutdown(signal) {
-  console.log(`Encerrando API (${signal})`);
+async function shutdown() {
   try {
     await postgresSaveQueue;
     await postgresPool?.end();
-  } catch (error) {
-    console.error("Falha ao encerrar conexao Postgres", error);
+  } catch {
+    // O encerramento continua mesmo se o armazenamento ja estiver indisponivel.
   } finally {
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   }
 }
 
-process.once("SIGTERM", () => void shutdown("SIGTERM"));
-process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown());
+process.once("SIGINT", () => void shutdown());

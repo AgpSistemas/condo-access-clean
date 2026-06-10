@@ -726,6 +726,13 @@ nav button:hover {
   color: #0d3da8;
 }
 
+.breadcrumb-link {
+  min-height: auto;
+  padding: 0;
+  background: transparent;
+  color: #0d3da8;
+}
+
 .subtabs {
   justify-content: flex-start;
   border-bottom: 1px solid #d9e2e4;
@@ -765,6 +772,26 @@ nav button:hover {
   grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
   gap: 16px;
   align-items: start;
+}
+
+.unit-directory-grid.full-width {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.unit-directory-grid.full-width .unit-cards {
+  grid-template-columns: repeat(4, minmax(210px, 1fr));
+}
+
+.unit-main-tabs {
+  overflow-x: auto;
+}
+
+.vehicle-table {
+  grid-template-columns: minmax(150px, 0.7fr) minmax(190px, 1fr) minmax(170px, 0.9fr) minmax(150px, 0.7fr);
+}
+
+.login-history-table {
+  grid-template-columns: minmax(220px, 1.1fr) minmax(190px, 0.9fr) minmax(170px, 0.8fr) minmax(110px, 0.5fr);
 }
 
 .people-panel {

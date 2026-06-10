@@ -8,6 +8,7 @@ import {
   BadgeCheck,
   Building2,
   Camera,
+  Car,
   ClipboardList,
   CreditCard,
   FileKey2,
@@ -78,6 +79,7 @@ const emptyData = {
   condominiums: [],
   units: [],
   residents: [],
+  vehicles: [],
   deviceCategories: [],
   permissionProfiles: [],
   devices: [],
@@ -308,6 +310,18 @@ const emptyCredentialForm = {
   value: "",
   valueLabel: "",
   deviceId: ""
+};
+
+const emptyVehicleForm = {
+  id: "",
+  unitId: "",
+  personId: "",
+  plate: "",
+  brand: "",
+  model: "",
+  color: "",
+  type: "CARRO",
+  notes: ""
 };
 
 const resourceConfigurationFields = {
@@ -1231,6 +1245,7 @@ function App() {
   const [showCameraForm, setShowCameraForm] = useState(false);
   const [actionForm, setActionForm] = useState(emptyActionForm);
   const [credentialForm, setCredentialForm] = useState(emptyCredentialForm);
+  const [vehicleForm, setVehicleForm] = useState(emptyVehicleForm);
   const [credentialImportRows, setCredentialImportRows] = useState([]);
   const [credentialImportReport, setCredentialImportReport] = useState(null);
   const [credentialImportFile, setCredentialImportFile] = useState("");
@@ -1302,9 +1317,7 @@ function App() {
     if (!term) return units;
     return units.filter((unit) => `${unit.unitNumber} ${unit.blockName} ${unit.residentName} ${unit.responsibleName} ${unit.telephony?.extension || unit.extension || ""}`.toLowerCase().includes(term));
   }, [unitSearch, units]);
-  const selectedUnit = units.find((unit) => unit.unitId === selectedUnitId) || units[0];
-  const unitFormUnit = unitFormMode === "new" ? null : selectedUnit;
-  const selectedPerson = data.residents.find((person) => person.id === selectedPersonId) || data.residents.find((person) => person.unitId === selectedUnit?.unitId);
+  const selectedUnit = units.find((unit) => unit.unitId === selectedUnitId) || null;
 
   useEffect(() => {
     setCondoGeo({
@@ -1428,6 +1441,9 @@ function App() {
         authorizationUsername: porterExtension,
         authorizationPassword: porterPassword,
         contactName: porterExtension,
+        logBuiltinEnabled: false,
+        logConfiguration: false,
+        logLevel: "error",
         transportOptions: { server: webSocketUrl },
         sessionDescriptionHandlerFactoryOptions: {
           constraints: { audio: true, video: false }
@@ -1651,6 +1667,7 @@ function App() {
     const licenseCredentialsMatch = pathname.match(/^\/licencas\/([^/]+)\/credenciais(?:\/importacao)?$/);
     const credentialsMatch = pathname.match(/^\/credenciais(?:\/importacao)?$/);
     const condoCredentialsMatch = pathname.match(/^\/condominios\/([^/]+)\/credenciais(?:\/importacao)?$/);
+    const unitDirectoryMatch = pathname === "/unidades";
     const unitRootMatch = pathname.match(/^\/unidades\/([^/]+)$/);
     const unitPeopleMatch = pathname.match(/^\/unidades\/([^/]+)\/pessoas\/([^/]+)\/ver\/([^/]+)$/);
     const unitLoginsMatch = pathname.match(/^\/unidades\/([^/]+)\/logins$/);
@@ -1665,6 +1682,8 @@ function App() {
 
     if (licenseUnitsMatch) {
       selectTenantByLicense(licenseUnitsMatch[1]);
+      setSelectedUnitId("");
+      setUnitFormMode("edit");
       setActiveSection("units");
       setUnitTab("geral");
       return true;
@@ -1708,6 +1727,14 @@ function App() {
         setSelectedTenantId(tenantId);
       }
       setActiveSection("credentials");
+      return true;
+    }
+
+    if (unitDirectoryMatch) {
+      setSelectedUnitId("");
+      setUnitFormMode("edit");
+      setActiveSection("units");
+      setUnitTab("geral");
       return true;
     }
 
@@ -1798,7 +1825,7 @@ function App() {
       const nextTenant = payload.condominiums[0];
       const nextUnit = payload.units[0];
       setSelectedTenantId((current) => payload.condominiums.some((item) => item.id === current) ? current : nextTenant?.id || "");
-      setSelectedUnitId((current) => payload.units.some((item) => item.unitId === current) ? current : nextUnit?.unitId || "");
+      setSelectedUnitId((current) => current && payload.units.some((item) => item.unitId === current) ? current : "");
       setTenantTelephony(nextTenant || {});
       setTelephony(nextUnit?.telephony || emptyTelephony);
       setSyncState({ status: "synced", error: "", lastSyncAt: new Date() });
@@ -1812,6 +1839,10 @@ function App() {
   useEffect(() => {
     void syncNow();
   }, []);
+
+  useEffect(() => {
+    if (session?.accessToken) void syncNow({ silent: true });
+  }, [session?.accessToken]);
 
   useEffect(() => {
     applyRoute(window.location.pathname);
@@ -1831,6 +1862,10 @@ function App() {
       setTelephony(selectedUnit.telephony || emptyTelephony);
     }
   }, [selectedUnit]);
+
+  useEffect(() => {
+    setVehicleForm({ ...emptyVehicleForm, unitId: selectedUnit?.unitId || "" });
+  }, [selectedUnit?.unitId]);
 
   const filteredCondos = visibleCondominiums.filter((item) => `${item.name} ${item.document}`.toLowerCase().includes(search.toLowerCase()));
   const condoPager = usePaged(filteredCondos, 12);
@@ -2319,6 +2354,7 @@ function App() {
       ...current,
       units: current.units.filter((item) => item.unitId !== unit.unitId),
       residents: current.residents.filter((person) => person.unitId !== unit.unitId),
+      vehicles: current.vehicles.filter((vehicle) => vehicle.unitId !== unit.unitId),
       credentials: current.credentials.filter((credential) => credential.unitId !== unit.unitId),
       unitLogins: current.unitLogins.filter((login) => login.unitId !== unit.unitId),
       unitInvites: current.unitInvites.filter((invite) => invite.unitId !== unit.unitId)
@@ -2345,7 +2381,7 @@ function App() {
         cpf: form.get("cpf"),
         rg: form.get("rg"),
         phone: form.get("phone"),
-        email: form.get("email"),
+        email: form.get("residentEmail"),
         relation: form.get("relation"),
         role: form.get("role"),
         authorizedBy: form.get("authorizedBy"),
@@ -2353,7 +2389,8 @@ function App() {
         vehiclePlate: form.get("vehiclePlate"),
         credentialType: form.get("credentialType"),
         allowedDays: form.get("allowedDays"),
-        allowedHours: form.get("allowedHours")
+        allowedHours: form.get("allowedHours"),
+        newPassword: form.get("newPassword")
       })
     });
     if (!response.ok) {
@@ -2363,15 +2400,101 @@ function App() {
     const saved = await response.json();
     setData((current) => {
       const exists = current.residents.some((person) => person.id === saved.id);
+      const nextResidents = exists
+        ? current.residents.map((person) => person.id === saved.id ? saved : person)
+        : [saved, ...current.residents];
+      const principal = nextResidents.find((person) =>
+        person.unitId === saved.unitId &&
+        (person.kind || "RESIDENT") === "RESIDENT" &&
+        ["Responsavel", "Proprietario"].includes(person.relation)
+      ) || nextResidents.find((person) => person.unitId === saved.unitId && (person.kind || "RESIDENT") === "RESIDENT");
       return {
         ...current,
-        residents: exists
-          ? current.residents.map((person) => person.id === saved.id ? saved : person)
-          : [saved, ...current.residents]
+        residents: nextResidents,
+        units: current.units.map((unit) => unit.unitId === saved.unitId && principal
+          ? { ...unit, residentId: principal.id, residentName: principal.name, responsibleName: principal.name }
+          : unit)
       };
     });
     setSelectedPersonId(saved.id);
     setMessage(`${kind === "RESIDENT" ? "Morador" : kind === "VISITOR" ? "Visitante" : "Prestador"} salvo.`);
+    void refreshApiCache();
+  }
+
+  async function saveVehicleForm(event) {
+    event.preventDefault();
+    if (!selectedUnit) return;
+    const response = await fetch(`${apiUrl}/api/vehicles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...vehicleForm,
+        tenantId: selectedTenant?.id,
+        unitId: selectedUnit.unitId
+      })
+    });
+    const saved = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(saved.message || "Falha ao salvar veiculo.");
+      return;
+    }
+    setData((current) => {
+      const exists = current.vehicles.some((vehicle) => vehicle.id === saved.id);
+      return {
+        ...current,
+        vehicles: exists
+          ? current.vehicles.map((vehicle) => vehicle.id === saved.id ? saved : vehicle)
+          : [saved, ...current.vehicles]
+      };
+    });
+    setVehicleForm({ ...emptyVehicleForm, unitId: selectedUnit.unitId });
+    setMessage("Veiculo salvo.");
+    void refreshApiCache();
+  }
+
+  async function deleteVehicle(vehicle) {
+    if (!window.confirm(`Excluir o veiculo ${vehicle.plate}?`)) return;
+    const response = await fetch(`${apiUrl}/api/vehicles/${vehicle.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      setMessage("Falha ao excluir veiculo.");
+      return;
+    }
+    setData((current) => ({
+      ...current,
+      vehicles: current.vehicles.filter((item) => item.id !== vehicle.id)
+    }));
+    if (vehicleForm.id === vehicle.id) setVehicleForm({ ...emptyVehicleForm, unitId: selectedUnit?.unitId || "" });
+    setMessage("Veiculo excluido.");
+    void refreshApiCache();
+  }
+
+  async function saveSyndic(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const response = await fetch(`${apiUrl}/api/syndics`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: selectedTenant?.id,
+        personId: form.get("personId"),
+        syndicRole: form.get("syndicRole"),
+        mandateStart: form.get("mandateStart"),
+        mandateEnd: form.get("mandateEnd"),
+        role: form.get("role")
+      })
+    });
+    const saved = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(saved.message || "Falha ao salvar sindico.");
+      return;
+    }
+    setData((current) => ({
+      ...current,
+      residents: current.residents.map((person) => person.tenantId === saved.tenantId
+        ? { ...person, isSyndic: person.id === saved.id, ...(person.id === saved.id ? saved : {}) }
+        : person)
+    }));
+    setMessage("Sindico atualizado.");
     void refreshApiCache();
   }
 
@@ -2383,11 +2506,18 @@ function App() {
       return;
     }
     setSelectedPersonId("new");
-    setData((current) => ({
-      ...current,
-      residents: current.residents.filter((item) => item.id !== person.id),
-      credentials: current.credentials.filter((credential) => credential.personId !== person.id)
-    }));
+    setData((current) => {
+      const nextResidents = current.residents.filter((item) => item.id !== person.id);
+      const principal = nextResidents.find((item) => item.unitId === person.unitId && (item.kind || "RESIDENT") === "RESIDENT");
+      return {
+        ...current,
+        residents: nextResidents,
+        credentials: current.credentials.filter((credential) => credential.personId !== person.id),
+        units: current.units.map((unit) => unit.unitId === person.unitId
+          ? { ...unit, residentId: principal?.id || "", residentName: principal?.name || "", responsibleName: principal?.name || "" }
+          : unit)
+      };
+    });
     setMessage("Pessoa excluida.");
     void refreshApiCache();
   }
@@ -2419,7 +2549,7 @@ function App() {
       };
     });
     setCredentialForm({ ...emptyCredentialForm, tenantId: selectedTenant?.id || "" });
-    setMessage("Credencial salva e pendente de sincronismo.");
+    setMessage(result.syncStatus === "SYNCED" ? "Credencial criada e enviada ao equipamento." : `Credencial criada. ${result.syncMessage || "Falha ao enviar ao equipamento."}`);
     void refreshApiCache();
   }
 
@@ -2437,7 +2567,7 @@ function App() {
       credentials: current.credentials.filter((item) => item.id !== credential.id)
     }));
     setCredentialForm((current) => current.id === credential.id ? { ...emptyCredentialForm, tenantId: selectedTenant?.id || "" } : current);
-    setMessage("Credencial excluida.");
+    setMessage(result.event?.ok ? "Credencial excluida do sistema e do equipamento." : `Credencial excluida do sistema. ${result.event?.message || "Falha ao excluir no equipamento."}`);
     void refreshApiCache();
   }
 
@@ -2482,7 +2612,6 @@ function App() {
       })
     });
     const job = await response.json().catch(() => null);
-    console.log("[CREDENTIAL_SYNC_JOB]", job);
     if (!response.ok) {
       setMessage(job?.message || "Falha ao sincronizar credencial.");
       return;
@@ -2550,6 +2679,18 @@ function App() {
     } else {
       window.localStorage.removeItem("condo-clean-session");
     }
+  }
+
+  async function logout() {
+    const accessToken = session?.accessToken || "";
+    if (accessToken) {
+      await fetch(`${apiUrl}/api/auth/logout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessToken })
+      }).catch(() => undefined);
+    }
+    persistSession(null);
   }
 
   async function saveDeviceForm(event) {
@@ -2927,11 +3068,6 @@ function App() {
       })
     });
     const report = await response.json().catch(() => ({}));
-    console.log("[HIKVISION_IMPORT_JSON]", JSON.stringify({
-      dryRun,
-      deviceId,
-      report
-    }, null, 2));
     if (!response.ok) {
       const error = report.message || "Falha ao importar credenciais do equipamento.";
       setEquipmentIntegration((current) => ({ ...current, importing: false, error, importReport: report }));
@@ -3377,7 +3513,7 @@ function App() {
 
     return (
       <section className="people-layout">
-        <form className="panel form-panel" key={`${kind}-${currentPerson.id || "new"}-${selectedUnit?.unitId || "all"}`} onSubmit={(event) => savePersonForm(event, kind, currentPerson)}>
+        <form className="panel form-panel" autoComplete="off" key={`${kind}-${currentPerson.id || "new"}-${selectedUnit?.unitId || "all"}`} onSubmit={(event) => savePersonForm(event, kind, currentPerson)}>
           <div className="panel-heading"><h2>{currentPerson.id ? `Editar ${title.toLowerCase()}` : `Novo ${title.toLowerCase()}`}</h2><UserRound size={20} /></div>
           <div className="form-grid">
             <Field label={isVisitor ? "Unidade visitada" : kind === "PROVIDER" ? "Unidade atendida" : "Unidade"}><select name="unitId" defaultValue={currentPerson.unitId || selectedUnit?.unitId}>{units.map((unit) => <option key={unit.unitId} value={unit.unitId}>Unidade {unit.unitNumber}</option>)}</select></Field>
@@ -3388,10 +3524,10 @@ function App() {
             <Field label="CPF/Documento"><input name="cpf" defaultValue={currentPerson.cpf || ""} /></Field>
             {isResident && <Field label="RG"><input name="rg" defaultValue={currentPerson.rg || ""} /></Field>}
             <Field label="Celular"><input name="phone" defaultValue={currentPerson.phone || ""} /></Field>
-            {isResident && <Field label="E-mail/Login"><input name="email" defaultValue={currentPerson.email || ""} /></Field>}
+            {isResident && <Field label="E-mail/Login"><input name="residentEmail" autoComplete="one-time-code" defaultValue={currentPerson.email || ""} /></Field>}
             {isResident && <Field label="Relacao"><select name="relation" defaultValue={currentPerson.relation || "Responsavel"}><option>Proprietario</option><option>Morador</option><option>Responsavel</option><option>Responsavel financeiro</option></select></Field>}
             {isResident && <Field label="Permissao"><select name="role" defaultValue={currentPerson.role || "RESIDENT"}><option value="CONDO_ADMIN">Administrador</option><option value="PORTER">Porteiro</option><option value="RESIDENT">Usuario normal</option></select></Field>}
-            {isResident && <Field label="Nova senha"><input type="password" placeholder="Preencha apenas para alterar" /></Field>}
+            {isResident && <Field label="Nova senha"><input name="newPassword" type="password" autoComplete="new-password" placeholder="Preencha apenas para alterar" /></Field>}
             {isVisitor && <Field label="Autorizado por"><input name="authorizedBy" defaultValue={currentPerson.authorizedBy || selectedUnit?.residentName || ""} /></Field>}
             {isVisitor && <Field label="Motivo"><input name="accessReason" defaultValue={currentPerson.accessReason || ""} /></Field>}
             {isVisitor && <Field label="Placa"><input name="vehiclePlate" defaultValue={currentPerson.vehiclePlate || ""} /></Field>}
@@ -3410,15 +3546,18 @@ function App() {
             <button type="button" onClick={() => setSelectedPersonId("new")}><Plus size={16} /> Novo {title.toLowerCase()}</button>
           </div>
           <div className="people-header"><span>Nome</span><span>Documentos</span><span>Celular</span><span>Relacao</span><span>Acoes</span></div>
-          {people.map((person) => (
-            <div className="person-row" key={person.id}>
-              <button className="person-name-cell row-link" onClick={() => setSelectedPersonId(person.id)}><PersonAvatar name={person.name} photoUrl={person.photoUrl} /><div><strong>{person.name}</strong><small>{person.email || person.company || person.authorizedBy || "Sem login"}</small><small>{isResident ? `Permissao: ${person.role || "RESIDENT"} - Face ${data.credentials.some((credential) => credential.personId === person.id && credential.type === "FACE") ? "importada" : "pendente"}` : person.credentialType}</small></div></button>
-              <span>CPF: {person.cpf || "-"}<br />RG: {person.rg || "-"}</span>
-              <span>{person.phone || "-"}</span>
-              <span>{kind === "PROVIDER" ? person.serviceType || "-" : person.relation || person.accessReason || "-"}</span>
-              <div className="row-actions"><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, person.credentialType || (isResident ? "APP" : "QR_CODE"))}>Credencial</button><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, "FACE")}>Face</button><button className="compact-action-button secondary-button" onClick={() => void syncCredentialTarget({ personId: person.id, credentialType: person.credentialType || "APP", target: `Pessoa ${person.name}` })}>Sincronizar</button><button className="compact-action-button secondary-button" onClick={() => setSelectedPersonId(person.id)}>Editar</button><button className="compact-action-button danger-button" onClick={() => void deletePerson(person)}>Excluir</button></div>
-            </div>
-          ))}
+          {people.map((person) => {
+            const face = data.credentials.find((credential) => credential.personId === person.id && credential.type === "FACE");
+            return (
+              <div className="person-row" key={person.id}>
+                <button className="person-name-cell row-link" onClick={() => setSelectedPersonId(person.id)}><PersonAvatar name={person.name} photoUrl={credentialPhotoUrl(face, person)} /><div><strong>{person.name}</strong><small>{person.email || person.company || person.authorizedBy || "Sem login"}</small><small>{isResident ? `Permissao: ${person.role || "RESIDENT"} - Face ${face ? "importada" : "pendente"}` : person.credentialType}</small></div></button>
+                <span>CPF: {person.cpf || "-"}<br />RG: {person.rg || "-"}</span>
+                <span>{person.phone || "-"}</span>
+                <span>{kind === "PROVIDER" ? person.serviceType || "-" : person.relation || person.accessReason || "-"}</span>
+                <div className="row-actions"><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, person.credentialType || (isResident ? "APP" : "QR_CODE"))}>Credencial</button><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, "FACE")}>Face</button><button className="compact-action-button secondary-button" onClick={() => setSelectedPersonId(person.id)}>Editar</button><button className="compact-action-button danger-button" onClick={() => void deletePerson(person)}>Excluir</button></div>
+              </div>
+            );
+          })}
         </article>
       </section>
     );
@@ -3470,7 +3609,7 @@ function App() {
 
     if (activeSection === "condoHome") {
       const functionCards = [
-        ["units", "Unidades", Home, "Cadastro, moradores, telefonia e convites", () => { setActiveSection("units"); setUnitTab("geral"); }],
+        ["units", "Unidades", Home, "Cadastro, moradores, telefonia e convites", () => navigateTo("/unidades")],
         ["residents", "Pessoas", Users, "Moradores, visitantes e prestadores", () => setActiveSection("residents")],
         ["devices", "Equipamentos", RadioTower, "Faciais, NVRs, controladoras e SDK", () => { setActiveSection("devices"); setDeviceTab("inicio"); }],
         ["cameras", "Cameras", Camera, "Canais e streams do condominio", () => { setActiveSection("devices"); setDeviceTab("cameras"); }],
@@ -3600,13 +3739,48 @@ function App() {
 
     if (activeSection === "units") {
       const unitLogins = data.unitLogins.filter((login) => login.unitId === selectedUnit?.unitId);
+      const unitVehicles = data.vehicles.filter((vehicle) => vehicle.unitId === selectedUnit?.unitId);
       const unitInvites = data.unitInvites.filter((invite) => invite.unitId === selectedUnit?.unitId && (inviteSubtab !== "qrCodes" || invite.type === "QR_CODE"));
       const owner = data.residents.find((person) => person.unitId === selectedUnit?.unitId && person.kind === "RESIDENT") || data.residents.find((person) => person.unitId === selectedUnit?.unitId);
       const unitOwner = unitFormMode === "new" ? null : owner;
+      const showUnitTabs = Boolean(selectedUnit && unitFormMode !== "new");
+      const renderUnitForm = (isNew = false) => {
+        const targetUnit = isNew ? null : selectedUnit;
+        const targetOwner = isNew ? null : unitOwner;
+        return (
+          <form className="panel form-panel" autoComplete="off" key={`${isNew ? "new" : "edit"}-${targetUnit?.unitId || "unit"}`} onSubmit={saveUnitForm}>
+            <div className="panel-heading"><h2>{isNew ? "Nova unidade" : `Geral da unidade ${targetUnit?.unitNumber || "-"}`}</h2><Home size={20} /></div>
+            <div className="form-grid">
+              <input type="hidden" name="unitId" value={targetUnit?.unitId || ""} />
+              <Field label="Unidade"><input name="unitNumber" defaultValue={targetUnit?.unitNumber || ""} /></Field>
+              <Field label="Bloco/Torre"><input name="blockName" defaultValue={targetUnit?.blockName || ""} /></Field>
+              <Field label="Morador principal"><input name="residentName" defaultValue={targetUnit?.residentName || ""} /></Field>
+              <Field label="Proprietario/Responsavel"><input name="responsibleName" defaultValue={targetOwner?.name || targetUnit?.responsibleName || ""} /></Field>
+              <Field label="CPF do morador"><input name="residentCpf" defaultValue={targetOwner?.cpf || ""} /></Field>
+              <Field label="RG do morador"><input name="residentRg" defaultValue={targetOwner?.rg || ""} /></Field>
+              <Field label="Celular do responsavel"><input name="residentPhone" defaultValue={targetOwner?.phone || ""} /></Field>
+              <Field label="E-mail/Login"><input name="residentEmail" autoComplete="one-time-code" defaultValue={targetOwner?.email || ""} /></Field>
+              <Field label="Relacao"><select name="residentRelation" defaultValue={targetOwner?.relation || "Responsavel"}><option>Proprietario</option><option>Morador</option><option>Responsavel</option><option>Responsavel financeiro</option></select></Field>
+              <Field label="Ramal"><input name="extension" defaultValue={targetUnit?.telephony?.extension || targetUnit?.extension || ""} /></Field>
+            </div>
+            <div className="toolbar-actions unit-actions">
+              <button type="submit"><Save size={16} /> Salvar unidade</button>
+              {!isNew && <button className="secondary-button" type="button" onClick={() => setUnitTab("moradores")}>Abrir moradores</button>}
+              {!isNew && <button className="secondary-button" type="button" onClick={() => setUnitTab("logins")}>Logins</button>}
+              {!isNew && <button className="secondary-button" type="button" onClick={() => setUnitTab("convites")}>Convites</button>}
+              {isNew && <button className="secondary-button" type="button" onClick={() => setUnitFormMode("edit")}>Cancelar</button>}
+              {!isNew && targetUnit?.unitId && <button className="danger-button" type="button" onClick={() => void deleteUnit(targetUnit)}><Trash2 size={16} /> Excluir unidade</button>}
+            </div>
+          </form>
+        );
+      };
       return (
         <section className="unit-detail">
-          <div className="breadcrumb-bar">Voltar <strong>{selectedTenant?.name || "Condominio"} &gt; Unidade &gt; {selectedUnit?.unitNumber || "-"}</strong></div>
-          <div className="subtabs unit-main-tabs">
+          <div className="breadcrumb-bar">
+            <button className="breadcrumb-link" type="button" onClick={() => navigateTo("/unidades")}>Voltar</button>
+            <strong>{selectedTenant?.name || "Condominio"} &gt; Unidades{selectedUnit ? ` > ${selectedUnit.unitNumber}` : ""}</strong>
+          </div>
+          {showUnitTabs && <div className="subtabs unit-main-tabs">
             {[
               ["geral", "Geral"],
               ["moradores", "Moradores"],
@@ -3619,8 +3793,10 @@ function App() {
             ].map(([tab, label]) => (
               <button key={tab} className={unitTab === tab ? "active" : ""} onClick={() => setUnitTab(tab)}>{label}</button>
             ))}
-          </div>
-          {unitTab === "telefonia" ? (
+          </div>}
+          {showUnitTabs && unitTab === "geral" ? (
+            renderUnitForm(false)
+          ) : showUnitTabs && unitTab === "telefonia" ? (
             <form className="panel" onSubmit={saveUnitTelephony}>
               <div className="panel-heading"><h2>Ramal da unidade {selectedUnit?.unitNumber}</h2><button type="submit"><Save size={16} /> Salvar ramal</button></div>
               <div className="form-grid">
@@ -3632,29 +3808,64 @@ function App() {
                 <Field label="Ramal da portaria"><input value={telephony.porterExtension || ""} onChange={(event) => setTelephony((current) => ({ ...current, porterExtension: event.target.value }))} /></Field>
               </div>
             </form>
-          ) : unitTab === "moradores" ? (
+          ) : showUnitTabs && unitTab === "moradores" ? (
             renderPersonRegistry("RESIDENT", "Morador", true)
-          ) : unitTab === "visitantes" ? (
+          ) : showUnitTabs && unitTab === "visitantes" ? (
             renderPersonRegistry("VISITOR", "Visitante", true)
-          ) : unitTab === "prestadores" ? (
+          ) : showUnitTabs && unitTab === "prestadores" ? (
             renderPersonRegistry("PROVIDER", "Prestador", true)
-          ) : unitTab === "logins" ? (
+          ) : showUnitTabs && unitTab === "veiculos" ? (
+            <section className="people-layout">
+              <form className="panel form-panel" onSubmit={saveVehicleForm}>
+                <div className="panel-heading"><h2>{vehicleForm.id ? "Editar veiculo" : "Novo veiculo"}</h2><Car size={20} /></div>
+                <div className="form-grid">
+                  <Field label="Morador"><select value={vehicleForm.personId} onChange={(event) => setVehicleForm((current) => ({ ...current, personId: event.target.value }))}><option value="">Sem responsavel definido</option>{data.residents.filter((person) => person.unitId === selectedUnit.unitId && (person.kind || "RESIDENT") === "RESIDENT").map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
+                  <Field label="Tipo"><select value={vehicleForm.type} onChange={(event) => setVehicleForm((current) => ({ ...current, type: event.target.value }))}><option value="CARRO">Carro</option><option value="MOTO">Moto</option><option value="UTILITARIO">Utilitario</option><option value="OUTRO">Outro</option></select></Field>
+                  <Field label="Placa"><input required value={vehicleForm.plate} onChange={(event) => setVehicleForm((current) => ({ ...current, plate: event.target.value.toUpperCase() }))} /></Field>
+                  <Field label="Marca"><input value={vehicleForm.brand} onChange={(event) => setVehicleForm((current) => ({ ...current, brand: event.target.value }))} /></Field>
+                  <Field label="Modelo"><input value={vehicleForm.model} onChange={(event) => setVehicleForm((current) => ({ ...current, model: event.target.value }))} /></Field>
+                  <Field label="Cor"><input value={vehicleForm.color} onChange={(event) => setVehicleForm((current) => ({ ...current, color: event.target.value }))} /></Field>
+                  <Field label="Observacoes"><input value={vehicleForm.notes} onChange={(event) => setVehicleForm((current) => ({ ...current, notes: event.target.value }))} /></Field>
+                </div>
+                <div className="toolbar-actions unit-actions">
+                  <button type="submit"><Save size={16} /> Salvar veiculo</button>
+                  {vehicleForm.id && <button className="secondary-button" type="button" onClick={() => setVehicleForm({ ...emptyVehicleForm, unitId: selectedUnit.unitId })}>Cancelar edicao</button>}
+                </div>
+              </form>
+              <article className="panel people-panel">
+                <div className="panel-heading"><h2>Veiculos da unidade</h2><Car size={20} /></div>
+                <div className="unit-table header vehicle-table"><span>Placa / Tipo</span><span>Veiculo</span><span>Responsavel</span><span>Acoes</span></div>
+                {unitVehicles.map((vehicle) => {
+                  const person = data.residents.find((item) => item.id === vehicle.personId);
+                  return (
+                    <div className="unit-table row vehicle-table" key={vehicle.id}>
+                      <span><strong>{vehicle.plate}</strong><small>{vehicle.type}</small></span>
+                      <span><strong>{[vehicle.brand, vehicle.model].filter(Boolean).join(" ") || "-"}</strong><small>{vehicle.color || "Cor nao informada"}</small></span>
+                      <span>{person?.name || "Nao informado"}</span>
+                      <div className="row-actions"><button className="compact-action-button secondary-button" type="button" onClick={() => setVehicleForm(vehicle)}>Editar</button><button className="compact-action-button danger-button" type="button" onClick={() => void deleteVehicle(vehicle)}>Excluir</button></div>
+                    </div>
+                  );
+                })}
+                {!unitVehicles.length && <div className="empty-state">Nenhum veiculo cadastrado nesta unidade.</div>}
+              </article>
+            </section>
+          ) : showUnitTabs && unitTab === "logins" ? (
             <article className="panel people-panel">
               <div className="resource-toolbar">
                 <label className="search-field"><Search size={16} /><input placeholder="Filtre por nome" /></label>
-                <button><UserPlus size={16} /> Convidar ao app</button>
               </div>
-              <div className="unit-table header"><span>Convidado / Perfil</span><span>Enviado para</span><span>Envio / Convidado por</span><span>Situacao</span></div>
+              <div className="unit-table header login-history-table"><span>Usuario / Perfil</span><span>Login</span><span>Logout</span><span>Situacao</span></div>
               {unitLogins.map((login) => (
-                <div className="unit-table row" key={login.id}>
+                <div className="unit-table row login-history-table" key={login.id}>
                   <span><strong>{login.guest}</strong><small>{login.profile}</small></span>
-                  <span>{login.sentTo}</span>
-                  <span>{formatDateTime(login.sentAt)}<small>{login.invitedBy}</small></span>
+                  <span>{formatDateTime(login.loginAt || login.sentAt)}<small>{login.sentTo}</small></span>
+                  <span>{login.logoutAt ? formatDateTime(login.logoutAt) : "-"}</span>
                   <span className="status">{login.status}</span>
                 </div>
               ))}
+              {!unitLogins.length && <div className="empty-state">Nenhum login registrado para esta unidade.</div>}
             </article>
-          ) : unitTab === "convites" ? (
+          ) : showUnitTabs && unitTab === "convites" ? (
             <article className="panel people-panel">
               <div className="subtabs compact-subtabs">
                 {["qrCodes", "chaveVirtual", "qrScanner"].map((tab) => <button key={tab} className={inviteSubtab === tab ? "active" : ""} onClick={() => navigateTo(`/unidades/${selectedUnit?.unitId || selectedUnitId}/convites/${tab}`)}>{tab === "qrCodes" ? "QR Code" : tab === "chaveVirtual" ? "Chave Virtual" : "QR Scanner"}</button>)}
@@ -3673,8 +3884,18 @@ function App() {
                 </div>
               ))}
             </article>
+          ) : showUnitTabs && unitTab === "recursos" ? (
+            <article className="panel">
+              <div className="panel-heading"><h2>Recursos da unidade</h2><ClipboardList size={20} /></div>
+              <div className="summary-list">
+                <span><strong>Moradores</strong>{data.residents.filter((person) => person.unitId === selectedUnit.unitId && (person.kind || "RESIDENT") === "RESIDENT").length}</span>
+                <span><strong>Veiculos</strong>{unitVehicles.length}</span>
+                <span><strong>Credenciais</strong>{data.credentials.filter((credential) => credential.unitId === selectedUnit.unitId).length}</span>
+                <span><strong>Ramal</strong>{selectedUnit.telephony?.extension || selectedUnit.extension || "-"}</span>
+              </div>
+            </article>
           ) : (
-            <section className="unit-directory-grid">
+            <section className={`unit-directory-grid ${unitFormMode === "new" ? "" : "full-width"}`}>
               <article>
                 <div className="resource-toolbar unit-search-toolbar">
                   <label className="search-field">
@@ -3713,30 +3934,7 @@ function App() {
                 {unitPager.pageItems.length === 0 && <div className="empty-state">Nenhuma unidade encontrada para essa busca.</div>}
                 <Pagination page={unitPager.page} totalPages={unitPager.totalPages} onPage={unitPager.setPage} />
               </article>
-              {unitFormMode === "new" && <form className="panel form-panel" key={`${unitFormMode}-${unitFormUnit?.unitId || "new"}`} onSubmit={saveUnitForm}>
-                <div className="panel-heading"><h2>{unitFormMode === "new" ? "Nova unidade" : `Geral da unidade ${unitFormUnit?.unitNumber || "-"}`}</h2><Home size={20} /></div>
-                <div className="form-grid">
-                  <input type="hidden" name="unitId" value={unitFormUnit?.unitId || ""} />
-                  <Field label="Unidade"><input name="unitNumber" defaultValue={unitFormUnit?.unitNumber || ""} /></Field>
-                  <Field label="Bloco/Torre"><input name="blockName" defaultValue={unitFormUnit?.blockName || ""} /></Field>
-                  <Field label="Morador principal"><input name="residentName" defaultValue={unitFormUnit?.residentName || ""} /></Field>
-                  <Field label="Proprietario/Responsavel"><input name="responsibleName" defaultValue={unitOwner?.name || unitFormUnit?.responsibleName || ""} /></Field>
-                  <Field label="CPF do morador"><input name="residentCpf" defaultValue={unitOwner?.cpf || ""} /></Field>
-                  <Field label="RG do morador"><input name="residentRg" defaultValue={unitOwner?.rg || ""} /></Field>
-                  <Field label="Celular do responsavel"><input name="residentPhone" defaultValue={unitOwner?.phone || ""} /></Field>
-                  <Field label="E-mail/Login"><input name="residentEmail" defaultValue={unitOwner?.email || ""} /></Field>
-                  <Field label="Relacao"><select name="residentRelation" defaultValue={unitOwner?.relation || "Responsavel"}><option>Proprietario</option><option>Morador</option><option>Responsavel</option><option>Responsavel financeiro</option></select></Field>
-                  <Field label="Ramal"><input name="extension" defaultValue={unitFormUnit?.telephony?.extension || unitFormUnit?.extension || ""} /></Field>
-                </div>
-                <div className="toolbar-actions unit-actions">
-                  <button type="submit"><Save size={16} /> Salvar unidade</button>
-                  <button className="secondary-button" type="button" onClick={() => navigateTo(`/unidades/${selectedUnit?.unitId || selectedUnitId}/pessoas/moradores/ver/${unitOwner?.id || "novo"}`)}>Abrir moradores</button>
-                  <button className="secondary-button" type="button" onClick={() => navigateTo(`/unidades/${selectedUnit?.unitId || selectedUnitId}/logins`)}>Logins</button>
-                  <button className="secondary-button" type="button" onClick={() => navigateTo(`/unidades/${selectedUnit?.unitId || selectedUnitId}/convites/qrCodes`)}>Convites</button>
-                  <button className="secondary-button" type="button" onClick={() => setUnitFormMode("edit")}>Cancelar</button>
-                  {unitFormUnit?.unitId && <button className="danger-button" type="button" onClick={() => void deleteUnit(unitFormUnit)}><Trash2 size={16} /> Excluir unidade</button>}
-                </div>
-              </form>}
+              {unitFormMode === "new" && renderUnitForm(true)}
             </section>
           )}
         </section>
@@ -3744,30 +3942,32 @@ function App() {
     }
 
     if (activeSection === "syndic") {
-      const syndic = data.residents.find((person) => person.isSyndic) || data.residents.find((person) => person.role === "CONDO_ADMIN");
+      const tenantResidents = data.residents.filter((person) => person.tenantId === selectedTenant?.id && (person.kind || "RESIDENT") === "RESIDENT");
+      const syndic = tenantResidents.find((person) => person.isSyndic) || null;
+      const syndicFace = data.credentials.find((credential) => credential.personId === syndic?.id && credential.type === "FACE");
       return (
         <section className="people-layout">
-          <article className="panel form-panel">
+          <form className="panel form-panel" key={`${selectedTenant?.id || "tenant"}-${syndic?.id || "none"}`} onSubmit={saveSyndic}>
             <div className="panel-heading"><h2>Definir sindico</h2><ShieldCheck size={20} /></div>
             <div className="form-grid">
               <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-              <Field label="Pessoa"><select defaultValue={syndic?.id || ""}>{data.residents.filter((person) => person.tenantId === selectedTenant?.id).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
-              <Field label="Cargo"><select defaultValue="SINDICO"><option>SINDICO</option><option>SUBSINDICO</option><option>CONSELHEIRO</option><option>ADMINISTRADORA</option></select></Field>
-              <Field label="Inicio do mandato"><input type="date" /></Field>
-              <Field label="Fim do mandato"><input type="date" /></Field>
-              <Field label="Permissao"><select defaultValue="CONDO_ADMIN"><option value="CONDO_ADMIN">Administrador do condominio</option><option value="PORTER">Porteiro</option><option value="RESIDENT">Usuario normal</option></select></Field>
-              <button type="button"><Save size={16} /> Salvar sindico</button>
+              <Field label="Pessoa"><select name="personId" required defaultValue={syndic?.id || ""}><option value="">Selecione</option>{tenantResidents.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
+              <Field label="Cargo"><select name="syndicRole" defaultValue={syndic?.syndicRole || "SINDICO"}><option>SINDICO</option><option>SUBSINDICO</option><option>CONSELHEIRO</option><option>ADMINISTRADORA</option></select></Field>
+              <Field label="Inicio do mandato"><input name="mandateStart" type="date" defaultValue={syndic?.mandateStart || ""} /></Field>
+              <Field label="Fim do mandato"><input name="mandateEnd" type="date" defaultValue={syndic?.mandateEnd || ""} /></Field>
+              <Field label="Permissao"><select name="role" defaultValue={syndic?.role || "CONDO_ADMIN"}><option value="CONDO_ADMIN">Administrador do condominio</option><option value="PORTER">Porteiro</option><option value="RESIDENT">Usuario normal</option></select></Field>
+              <button type="submit"><Save size={16} /> Salvar sindico</button>
             </div>
             <div className="form-hint">Esta tela define quem e sindico/subsindico e quais permissoes administrativas essa pessoa tera.</div>
-          </article>
+          </form>
           <article className="panel people-panel">
             <div className="panel-heading"><h2>Sindico atual</h2><ShieldCheck size={20} /></div>
             <div className="person-row">
-              <div className="person-name-cell"><PersonAvatar name={syndic?.name || "S"} photoUrl={syndic?.photoUrl} /><div><strong>{syndic?.name || "Nao definido"}</strong><small>{syndic?.email || "-"}</small><small>{selectedTenant?.name}</small></div></div>
+              <div className="person-name-cell"><PersonAvatar name={syndic?.name || "S"} photoUrl={credentialPhotoUrl(syndicFace, syndic)} /><div><strong>{syndic?.name || "Nao definido"}</strong><small>{syndic?.email || "-"}</small><small>{selectedTenant?.name}</small></div></div>
               <span>CPF: {syndic?.cpf || "-"}<br />RG: {syndic?.rg || "-"}</span>
               <span>{syndic?.phone || "-"}</span>
-              <span>Sindico</span>
-              <div className="row-actions"><button className="compact-action-button secondary-button">Permissoes</button><button className="compact-action-button secondary-button">Editar</button></div>
+              <span>{syndic?.syndicRole || "Sindico"}</span>
+              <div className="row-actions"><button className="compact-action-button secondary-button" type="button" onClick={() => setActiveSection("permissions")}>Permissoes</button><button className="compact-action-button secondary-button" type="button" disabled={!syndic} onClick={() => { setSelectedPersonId(syndic?.id || "new"); setActiveSection("residents"); }}>Editar</button></div>
             </div>
           </article>
         </section>
@@ -4557,7 +4757,7 @@ function App() {
                   <span>{credential.type}</span>
                   <span>{credential.valueLabel}</span>
                   <span className={`status ${credential.syncStatus === "PENDING" || credential.syncStatus === "ERROR" ? "offline" : ""}`}>{credential.syncStatus}</span>
-                  <div className="row-actions"><button className="compact-action-button secondary-button" onClick={() => setCredentialForm({ ...emptyCredentialForm, ...credential })}>Editar</button><button className="compact-action-button secondary-button" onClick={() => void syncCredentialTarget({ credentialId: credential.id, credentialType: credential.type, deviceId: credential.deviceId || credentialForm.deviceId, target: credential.valueLabel })}>Sincronizar</button><button className="compact-action-button danger-button" onClick={() => void deleteCredential(credential)}>Excluir</button></div>
+                  <div className="row-actions"><button className="compact-action-button secondary-button" onClick={() => setCredentialForm({ ...emptyCredentialForm, ...credential })}>Editar</button><button className="compact-action-button danger-button" onClick={() => void deleteCredential(credential)}>Excluir</button></div>
                 </div>
               );
             })}
@@ -4565,10 +4765,7 @@ function App() {
           </article>
           <article className="panel">
             <div className="panel-heading"><h2>Sincronismo de credenciais</h2><RefreshCw size={20} /></div>
-            <div className="toolbar-actions unit-actions">
-              <button type="button" onClick={() => void enqueueCredentialSync(data.manufacturerProfiles[0] || { name: "Generico" }, "FACE")}><RefreshCw size={16} /> Sincronizar faces</button>
-              <button className="secondary-button" type="button" onClick={() => void syncCredentialTarget({ credentialType: "APP", target: "Todas credenciais APP" })}>Sincronizar APP/QR</button>
-            </div>
+            <div className="form-hint">O equipamento recebe credenciais somente nos eventos de criacao e exclusao.</div>
             <div className="sync-job-grid">
               {data.credentialSyncJobs.map((job) => (
                 <div className="sync-job-card" key={job.id}>
@@ -4915,7 +5112,8 @@ function App() {
               const Icon = section.icon;
             return (
                 <button key={section.id} className={section.id === activeSection ? "active" : ""} onClick={() => {
-                  setActiveSection(section.id);
+                  if (section.id === "units") navigateTo("/unidades");
+                  else setActiveSection(section.id);
                   if (section.id === "devices") setDeviceTab("inicio");
                 }}>
                   <Icon size={18} />
@@ -4936,7 +5134,7 @@ function App() {
           </div>
           <div className="toolbar-actions">
             <button onClick={() => void syncNow()}><RefreshCw size={16} /> Sincronizar</button>
-            <button className="secondary-button" onClick={() => persistSession(null)}>Sair</button>
+            <button className="secondary-button" onClick={() => void logout()}>Sair</button>
           </div>
         </header>
         <StatusBanner status={syncState.status} error={syncState.error} lastSyncAt={syncState.lastSyncAt} />
