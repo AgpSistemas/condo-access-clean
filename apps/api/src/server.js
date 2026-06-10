@@ -1677,7 +1677,7 @@ async function readPagedHikvisionCredentials(device, candidate) {
       kind: candidate.kind,
       path: `${candidate.path}#${position}`
     }, candidate.type);
-    if (candidate.type === "FACE") {
+    if (candidate.enrichPhotos) {
       parsedRecords = await enrichHikvisionFaceRecords(device, parsedRecords);
     }
     const payload = tryParseJson(result.body);
@@ -3231,6 +3231,16 @@ async function fetchCredentialPhotoBytes(device, photoUrl = "") {
     return { mimeType, buffer };
   } finally {
     request.done();
+  }
+}
+
+function devicePhotoReferenceAllowed(device, photoUrl = "") {
+  const clean = String(photoUrl || "").trim();
+  if (!clean || clean.startsWith("data:")) return Boolean(clean);
+  try {
+    return new URL(absoluteDeviceImageUrl(device, clean)).origin === new URL(deviceBaseUrl(device)).origin;
+  } catch {
+    return false;
   }
 }
 
@@ -4978,6 +4988,29 @@ async function handleRequest(request, response) {
       channels: deviceChannels(device),
       cameras: deviceCameras.map((camera) => cameraDiagnostic(camera, origin))
     });
+  }
+
+  const deviceIntegrationPhotoMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/integration\/photo$/);
+  if (request.method === "GET" && deviceIntegrationPhotoMatch) {
+    const deviceId = decodeURIComponent(deviceIntegrationPhotoMatch[1]);
+    const device = devices.find((item) => item.id === deviceId);
+    if (!device) return json(response, 404, { message: "Equipamento nao encontrado" });
+    const photoUrl = url.searchParams.get("url") || "";
+    if (!devicePhotoReferenceAllowed(device, photoUrl)) {
+      return json(response, 400, { message: "Referencia de foto invalida para este equipamento" });
+    }
+    try {
+      const photo = await fetchCredentialPhotoBytes(device, photoUrl);
+      response.writeHead(200, {
+        "Content-Type": photo.mimeType || "image/jpeg",
+        "Content-Length": photo.buffer.length,
+        "Cache-Control": "private, max-age=300",
+        "Access-Control-Allow-Origin": "*"
+      });
+      return response.end(photo.buffer);
+    } catch (error) {
+      return json(response, 502, { message: error instanceof Error ? error.message : "Falha ao carregar foto facial" });
+    }
   }
 
   const deviceIntegrationMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/integration(?:\/([^/]+))?$/);

@@ -194,6 +194,13 @@ function credentialPhotoUrl(credential = {}, person = {}) {
   return `${apiUrl}/api/credentials/${encodeURIComponent(credential.id)}/photo`;
 }
 
+function equipmentPreviewPhotoUrl(deviceId = "", photoUrl = "") {
+  const clean = String(photoUrl || "").trim();
+  if (!clean || !deviceId) return "";
+  if (clean.startsWith("data:")) return clean;
+  return `${apiUrl}/api/devices/${encodeURIComponent(deviceId)}/integration/photo?url=${encodeURIComponent(clean)}`;
+}
+
 function callTime(call = {}) {
   return new Date(call.createdAt || call.answeredAt || 0).getTime() || 0;
 }
@@ -4178,7 +4185,10 @@ function App() {
                         const key = faceImportSelectionKey(item);
                         const selection = equipmentFaceSelections[key] || {};
                         const selected = selection.selected !== false;
-                        const photoUrl = item.payload?.photoUrl || "";
+                        const photoUrl = equipmentPreviewPhotoUrl(
+                          equipmentIntegration.deviceId || selectedIntegrationDevice?.id || "",
+                          item.payload?.photoUrl || ""
+                        );
                         return (
                           <div className="unit-table row credential-review-table" key={key}>
                             <label className="check-cell"><input type="checkbox" checked={selected} onChange={(event) => updateEquipmentCredentialSelection(item, { selected: event.target.checked })} /></label>
