@@ -5572,6 +5572,28 @@ async function handleRequest(request, response) {
     return json(response, 200, filtered);
   }
 
+  const credentialPhotoMatch = url.pathname.match(/^\/api\/credentials\/([^/]+)\/photo$/);
+  if (request.method === "GET" && credentialPhotoMatch) {
+    const credentialId = decodeURIComponent(credentialPhotoMatch[1]);
+    const credential = credentials.find((item) => item.id === credentialId);
+    if (!credential?.photoUrl) return json(response, 404, { message: "Foto facial nao encontrada" });
+    const device = devices.find((item) => item.id === credential.deviceId) ||
+      devices.find((item) => item.tenantId === credential.tenantId && item.category === "access-control");
+    if (!device) return json(response, 404, { message: "Equipamento da facial nao encontrado" });
+    try {
+      const photo = await fetchCredentialPhotoBytes(device, credential.photoUrl);
+      response.writeHead(200, {
+        "Content-Type": photo.mimeType || "image/jpeg",
+        "Content-Length": photo.buffer.length,
+        "Cache-Control": "private, max-age=300",
+        "Access-Control-Allow-Origin": "*"
+      });
+      return response.end(photo.buffer);
+    } catch (error) {
+      return json(response, 502, { message: error instanceof Error ? error.message : "Falha ao carregar foto facial" });
+    }
+  }
+
   if (request.method === "POST" && url.pathname === "/api/credentials") {
     const body = await readBody(request);
     const result = saveCredential(body);

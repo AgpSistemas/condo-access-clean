@@ -184,6 +184,14 @@ function PersonAvatar({ name = "", photoUrl = "" }) {
   );
 }
 
+function credentialPhotoUrl(credential = {}, person = {}) {
+  if (person?.photoUrl) return person.photoUrl;
+  const photoUrl = String(credential?.photoUrl || "").trim();
+  if (!photoUrl) return "";
+  if (photoUrl.startsWith("data:") || photoUrl.startsWith("https://")) return photoUrl;
+  return `${apiUrl}/api/credentials/${encodeURIComponent(credential.id)}/photo`;
+}
+
 function callTime(call = {}) {
   return new Date(call.createdAt || call.answeredAt || 0).getTime() || 0;
 }
@@ -4471,6 +4479,7 @@ function App() {
     }
 
     if (activeSection === "credentials") {
+      const tenantFaces = tenantCredentials.filter((credential) => credential.type === "FACE");
       return (
         <section className="resource-page">
           <form className="panel form-panel" onSubmit={saveCredentialForm}>
@@ -4511,13 +4520,37 @@ function App() {
             ) : null}
           </article>
           <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <h2>Faciais importadas</h2>
+                <small>Faciais do equipamento, inclusive as que ainda precisam ser vinculadas a uma unidade.</small>
+              </div>
+              <span className="status">{tenantFaces.length} facial(is)</span>
+            </div>
+            <div className="unit-table header"><span>Foto / Pessoa</span><span>Origem</span><span>Unidade</span><span>Sincronismo</span></div>
+            {tenantFaces.map((credential) => {
+              const person = data.residents.find((item) => item.id === credential.personId);
+              const unit = data.units.find((item) => item.unitId === credential.unitId);
+              const credentialName = person?.name || credential.personName || credential.personId || "Sem pessoa";
+              return (
+                <div className="unit-table row" key={`face-${credential.id}`}>
+                  <span className="credential-person-cell"><PersonAvatar name={credentialName} photoUrl={credentialPhotoUrl(credential, person)} /><span><strong>{credentialName}</strong><small>{credential.valueLabel || credential.value || "Facial"}</small></span></span>
+                  <span>{credential.source || "LOCAL"}<small>{credential.devicePath || "Equipamento"}</small></span>
+                  <span>{unit ? `Unidade ${unit.unitNumber}` : "Sem unidade vinculada"}</span>
+                  <span className={`status ${credential.syncStatus === "PENDING" || credential.syncStatus === "ERROR" ? "offline" : ""}`}>{credential.syncStatus || "PENDING"}</span>
+                </div>
+              );
+            })}
+            {!tenantFaces.length && <div className="empty-state">Nenhuma facial importada para este condominio.</div>}
+          </article>
+          <article className="panel">
             <div className="panel-heading"><h2>Credenciais</h2><BadgeCheck size={20} /></div>
             <div className="unit-table header"><span>Foto / Pessoa</span><span>Tipo</span><span>Identificacao</span><span>Sincronismo</span></div>
             {tenantCredentials.map((credential) => {
               const person = data.residents.find((item) => item.id === credential.personId);
               const unit = data.units.find((item) => item.unitId === credential.unitId);
               const credentialName = person?.name || credential.personName || credential.personId || "Sem pessoa";
-              const credentialPhoto = person?.photoUrl || credential.photoUrl || "";
+              const credentialPhoto = credentialPhotoUrl(credential, person);
               return (
                 <div className="unit-table row" key={credential.id}>
                   <span className="credential-person-cell"><PersonAvatar name={credentialName} photoUrl={credentialPhoto} /><span><strong>{credentialName}</strong><small>Unidade {unit?.unitNumber || "-"}</small></span></span>
