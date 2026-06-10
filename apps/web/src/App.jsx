@@ -246,6 +246,8 @@ const emptyCompanyForm = {
   contactName: "",
   contactEmail: "",
   contactPhone: "",
+  login: "",
+  logoUrl: "",
   billingModel: "PER_CONDOMINIUM",
   maxCondominiums: "1",
   baseMonthlyPrice: "0",
@@ -948,6 +950,8 @@ function LocalLogin({ onLogin }) {
   const [mode, setMode] = useState("choice");
   const [email, setEmail] = useState("agpsistemascorp@gmail.com");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   if (mode === "choice") {
     return (
@@ -968,7 +972,19 @@ function LocalLogin({ onLogin }) {
     <main className="login-shell">
       <form className="login-panel" onSubmit={(event) => {
         event.preventDefault();
-        onLogin({ email, name: "Master Administrador", role: "SUPER_ADMIN" });
+        setLoading(true);
+        setError("");
+        void fetch(`${apiUrl}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password })
+        }).then(async (response) => {
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result.message || "Falha ao entrar.");
+          onLogin({ ...result.user, accessToken: result.accessToken, refreshToken: result.refreshToken });
+        }).catch((loginError) => {
+          setError(loginError instanceof Error ? loginError.message : "Falha ao entrar.");
+        }).finally(() => setLoading(false));
       }}>
         <div className="login-brand">
           <img src={Logo} alt="Condo Access" style={{ width: 44, height: 44, objectFit: "contain" }} />
@@ -976,9 +992,50 @@ function LocalLogin({ onLogin }) {
         </div>
         <Field label="E-mail"><input value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
         <Field label="Senha"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
+        {error && <div className="form-error">{error}</div>}
         {mode === "signup" && <div className="form-hint">Fluxo local de demonstracao. Na API real, este cadastro cria ou solicita acesso ao condominio.</div>}
-        <button type="submit"><LogIn size={18} />Entrar</button>
+        <button type="submit" disabled={loading}><LogIn size={18} />{loading ? "Entrando..." : "Entrar"}</button>
         <button className="secondary-button" type="button" onClick={() => setMode("choice")}>Voltar</button>
+      </form>
+    </main>
+  );
+}
+
+function ChangePassword({ session, onChanged }) {
+  const [currentPassword, setCurrentPassword] = useState("123456");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+
+  return (
+    <main className="login-shell">
+      <form className="login-panel" onSubmit={async (event) => {
+        event.preventDefault();
+        if (newPassword !== confirmation) {
+          setError("A confirmacao da nova senha nao confere.");
+          return;
+        }
+        const response = await fetch(`${apiUrl}/api/auth/change-password`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ login: session.email, currentPassword, newPassword })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setError(result.message || "Falha ao alterar senha.");
+          return;
+        }
+        onChanged({ ...session, mustChangePassword: false });
+      }}>
+        <div className="login-brand">
+          <img src={Logo} alt="Condo Access" style={{ width: 44, height: 44, objectFit: "contain" }} />
+          <div><strong>Troca obrigatoria de senha</strong><span>Proteja o primeiro acesso da empresa</span></div>
+        </div>
+        <Field label="Senha temporaria"><input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></Field>
+        <Field label="Nova senha"><input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field>
+        <Field label="Confirmar nova senha"><input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></Field>
+        {error && <div className="form-error">{error}</div>}
+        <button type="submit"><Save size={18} /> Alterar senha e continuar</button>
       </form>
     </main>
   );
@@ -1157,6 +1214,7 @@ function App() {
   const [tenantTelephony, setTenantTelephony] = useState({});
   const [condoGeo, setCondoGeo] = useState({ latitude: "", longitude: "" });
   const [message, setMessage] = useState("");
+  const [supportAlert, setSupportAlert] = useState("");
   const [actionFeedback, setActionFeedback] = useState(null);
   const [deviceForm, setDeviceForm] = useState(emptyDeviceForm);
   const [companyForm, setCompanyForm] = useState(emptyCompanyForm);
@@ -1209,9 +1267,25 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [actionFeedback]);
 
-  const allSections = [...sections, ...condoSections, ...settingsSections];
+  useEffect(() => {
+    if (!message) return undefined;
+    const timer = window.setTimeout(() => setMessage(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  const roleSections = session?.role === "PORTER"
+    ? sections.filter((section) => ["dashboard", "remotePorter"].includes(section.id))
+    : session?.role === "RESIDENT"
+      ? sections.filter((section) => section.id === "dashboard")
+      : sections;
+  const allowedSettingsSections = session?.role === "SUPER_ADMIN" ? settingsSections : [];
+  const allSections = [...roleSections, ...condoSections, ...allowedSettingsSections];
   const active = allSections.find((section) => section.id === activeSection) || sections[0];
-  const selectedTenant = data.condominiums.find((item) => item.id === selectedTenantId) || data.condominiums[0];
+  const visibleCondominiums = data.condominiums.filter((item) =>
+    !session?.companyId || item.companyId === session.companyId
+  );
+  const selectedTenant = visibleCondominiums.find((item) => item.id === selectedTenantId) || visibleCondominiums[0];
+  const sessionCompany = data.companies.find((company) => company.id === session?.companyId) || null;
   const selectedLicenseCompany = data.companies.find((item) => item.id === licenseForm.companyId) || null;
   const condoFormTenant = condoFormMode === "new" ? null : selectedTenant;
   const units = useMemo(() => data.units.filter((unit) => unit.tenantId === selectedTenant?.id), [data.units, selectedTenant?.id]);
@@ -1750,7 +1824,7 @@ function App() {
     }
   }, [selectedUnit]);
 
-  const filteredCondos = data.condominiums.filter((item) => `${item.name} ${item.document}`.toLowerCase().includes(search.toLowerCase()));
+  const filteredCondos = visibleCondominiums.filter((item) => `${item.name} ${item.document}`.toLowerCase().includes(search.toLowerCase()));
   const condoPager = usePaged(filteredCondos, 12);
   const unitPager = usePaged(filteredUnits, 12);
   const tenantCameras = useMemo(() => data.cameras.filter((camera) => camera.tenantId === selectedTenant?.id), [data.cameras, selectedTenant?.id]);
@@ -2103,7 +2177,11 @@ function App() {
     });
     const saved = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setMessage(saved.message || "Falha ao salvar condominio.");
+      const errorMessage = saved.message || "Falha ao salvar condominio.";
+      setMessage(errorMessage);
+      if (response.status === 409 && /limite|contato|suporte/i.test(errorMessage)) {
+        setSupportAlert(`${errorMessage} Entre em contato com o suporte para ampliar a licenca.`);
+      }
       return;
     }
     const generatedUnitCount = saved?.generatedUnits || 0;
@@ -2168,14 +2246,9 @@ function App() {
     }
     setSelectedTenantId("");
     setCondoFormMode("new");
-    setData((current) => ({
-      ...current,
-      condominiums: current.condominiums.filter((item) => item.id !== condo.id),
-      units: current.units.filter((unit) => unit.tenantId !== condo.id),
-      residents: current.residents.filter((person) => person.tenantId !== condo.id)
-    }));
-    setMessage("Condominio excluido.");
-    void refreshApiCache();
+    const payload = await refreshApiCache();
+    if (payload) setData(payload);
+    setMessage("Condominio e todos os dados vinculados foram excluidos.");
   }
 
   async function saveUnitForm(event) {
@@ -2577,7 +2650,11 @@ function App() {
     });
     const saved = await response.json().catch(() => null);
     if (!response.ok) {
-      setMessage(saved?.message || "Falha ao salvar empresa e plano.");
+      const errorMessage = saved?.message || "Falha ao salvar empresa e plano.";
+      setMessage(errorMessage);
+      if (response.status === 409 && /limite/i.test(errorMessage)) {
+        setSupportAlert(`${errorMessage} Entre em contato com o suporte para alterar o contrato.`);
+      }
       return;
     }
     setData((current) => {
@@ -2597,7 +2674,9 @@ function App() {
       };
     });
     setCompanyForm(emptyCompanyForm);
-    setMessage("Empresa e plano comercial salvos.");
+    setMessage(saved.temporaryPassword
+      ? `Empresa salva. Login: ${saved.login}. Senha temporaria: ${saved.temporaryPassword}`
+      : "Empresa e plano comercial atualizados.");
     void refreshApiCache();
   }
 
@@ -3269,6 +3348,9 @@ function App() {
   if (!session) {
     return <LocalLogin onLogin={persistSession} />;
   }
+  if (session.mustChangePassword) {
+    return <ChangePassword session={session} onChanged={persistSession} />;
+  }
 
   function renderPersonRegistry(kind, title, scopeUnit = false) {
     const people = data.residents.filter((person) => {
@@ -3344,7 +3426,7 @@ function App() {
               <h2>{selectedTenant?.name || "-"}</h2>
               <small>{selectedTenant?.document || "Documento nao informado"} - {selectedTenant?.status || "ACTIVE"}</small>
             </div>
-            <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{data.condominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+            <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
           </div>
           <div className="metrics">
             <Metric icon={Home} label="unidades" value={units.length} />
@@ -3660,7 +3742,7 @@ function App() {
           <article className="panel form-panel">
             <div className="panel-heading"><h2>Definir sindico</h2><ShieldCheck size={20} /></div>
             <div className="form-grid">
-              <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{data.condominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+              <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
               <Field label="Pessoa"><select defaultValue={syndic?.id || ""}>{data.residents.filter((person) => person.tenantId === selectedTenant?.id).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
               <Field label="Cargo"><select defaultValue="SINDICO"><option>SINDICO</option><option>SUBSINDICO</option><option>CONSELHEIRO</option><option>ADMINISTRADORA</option></select></Field>
               <Field label="Inicio do mandato"><input type="date" /></Field>
@@ -4019,7 +4101,7 @@ function App() {
             <div className="remote-porter-selector">
               <Field label="Condominio">
                 <select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>
-                  {data.condominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  {visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
               </Field>
               <button type="button" onClick={() => setResourceTab("portaria")}><PhoneCall size={16} /> Abrir portaria</button>
@@ -4211,7 +4293,7 @@ function App() {
         <section className="resource-page">
           <div className="resource-hero panel">
             <div><span>Central por condominio</span><h2>{selectedTenant?.name || "-"}</h2><small>{tenantResources.filter((item) => item.enabled).length} de {tenantResources.length} recursos ativos na licenca</small></div>
-            <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{data.condominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+            <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
           </div>
           <div className="subtabs resource-tabs">
             {["modulos", "portaria", "convites", "auditoria", "gateway"].map((tab) => <button key={tab} className={resourceTab === tab ? "active" : ""} onClick={() => setResourceTab(tab)}>{tab}</button>)}
@@ -4522,6 +4604,9 @@ function App() {
               <Field label="Responsavel"><input value={companyForm.contactName} onChange={(event) => setCompanyForm((current) => ({ ...current, contactName: event.target.value }))} /></Field>
               <Field label="E-mail"><input type="email" value={companyForm.contactEmail} onChange={(event) => setCompanyForm((current) => ({ ...current, contactEmail: event.target.value }))} /></Field>
               <Field label="Telefone"><input value={companyForm.contactPhone} onChange={(event) => setCompanyForm((current) => ({ ...current, contactPhone: event.target.value }))} /></Field>
+              <Field label="Login da empresa"><input required value={companyForm.login} onChange={(event) => setCompanyForm((current) => ({ ...current, login: event.target.value }))} placeholder="empresa@dominio.com" /></Field>
+              <Field label="Logo da empresa"><input value={companyForm.logoUrl} onChange={(event) => setCompanyForm((current) => ({ ...current, logoUrl: event.target.value }))} placeholder="https://..." /></Field>
+              <div className="form-hint">Novas empresas recebem a senha temporaria 123456 e devem troca-la no primeiro acesso.</div>
               <Field label="Cobranca dos condominios"><select value={companyForm.billingModel} onChange={(event) => setCompanyForm((current) => ({ ...current, billingModel: event.target.value }))}><option value="PER_CONDOMINIUM">Por condominio</option><option value="PACKAGE">Pacote de condominios</option></select></Field>
               <Field label="Limite de condominios"><input type="number" min="1" value={companyForm.maxCondominiums} onChange={(event) => setCompanyForm((current) => ({ ...current, maxCondominiums: event.target.value }))} /></Field>
               <Field label="Mensalidade base"><input type="number" min="0" step="0.01" value={companyForm.baseMonthlyPrice} onChange={(event) => setCompanyForm((current) => ({ ...current, baseMonthlyPrice: event.target.value }))} /></Field>
@@ -4563,6 +4648,7 @@ function App() {
                 return (
                   <article className="company-plan-card" key={company.id}>
                     <header><strong>{company.name}</strong><em>{company.status === "INACTIVE" ? "Inativa" : "Ativa"}</em></header>
+                    <span>Login: <strong>{company.login || "-"}</strong></span>
                     <span>Condominios: <strong>{companyCondos.length}/{company.maxCondominiums}</strong></span>
                     <span>Modulos contratados: <strong>{company.resourceIds?.length || 0}</strong></span>
                     <span>VoIP: <strong>{company.voipBillingModel === "PACKAGE" ? "Pacote" : company.voipBillingModel === "DISABLED" ? "Desativado" : "Por ramal"}</strong></span>
@@ -4709,7 +4795,7 @@ function App() {
       ? condoFormMode === "new" ? "Novo condominio" : "Cadastro do condominio"
       : active.label;
   const showCondoMenu = isCondoSection || (isCondoForm && condoFormMode === "edit");
-  const primarySections = showCondoMenu ? sections.filter((section) => section.id !== "condominiums") : sections;
+  const primarySections = showCondoMenu ? roleSections.filter((section) => section.id !== "condominiums") : roleSections;
 
   return (
     <main className="shell">
@@ -4735,6 +4821,22 @@ function App() {
           </section>
         </div>
       )}
+      {message && (
+        <div className="change-toast" role="status">
+          <BadgeCheck size={20} />
+          <span>{message}</span>
+        </div>
+      )}
+      {supportAlert && (
+        <div className="call-modal-backdrop" role="presentation">
+          <section className="support-limit-modal" role="dialog" aria-modal="true" aria-labelledby="support-limit-title">
+            <FileKey2 size={28} />
+            <h2 id="support-limit-title">Limite da licenca atingido</h2>
+            <p>{supportAlert}</p>
+            <button type="button" onClick={() => setSupportAlert("")}>Entendi</button>
+          </section>
+        </div>
+      )}
       {disconnectedDevices.length > 0 && (
         <button className="device-alert-notification" type="button" onClick={() => { setActiveSection("devices"); setDeviceTab("painel"); }}>
           <WifiOff size={20} />
@@ -4746,8 +4848,8 @@ function App() {
       )}
       <aside className="sidebar">
         <div className="brand">
-          <img src={Logo} alt="Condo Access" />
-          <div><strong>Condo Access</strong><span>Gestao operacional</span></div>
+          <img src={sessionCompany?.logoUrl || Logo} alt={sessionCompany?.name || "Condo Access"} />
+          <div><strong>{sessionCompany?.name || "Condo Access"}</strong><span>{session?.role === "SUPER_ADMIN" ? "Gestao geral do sistema" : session?.role === "COMPANY_ADMIN" ? "Gestao da empresa" : session?.role === "PORTER" ? "Painel da portaria" : "Area do morador"}</span></div>
         </div>
         <nav>
           {primarySections.map((section) => {
@@ -4764,7 +4866,7 @@ function App() {
           })}
           {!showCondoMenu && <div className="nav-group">
             <span>Configuracoes</span>
-            {settingsSections.map((section) => {
+            {allowedSettingsSections.map((section) => {
               const Icon = section.icon;
             return (
               <button key={section.id} className={section.id === activeSection ? "active" : ""} onClick={() => setActiveSection(section.id)}>

@@ -90,6 +90,7 @@ const publicSipHost = "granportalresidency.ddns.net";
 const standardSipPassword = process.env.SIP_DEFAULT_PASSWORD || "CondoAccess@2026";
 const oneSignalAppId = String(process.env.ONESIGNAL_APP_ID || "").trim();
 const oneSignalRestApiKey = String(process.env.ONESIGNAL_REST_API_KEY || "").trim();
+const defaultCompanyPassword = "123456";
 
 function resolvePostgresSslMode(connectionString) {
   const explicitSslMode = String(process.env.PGSSLMODE || "").trim().toLowerCase();
@@ -636,7 +637,7 @@ function bootstrap() {
     deviceCategories,
     permissionProfiles,
     accessRoutes,
-    companies,
+    companies: companies.map(publicCompany),
     licenses,
     resources,
     resourceConfigurations,
@@ -1219,11 +1220,42 @@ function makeId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
 
+function passwordDigest(password = "", salt = "") {
+  return createHash("sha256").update(`${salt}:${password}`).digest("hex");
+}
+
+function createPasswordRecord(password = defaultCompanyPassword) {
+  const passwordSalt = randomBytes(16).toString("hex");
+  return {
+    passwordSalt,
+    passwordHash: passwordDigest(password, passwordSalt)
+  };
+}
+
+function validPassword(record, password = "") {
+  return Boolean(record?.passwordSalt && record?.passwordHash && passwordDigest(password, record.passwordSalt) === record.passwordHash);
+}
+
+function publicCompany(company = {}) {
+  const { passwordHash: _passwordHash, passwordSalt: _passwordSalt, ...safeCompany } = company;
+  return safeCompany;
+}
+
 function updateById(collection, id, body) {
   const index = collection.findIndex((item) => item.id === id);
   if (index === -1) return null;
   collection[index] = { ...collection[index], ...body, id };
   return collection[index];
+}
+
+function removeMatching(collection, predicate) {
+  let removed = 0;
+  for (let index = collection.length - 1; index >= 0; index -= 1) {
+    if (!predicate(collection[index])) continue;
+    collection.splice(index, 1);
+    removed += 1;
+  }
+  return removed;
 }
 
 function normalizeLookup(value = "") {
@@ -4618,6 +4650,27 @@ async function handleRequest(request, response) {
     const body = await readBody(request);
     const loginId = String(body.email || body.login || "").trim() || "agpsistemascorp@gmail.com";
     const loginKey = normalizeLookup(loginId);
+    const password = String(body.password || "");
+    const matchedCompany = companies.find((company) =>
+      normalizeLookup(company.login) === loginKey ||
+      normalizeLookup(company.contactEmail) === loginKey
+    );
+    if (matchedCompany) {
+      if (matchedCompany.status === "INACTIVE") return json(response, 403, { message: "Empresa inativa. Entre em contato com o suporte." });
+      if (!validPassword(matchedCompany, password)) return json(response, 401, { message: "Login ou senha invalidos." });
+      return json(response, 200, {
+        accessToken: randomBytes(24).toString("hex"),
+        refreshToken: randomBytes(24).toString("hex"),
+        user: {
+          id: `company-user-${matchedCompany.id}`,
+          name: matchedCompany.contactName || matchedCompany.name,
+          email: matchedCompany.login || matchedCompany.contactEmail,
+          role: "COMPANY_ADMIN",
+          companyId: matchedCompany.id,
+          mustChangePassword: matchedCompany.mustChangePassword !== false
+        }
+      });
+    }
     const matchedResident = residents.find((person) =>
       normalizeLookup(person.email) === loginKey ||
       normalizeLookup(person.cpf) === loginKey ||
@@ -4642,12 +4695,19 @@ async function handleRequest(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/api/companies") {
-    return json(response, 200, companies);
+    return json(response, 200, companies.map(publicCompany));
   }
 
   if (request.method === "POST" && url.pathname === "/api/companies") {
     const body = await readBody(request);
     const existingCompany = body.id ? findCompany(body.id) : null;
+    const login = String(body.login ?? existingCompany?.login ?? body.contactEmail ?? "").trim().toLowerCase();
+    if (!login) return json(response, 400, { message: "Informe o login da empresa." });
+    const duplicatedLogin = companies.find((company) => company.id !== existingCompany?.id && normalizeLookup(company.login) === normalizeLookup(login));
+    if (duplicatedLogin) return json(response, 409, { message: "Este login ja esta em uso por outra empresa." });
+    const initialPassword = existingCompany?.passwordHash
+      ? { passwordHash: existingCompany.passwordHash, passwordSalt: existingCompany.passwordSalt }
+      : createPasswordRecord();
     const resourceIds = Array.isArray(body.resourceIds)
       ? body.resourceIds.filter((id) => resources.some((resource) => resource.id === id))
       : companyResourceIds(existingCompany);
@@ -4659,6 +4719,10 @@ async function handleRequest(request, response) {
       contactName: body.contactName ?? existingCompany?.contactName ?? "",
       contactEmail: body.contactEmail ?? existingCompany?.contactEmail ?? "",
       contactPhone: body.contactPhone ?? existingCompany?.contactPhone ?? "",
+      logoUrl: body.logoUrl ?? existingCompany?.logoUrl ?? "",
+      login,
+      ...initialPassword,
+      mustChangePassword: existingCompany?.mustChangePassword ?? true,
       billingModel: body.billingModel || existingCompany?.billingModel || "PER_CONDOMINIUM",
       maxCondominiums: parsePositiveInteger(body.maxCondominiums, existingCompany?.maxCondominiums || 1),
       baseMonthlyPrice: Number(body.baseMonthlyPrice ?? existingCompany?.baseMonthlyPrice ?? 0),
@@ -4688,7 +4752,29 @@ async function handleRequest(request, response) {
       }
     });
     savePersistentState("company-saved");
-    return json(response, existingCompany ? 200 : 201, updated || company);
+    return json(response, existingCompany ? 200 : 201, {
+      ...publicCompany(updated || company),
+      temporaryPassword: existingCompany ? undefined : defaultCompanyPassword
+    });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/change-password") {
+    const body = await readBody(request);
+    const loginKey = normalizeLookup(body.login || body.email);
+    const company = companies.find((item) => normalizeLookup(item.login) === loginKey);
+    if (!company || !validPassword(company, String(body.currentPassword || ""))) {
+      return json(response, 401, { message: "Senha atual invalida." });
+    }
+    const nextPassword = String(body.newPassword || "");
+    if (nextPassword.length < 6 || nextPassword === defaultCompanyPassword) {
+      return json(response, 400, { message: "A nova senha deve ter ao menos 6 caracteres e ser diferente da senha temporaria." });
+    }
+    Object.assign(company, createPasswordRecord(nextPassword), {
+      mustChangePassword: false,
+      updatedAt: now()
+    });
+    savePersistentState("company-password-changed");
+    return json(response, 200, { ok: true, mustChangePassword: false });
   }
 
   if (request.method === "GET" && url.pathname === "/api/condominiums/residents") {
@@ -5398,8 +5484,30 @@ async function handleRequest(request, response) {
     const [removed] = index >= 0 ? extraTenants.splice(index, 1) : [findTenant(tenantId)];
     if (!removed) return json(response, 404, { message: "Condominio nao encontrado" });
     if (index === -1) deletedTenantIds.add(tenantId);
+    const tenantUnitIds = new Set(unitList().filter((unit) => unit.tenantId === tenantId).map((unit) => unit.unitId));
+    let removedUnits = 0;
+    tenantUnitIds.forEach((unitId) => {
+      if (units.delete(unitId)) removedUnits += 1;
+    });
+    const cleanup = {
+      units: removedUnits,
+      residents: removeMatching(residents, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
+      devices: removeMatching(devices, (item) => item.tenantId === tenantId),
+      cameras: removeMatching(cameras, (item) => item.tenantId === tenantId),
+      actions: removeMatching(actions, (item) => item.tenantId === tenantId),
+      credentials: removeMatching(credentials, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
+      syncJobs: removeMatching(credentialSyncJobs, (item) => item.tenantId === tenantId),
+      logins: removeMatching(unitLogins, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
+      invites: removeMatching(unitInvites, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
+      routes: removeMatching(accessRoutes, (item) => item.tenantId === tenantId),
+      profiles: removeMatching(permissionProfiles, (item) => item.tenantId === tenantId),
+      licenses: removeMatching(licenses, (item) => item.tenantId === tenantId),
+      configurations: removeMatching(resourceConfigurations, (item) => item.tenantId === tenantId),
+      accessLogs: removeMatching(accessLogs, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
+      calls: removeMatching(intercomCalls, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId))
+    };
     savePersistentState("tenant-deleted");
-    return json(response, 200, { ok: true, removed });
+    return json(response, 200, { ok: true, removed, cleanup });
   }
 
   if (request.method === "GET" && url.pathname === "/api/licenses") {
