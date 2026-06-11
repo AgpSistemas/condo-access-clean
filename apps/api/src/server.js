@@ -1784,7 +1784,7 @@ async function readDeviceCredentialsFromDevice(device, { resource = "credentials
         { label: "Intelbras faces", kind: "FACE", type: "FACE", method: "GET", path: "/cgi-bin/AccessFace.cgi?action=listAll" }
       ]
       : [])
-    .filter((candidate) => !faceOnly || candidate.type === "FACE");
+    .filter((candidate) => !faceOnly || candidate.type === "FACE" || candidate.kind === "USER");
 
   if (!candidates.length) {
     return {
@@ -1825,7 +1825,7 @@ async function readDeviceCredentialsFromDevice(device, { resource = "credentials
           records: parsedRecords.length
         });
       }
-      if (faceOnly && records.length > recordsBefore) break;
+      if (faceOnly && records.slice(recordsBefore).some((record) => record.type === "FACE")) break;
     } catch (error) {
       attempts.push({
         label: candidate.label,
@@ -1853,6 +1853,7 @@ async function readDeviceCredentialsFromDevice(device, { resource = "credentials
 
   const seen = new Set();
   const uniqueRecords = records.filter((record) => {
+    if (faceOnly && record.type !== "FACE") return false;
     const key = credentialKey(device.tenantId, record.type, record.value);
     if (seen.has(key)) return false;
     seen.add(key);
