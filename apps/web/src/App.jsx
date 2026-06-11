@@ -2008,6 +2008,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         dryRun,
+        resource,
         selections: dryRun ? [] : Object.values(equipmentFaceSelections)
       })
     });
@@ -2968,6 +2969,9 @@ function App() {
                   <Field label="Canais esperados"><input value={deviceForm.channelCount} onChange={(event) => setDeviceForm((current) => ({ ...current, channelCount: event.target.value }))} placeholder="Ex.: 4, 8, 16" /></Field>
                   <Field label="Usuario"><input value={deviceForm.username} onChange={(event) => setDeviceForm((current) => ({ ...current, username: event.target.value }))} /></Field>
                   <Field label="Senha"><input type="password" autoComplete="new-password" value={deviceForm.password} onChange={(event) => setDeviceForm((current) => ({ ...current, password: event.target.value }))} placeholder={deviceForm.id ? "Preencha para alterar" : ""} /></Field>
+                  {deviceForm.manufacturer === "Control iD" && <Field label="Acionamento Control iD"><select value={deviceForm.controlIdAction || "door"} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdAction: event.target.value }))}><option value="door">Rele interno</option><option value="sec_box">SecBox</option><option value="catra">Catraca</option></select></Field>}
+                  {deviceForm.manufacturer === "Control iD" && deviceForm.controlIdAction === "sec_box" && <Field label="ID do SecBox"><input value={deviceForm.controlIdSecBoxId || ""} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdSecBoxId: event.target.value }))} placeholder="Ex.: 65793" /></Field>}
+                  {deviceForm.manufacturer === "Control iD" && <Field label="ID grupo de acesso"><input value={deviceForm.controlIdGroupId || ""} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdGroupId: event.target.value }))} placeholder="Grupo com regra de liberacao" /></Field>}
                   <Field label="Ramal interfone"><input value={deviceForm.intercomExtension} onChange={(event) => setDeviceForm((current) => ({ ...current, intercomExtension: event.target.value }))} /></Field>
                   <Field label="Tipo interfone"><select value={deviceForm.intercomType} onChange={(event) => setDeviceForm((current) => ({ ...current, intercomType: event.target.value }))}><option>FACIAL</option><option>TELEFONE_IP</option><option>ATA_VOIP</option></select></Field>
                   <button type="submit"><Save size={16} /> Salvar equipamento</button>
@@ -2999,6 +3003,9 @@ function App() {
                         apiPort: String(device.apiPort || 80),
                         rtspPort: String(device.rtspPort || 554),
                         channelCount: String(device.channelCount || ""),
+                        controlIdAction: device.controlIdAction || "door",
+                        controlIdSecBoxId: device.controlIdSecBoxId || "",
+                        controlIdGroupId: device.controlIdGroupId || "",
                         intercomExtension: device.intercomExtension || "",
                         intercomType: device.intercomType || "FACIAL",
                         intercomEnabled: Boolean(device.intercomEnabled)
@@ -3102,6 +3109,25 @@ function App() {
                 ) : null}
               </article>}
 
+              {equipmentIntegration.resource === "faces" && equipmentIntegration.importing && !equipmentIntegration.importReport && (
+                <article className="panel">
+                  <div className="panel-heading">
+                    <div>
+                      <h2>Previa de cadastros faciais</h2>
+                      <small>Carregando fotos e preparando os campos para validacao.</small>
+                    </div>
+                    <span className="status">CARREGANDO</span>
+                  </div>
+                  <div className="face-import-review">
+                    <div className="unit-table header credential-review-table">
+                      <label className="check-cell"><input type="checkbox" disabled />Importar</label>
+                      <span>Credencial</span><span>Facial</span><span>Pessoa</span><span>Unidade</span>
+                    </div>
+                    <div className="empty-state">Buscando as fotos faciais no equipamento...</div>
+                  </div>
+                </article>
+              )}
+
               {equipmentIntegration.importReport && (
                 <article className="panel">
                   <div className="panel-heading">
@@ -3161,26 +3187,31 @@ function App() {
                       <Pagination page={equipmentPreviewSafePage} totalPages={equipmentPreviewTotalPages} onPage={setEquipmentFacePreviewPage} />
                     </div>
                   ) : null}
-                  <div className="unit-table header integration-table"><span>Credencial</span><span>Pessoa</span><span>Status</span><span>Origem</span></div>
-                  {(equipmentIntegration.importReport.items || []).slice(0, 12).map((item) => (
-                    <div className="unit-table row integration-table" key={`${item.row}-${item.payload?.value}`}>
-                      <span><strong>{item.payload?.type || "-"}</strong><small>{item.payload?.valueLabel || item.payload?.value || "-"}</small></span>
-                      <span>{item.payload?.personName || item.personId || "Sem vinculo"}</span>
-                      <span className={`status ${item.status === "INVALID" ? "offline" : ""}`}>{item.status}</span>
-                      <span>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</span>
-                    </div>
-                  ))}
-                  {equipmentIntegration.importReport.attempts?.length ? (
-                    <div className="simple-list">
-                      {equipmentIntegration.importReport.attempts.map((attempt) => (
-                        <div className="simple-row" key={attempt.path}>
-                          <ServerCog size={18} />
-                          <div><strong>{attempt.label}</strong><span>{attempt.path}{attempt.bodyFormat ? ` - ${attempt.bodyFormat}` : ""}</span>{attempt.error && <small>{attempt.error}</small>}{attempt.bodyPreview && <small>{attempt.bodyPreview}</small>}</div>
-                          <span className={`status ${attempt.ok ? "" : "offline"}`}>{attempt.ok ? `${attempt.records || 0} registro(s)` : "Falhou"}</span>
+
+                  {equipmentIntegration.resource !== "faces" && (
+                    <>
+                      <div className="unit-table header integration-table"><span>Credencial</span><span>Pessoa</span><span>Status</span><span>Origem</span></div>
+                      {(equipmentIntegration.importReport.items || []).slice(0, 12).map((item) => (
+                        <div className="unit-table row integration-table" key={`${item.row}-${item.payload?.value}`}>
+                          <span><strong>{item.payload?.type || "-"}</strong><small>{item.payload?.valueLabel || item.payload?.value || "-"}</small></span>
+                          <span>{item.payload?.personName || item.personId || "Sem vinculo"}</span>
+                          <span className={`status ${item.status === "INVALID" ? "offline" : ""}`}>{item.status}</span>
+                          <span>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</span>
                         </div>
                       ))}
-                    </div>
-                  ) : null}
+                      {equipmentIntegration.importReport.attempts?.length ? (
+                        <div className="simple-list">
+                          {equipmentIntegration.importReport.attempts.map((attempt) => (
+                            <div className="simple-row" key={attempt.path}>
+                              <ServerCog size={18} />
+                              <div><strong>{attempt.label}</strong><span>{attempt.path}{attempt.bodyFormat ? ` - ${attempt.bodyFormat}` : ""}</span>{attempt.error && <small>{attempt.error}</small>}{attempt.bodyPreview && <small>{attempt.bodyPreview}</small>}</div>
+                              <span className={`status ${attempt.ok ? "" : "offline"}`}>{attempt.ok ? `${attempt.records || 0} registro(s)` : "Falhou"}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </>
+                  )}
                 </article>
               )}
             </section>

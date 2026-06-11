@@ -259,15 +259,17 @@ Objetos/funcoes:
 
 Status no sistema:
 
-- Deve ser adapter proprio: `CONTROL_ID_ACCESS`.
+- Adapter proprio implementado: `CONTROL_ID_ACCESS`.
 - Nao deve ser tratado como camera RTSP comum.
+- Sessao, leitura de usuarios/credenciais/faces/eventos e teste de conexao implementados.
+- Criacao e exclusao de usuarios, RFID, PIN, QR Code e foto facial implementadas.
+- Abertura remota implementada para rele interno, SecBox e catraca.
+- Vinculo opcional ao grupo de acesso configurado no cadastro do equipamento.
 
 Pendencias:
 
-- Implementar sessao Control iD.
-- Implementar `load_objects` para logs e usuarios.
-- Implementar `create_or_modify_objects` para usuarios/credenciais.
-- Implementar `execute_actions` para abertura remota.
+- Homologar os comandos no modelo e firmware reais.
+- Confirmar o grupo e as regras de acesso existentes no equipamento.
 - Verificar particularidades iDFace Lite/Pro, limite de faces e SIP.
 
 ## Adapters recomendados

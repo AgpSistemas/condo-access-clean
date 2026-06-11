@@ -893,7 +893,33 @@ async function controlIdPost(device, session, pathName, body = {}, { timeoutMs =
     });
     const text = await response.text();
     const payload = tryParseJson(text);
-    if (!response.ok) {
+    if (!response.ok || payload?.success === false || payload?.error) {
+      throw new Error(`Control iD ${pathName} respondeu ${response.status}: ${text.slice(0, 240)}`);
+    }
+    return { ok: true, status: response.status, body: text, payload: payload || {} };
+  } finally {
+    request.done();
+  }
+}
+
+async function controlIdBinaryRequest(device, session, pathName, {
+  method = "POST",
+  body,
+  contentType = "application/octet-stream",
+  timeoutMs = 15000
+} = {}) {
+  const separator = pathName.includes("?") ? "&" : "?";
+  const request = withTimeout(timeoutMs);
+  try {
+    const response = await fetch(`${deviceBaseUrl(device)}${pathName}${separator}session=${encodeURIComponent(session)}`, {
+      method,
+      headers: { "Content-Type": contentType },
+      body,
+      signal: request.signal
+    });
+    const text = await response.text();
+    const payload = tryParseJson(text);
+    if (!response.ok || payload?.success === false || payload?.error) {
       throw new Error(`Control iD ${pathName} respondeu ${response.status}: ${text.slice(0, 240)}`);
     }
     return { ok: true, status: response.status, body: text, payload: payload || {} };
@@ -1009,6 +1035,7 @@ function controlIdCredentialRecords(snapshot = {}) {
         valueLabel: `Face - ${user.name || user.registration || user.id}`,
         personName: user.name || "",
         personExternalId: user.registration || String(user.id),
+        photoUrl: `/user_get_image.fcgi?user_id=${encodeURIComponent(user.id)}`,
         source: "CONTROL_ID",
         sourceKind: "face_templates",
         devicePath: "/load_objects.fcgi:face_templates",
@@ -1080,6 +1107,19 @@ async function openHikvisionDoor(device, relay = 1) {
   });
 }
 
+async function openControlIdDoor(device, relay = 1) {
+  const session = await controlIdLogin(device);
+  const action = String(device.controlIdAction || "door").trim() || "door";
+  const parameters = action === "sec_box"
+    ? `id=${String(device.controlIdSecBoxId || relay).trim()}, reason=3`
+    : action === "catra"
+      ? `relay=${Math.max(1, Math.min(2, Number(relay) || 1))}`
+      : `door=${Math.max(1, Number(relay) || 1)}`;
+  return controlIdPost(device, session, "/execute_actions.fcgi", {
+    actions: [{ action, parameters }]
+  });
+}
+
 async function openDeviceDoor(device, relay = 1) {
   const adapter = deviceAdapter(device);
   if (adapter === "HIKVISION_ISAPI") {
@@ -1097,6 +1137,15 @@ async function openDeviceDoor(device, relay = 1) {
       adapter,
       status: result.status,
       message: `Intelbras Bio-T respondeu ${result.status}`
+    };
+  }
+
+  if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
+    const result = await openControlIdDoor(device, relay);
+    return {
+      adapter,
+      status: result.status,
+      message: `Control iD respondeu ${result.status}`
     };
   }
 
@@ -1693,14 +1742,16 @@ function persistDeviceEvents(device, events = []) {
 function logControlIdImportDebug(device = {}, snapshot = {}, records = [], stage = "read") {
 }
 
-async function readDeviceCredentialsFromDevice(device) {
+async function readDeviceCredentialsFromDevice(device, { resource = "credentials" } = {}) {
   const adapter = deviceAdapter(device);
+  const faceOnly = resource === "faces";
   const attempts = [];
   const records = [];
   const events = [];
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
     const snapshot = await readControlIdSnapshot(device);
-    const uniqueRecords = controlIdCredentialRecords(snapshot);
+    const allRecords = controlIdCredentialRecords(snapshot);
+    const uniqueRecords = faceOnly ? allRecords.filter((record) => record.type === "FACE") : allRecords;
     logControlIdImportDebug(device, snapshot, uniqueRecords, "read-device-credentials");
     return {
       ok: uniqueRecords.length > 0,
@@ -1715,7 +1766,7 @@ async function readDeviceCredentialsFromDevice(device) {
     };
   }
 
-  const candidates = adapter === "HIKVISION_ISAPI"
+  const candidates = (adapter === "HIKVISION_ISAPI"
     ? [
       { label: "Hikvision cartoes", kind: "CARD", type: "RFID", method: "POST", path: "/ISAPI/AccessControl/CardInfo/Search?format=json", rootName: "CardInfoSearchCond", contentType: "application/json" },
       { label: "Hikvision cartoes XML", kind: "CARD", type: "RFID", method: "POST", path: "/ISAPI/AccessControl/CardInfo/Search", rootName: "CardInfoSearchCond", contentType: "application/xml", bodyFormat: "xml" },
@@ -1732,7 +1783,8 @@ async function readDeviceCredentialsFromDevice(device) {
         { label: "Intelbras cartoes", kind: "CARD", type: "RFID", method: "GET", path: "/cgi-bin/AccessCard.cgi?action=listAll" },
         { label: "Intelbras faces", kind: "FACE", type: "FACE", method: "GET", path: "/cgi-bin/AccessFace.cgi?action=listAll" }
       ]
-      : [];
+      : [])
+    .filter((candidate) => !faceOnly || candidate.type === "FACE");
 
   if (!candidates.length) {
     return {
@@ -1747,6 +1799,7 @@ async function readDeviceCredentialsFromDevice(device) {
 
   for (const candidate of candidates) {
     try {
+      const recordsBefore = records.length;
       if (adapter === "HIKVISION_ISAPI" && candidate.rootName) {
         const paged = await readPagedHikvisionCredentials(device, candidate);
         records.push(...paged.records);
@@ -1772,6 +1825,7 @@ async function readDeviceCredentialsFromDevice(device) {
           records: parsedRecords.length
         });
       }
+      if (faceOnly && records.length > recordsBefore) break;
     } catch (error) {
       attempts.push({
         label: candidate.label,
@@ -1782,7 +1836,7 @@ async function readDeviceCredentialsFromDevice(device) {
     }
   }
 
-  if (adapter === "HIKVISION_ISAPI") {
+  if (adapter === "HIKVISION_ISAPI" && !faceOnly) {
     try {
       const eventResult = await readPagedHikvisionEvents(device, { limit: 200 });
       events.push(...eventResult.records);
@@ -1868,8 +1922,8 @@ function unitPayloadFromFaceSelection(record = {}, device = {}, selection = {}) 
   };
 }
 
-async function importDeviceCredentials(device, { dryRun = true, selections = [] } = {}) {
-  const readResult = await readDeviceCredentialsFromDevice(device);
+async function importDeviceCredentials(device, { dryRun = true, selections = [], resource = "credentials" } = {}) {
+  const readResult = await readDeviceCredentialsFromDevice(device, { resource });
   const report = {
     dryRun,
     device: publicDevice(device),
@@ -2221,6 +2275,7 @@ function controlIdDeviceCredentials(snapshot = {}, device = {}) {
       deviceId: device.id,
       validFrom: "",
       validUntil: "",
+      photoUrl: credential.photoUrl || "",
       source: "CONTROL_ID",
       raw: credential.raw
     };
@@ -2463,7 +2518,7 @@ function findUnitByNumber(tenantId, unitNumber, blockName = "") {
 }
 
 async function directHikvisionIntegrationPayload(device, resource = "summary", { limit = 50 } = {}) {
-  const snapshot = await readDeviceCredentialsFromDevice(device);
+  const snapshot = await readDeviceCredentialsFromDevice(device, { resource });
   const credentialRecords = hikvisionDeviceCredentials(snapshot.records || [], device);
   const eventRecords = (snapshot.events || []).slice(0, limit);
   const resourcesPayload = {
@@ -2817,10 +2872,20 @@ async function fetchCredentialPhotoBytes(device, photoUrl = "") {
   const dataImage = dataUrlImageBuffer(clean);
   if (dataImage?.buffer?.length) return dataImage;
   const targetUrl = absoluteDeviceImageUrl(device, clean);
-  const headers = /[\?&]token=/i.test(clean) ? {} : await hikvisionAuthHeaders(device, targetUrl, "GET");
+  const sameDeviceOrigin = new URL(targetUrl).origin === new URL(deviceBaseUrl(device)).origin;
+  let requestUrl = targetUrl;
+  let headers = {};
+  if (deviceAdapter(device) === CONTROL_ID_ACCESS_ADAPTER && sameDeviceOrigin) {
+    const session = await controlIdLogin(device);
+    const parsed = new URL(targetUrl);
+    parsed.searchParams.set("session", session);
+    requestUrl = parsed.toString();
+  } else if (sameDeviceOrigin && !/[\?&]token=/i.test(clean)) {
+    headers = await hikvisionAuthHeaders(device, targetUrl, "GET");
+  }
   const request = withTimeout(12000);
   try {
-    const response = await fetch(targetUrl, { method: "GET", headers, signal: request.signal });
+    const response = await fetch(requestUrl, { method: "GET", headers, signal: request.signal });
     if (!response.ok) throw new Error(`Foto respondeu ${response.status}`);
     const mimeType = response.headers.get("content-type")?.split(";")[0] || "image/jpeg";
     const buffer = Buffer.from(await response.arrayBuffer());
@@ -3023,9 +3088,290 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
   };
 }
 
+function controlIdUnixTimestamp(value = "") {
+  const timestamp = Date.parse(String(value || ""));
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : 0;
+}
+
+function controlIdUserRegistration(credential = {}, person = null) {
+  return String(
+    credential.personExternalId ||
+    credential.externalId ||
+    person?.controlIdUserId ||
+    person?.externalId ||
+    person?.cpf ||
+    person?.rg ||
+    person?.id ||
+    credential.personId ||
+    credential.id ||
+    credential.value
+  ).trim().slice(0, 64);
+}
+
+function controlIdCardValue(value = "") {
+  const clean = String(value || "").trim();
+  const parts = clean.match(/^(\d+)[.,](\d+)$/);
+  let parsed;
+  if (parts) {
+    parsed = (BigInt(parts[1]) * 4294967296n) + BigInt(parts[2]);
+  } else if (/^\d+$/.test(clean)) {
+    parsed = BigInt(clean);
+  } else {
+    throw new Error("Cartao Control iD deve conter apenas numeros ou usar formato facility.cartao");
+  }
+  if (parsed > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("Cartao Control iD excede o limite numerico seguro desta integracao");
+  }
+  return Number(parsed);
+}
+
+async function ensureControlIdCredentialUser(device, session, credential = {}, person = null) {
+  const registration = controlIdUserRegistration(credential, person);
+  const name = String(person?.name || credential.personName || credential.valueLabel || "Usuario").trim().slice(0, 100);
+  const users = await controlIdLoadObjects(device, session, "users", { limit: 1000 });
+  const existing = users.find((user) =>
+    String(user.registration || "").trim() === registration ||
+    String(user.id) === String(person?.controlIdUserId || credential.personExternalId || "")
+  );
+  const value = {
+    ...(existing?.id ? { id: existing.id } : {}),
+    registration,
+    name,
+    begin_time: controlIdUnixTimestamp(credential.validFrom),
+    end_time: controlIdUnixTimestamp(credential.validUntil)
+  };
+  if (existing?.id) {
+    await controlIdPost(device, session, "/create_or_modify_objects.fcgi", {
+      object: "users",
+      values: [value]
+    });
+    return { ...existing, ...value };
+  }
+
+  const created = await controlIdPost(device, session, "/create_objects.fcgi", {
+    object: "users",
+    values: [value]
+  });
+  const id = created.payload?.ids?.[0];
+  if (!id) throw new Error(`Control iD nao retornou o ID do usuario criado para a matricula ${registration}`);
+  return { ...value, id };
+}
+
+function controlIdCredentialObject(type = "") {
+  if (type === "RFID") return "cards";
+  if (type === "PIN") return "pins";
+  if (type === "QR_CODE") return "qrcodes";
+  return "";
+}
+
+function controlIdObjectValue(type = "", value = "") {
+  return type === "RFID" ? controlIdCardValue(value) : String(value || "").trim();
+}
+
+async function upsertControlIdCredentialObject(device, session, object, userId, value) {
+  const records = await controlIdLoadObjects(device, session, object, { limit: 1000 });
+  const existing = records.find((record) =>
+    String(record.value) === String(value) || (object === "pins" && String(record.user_id) === String(userId))
+  );
+  const pathName = existing?.id ? "/create_or_modify_objects.fcgi" : "/create_objects.fcgi";
+  await controlIdPost(device, session, pathName, {
+    object,
+    values: [{
+      ...(existing?.id ? { id: existing.id } : {}),
+      value,
+      user_id: userId
+    }]
+  });
+  return existing;
+}
+
+async function ensureControlIdUserGroup(device, session, userId) {
+  const groupId = Number(device.controlIdGroupId || 0);
+  if (!Number.isSafeInteger(groupId) || groupId <= 0) return null;
+  const userGroups = await controlIdLoadObjects(device, session, "user_groups", { limit: 1000 });
+  const existing = userGroups.find((item) =>
+    String(item.user_id) === String(userId) && String(item.group_id) === String(groupId)
+  );
+  if (!existing) {
+    await controlIdPost(device, session, "/create_objects.fcgi", {
+      object: "user_groups",
+      values: [{ user_id: userId, group_id: groupId }]
+    });
+  }
+  return groupId;
+}
+
+async function sendControlIdStoredCredential(device, credential = {}) {
+  const session = await controlIdLogin(device);
+  const person = personForStoredCredential(credential);
+  const user = await ensureControlIdCredentialUser(device, session, credential, person);
+  const groupId = await ensureControlIdUserGroup(device, session, user.id);
+  const type = normalizeCredentialType(credential.type);
+  const attempts = [{
+    label: "Control iD usuario",
+    path: "/create_or_modify_objects.fcgi:users",
+    ok: true
+  }];
+  if (groupId) {
+    attempts.push({
+      label: `Control iD grupo ${groupId}`,
+      path: "/create_objects.fcgi:user_groups",
+      ok: true
+    });
+  }
+
+  if (type === "APP") {
+    return {
+      ok: true,
+      deviceId: device.id,
+      adapter: CONTROL_ID_ACCESS_ADAPTER,
+      message: `Usuario Control iD ${user.registration || user.id} enviado${groupId ? ` no grupo ${groupId}` : ""}`,
+      attempts
+    };
+  }
+
+  if (type === "FACE") {
+    const photoUrl = String(credential.photoUrl || person?.photoUrl || "").trim();
+    if (!photoUrl) {
+      return {
+        ok: false,
+        deviceId: device.id,
+        adapter: CONTROL_ID_ACCESS_ADAPTER,
+        message: "Facial sem foto vinculada para enviar ao Control iD",
+        attempts
+      };
+    }
+    const photo = await fetchCredentialPhotoBytes(device, photoUrl);
+    const maxBytes = Number(process.env.CONTROL_ID_FACE_UPLOAD_MAX_BYTES || 1900000);
+    if (photo.buffer.length > maxBytes) {
+      throw new Error(`Foto facial maior que ${maxBytes} bytes para o Control iD`);
+    }
+    const timestamp = Math.floor(Date.now() / 1000);
+    await controlIdBinaryRequest(
+      device,
+      session,
+      `/user_set_image.fcgi?user_id=${encodeURIComponent(user.id)}&timestamp=${timestamp}&match=0`,
+      { body: photo.buffer }
+    );
+    attempts.push({
+      label: "Control iD foto facial",
+      path: "/user_set_image.fcgi",
+      ok: true
+    });
+    return {
+      ok: true,
+      deviceId: device.id,
+      adapter: CONTROL_ID_ACCESS_ADAPTER,
+      message: `Face de ${user.name || user.registration || user.id} enviada ao Control iD${groupId ? ` no grupo ${groupId}` : ""}`,
+      attempts
+    };
+  }
+
+  const object = controlIdCredentialObject(type);
+  if (!object) {
+    return {
+      ok: false,
+      deviceId: device.id,
+      adapter: CONTROL_ID_ACCESS_ADAPTER,
+      message: `Tipo ${type} ainda nao possui envio Control iD homologado`,
+      attempts
+    };
+  }
+  const value = controlIdObjectValue(type, credential.value);
+  if (value === "") {
+    return {
+      ok: false,
+      deviceId: device.id,
+      adapter: CONTROL_ID_ACCESS_ADAPTER,
+      message: `Credencial ${type} sem valor para enviar ao Control iD`,
+      attempts
+    };
+  }
+  await upsertControlIdCredentialObject(device, session, object, user.id, value);
+  attempts.push({
+    label: `Control iD ${object}`,
+    path: `/create_or_modify_objects.fcgi:${object}`,
+    ok: true
+  });
+  return {
+    ok: true,
+    deviceId: device.id,
+    adapter: CONTROL_ID_ACCESS_ADAPTER,
+    message: `${type} enviado ao Control iD para ${user.name || user.registration || user.id}${groupId ? ` no grupo ${groupId}` : ""}`,
+    attempts
+  };
+}
+
+async function deleteControlIdStoredCredential(device, credential = {}) {
+  const session = await controlIdLogin(device);
+  const person = personForStoredCredential(credential);
+  const type = normalizeCredentialType(credential.type);
+  const registration = controlIdUserRegistration(credential, person);
+  const users = await controlIdLoadObjects(device, session, "users", { limit: 1000 });
+  const user = users.find((item) =>
+    String(item.registration || "").trim() === registration ||
+    String(item.id) === String(person?.controlIdUserId || credential.personExternalId || "")
+  );
+
+  if (type === "FACE") {
+    if (!user?.id) throw new Error(`Usuario Control iD ${registration} nao encontrado para excluir a foto`);
+    await controlIdPost(device, session, "/user_destroy_image.fcgi", { user_id: user.id });
+    return {
+      ok: true,
+      deviceId: device.id,
+      adapter: CONTROL_ID_ACCESS_ADAPTER,
+      message: `Face de ${user.name || registration} excluida do Control iD`,
+      attempts: [{ label: "Control iD excluir foto", path: "/user_destroy_image.fcgi", ok: true }]
+    };
+  }
+
+  const object = controlIdCredentialObject(type);
+  if (object) {
+    const value = controlIdObjectValue(type, credential.value);
+    await controlIdPost(device, session, "/destroy_objects.fcgi", {
+      object,
+      where: {
+        [object]: object === "pins" && user?.id
+          ? { user_id: user.id }
+          : { value }
+      }
+    });
+    return {
+      ok: true,
+      deviceId: device.id,
+      adapter: CONTROL_ID_ACCESS_ADAPTER,
+      message: `${type} excluido do Control iD`,
+      attempts: [{ label: `Control iD excluir ${object}`, path: `/destroy_objects.fcgi:${object}`, ok: true }]
+    };
+  }
+
+  if (type === "APP" && user?.id) {
+    await controlIdPost(device, session, "/destroy_objects.fcgi", {
+      object: "users",
+      where: { users: { id: user.id } }
+    });
+    return {
+      ok: true,
+      deviceId: device.id,
+      adapter: CONTROL_ID_ACCESS_ADAPTER,
+      message: `Usuario ${user.name || registration} excluido do Control iD`,
+      attempts: [{ label: "Control iD excluir usuario", path: "/destroy_objects.fcgi:users", ok: true }]
+    };
+  }
+
+  return {
+    ok: true,
+    deviceId: device.id,
+    adapter: CONTROL_ID_ACCESS_ADAPTER,
+    message: `Nenhum registro ${type} encontrado para excluir do Control iD`,
+    attempts: []
+  };
+}
+
 async function sendStoredCredentialToDevice(device, credential = {}) {
   const adapter = deviceAdapter(device);
   if (adapter === "HIKVISION_ISAPI") return sendHikvisionStoredCredential(device, credential);
+  if (adapter === CONTROL_ID_ACCESS_ADAPTER) return sendControlIdStoredCredential(device, credential);
   return {
     ok: true,
     deviceId: device.id,
@@ -3037,6 +3383,9 @@ async function sendStoredCredentialToDevice(device, credential = {}) {
 
 async function deleteStoredCredentialFromDevice(device, credential = {}) {
   const adapter = deviceAdapter(device);
+  if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
+    return deleteControlIdStoredCredential(device, credential);
+  }
   if (adapter !== "HIKVISION_ISAPI") {
     return {
       ok: true,
@@ -3085,7 +3434,9 @@ function credentialTargetDevice(credential = {}) {
     : devices.filter((device) => device.tenantId === credential.tenantId);
   return targetDevices.find((device) => {
     const adapter = deviceAdapter(device);
-    if (credential.type === "FACE") return adapter === "HIKVISION_ISAPI" || adapter === INTELBRAS_SS_3532_MF_W_ADAPTER;
+    if (credential.type === "FACE") {
+      return [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter);
+    }
     return adapter !== "GENERIC_TCP" || device.category === "access-control";
   }) || null;
 }
@@ -3126,7 +3477,9 @@ async function processCredentialSyncJob(job) {
 
     const compatible = targetDevices.find((device) => {
       const adapter = deviceAdapter(device);
-      if (credential.type === "FACE") return adapter === "HIKVISION_ISAPI" || adapter === INTELBRAS_SS_3532_MF_W_ADAPTER;
+      if (credential.type === "FACE") {
+        return [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter);
+      }
       return adapter !== "GENERIC_TCP" || device.category === "access-control";
     });
 
@@ -4647,7 +5000,8 @@ async function handleRequest(request, response) {
     try {
       const report = await importDeviceCredentials(device, {
         dryRun: body.dryRun !== false,
-        selections: Array.isArray(body.selections) ? body.selections : []
+        selections: Array.isArray(body.selections) ? body.selections : [],
+        resource: body.resource === "faces" ? "faces" : "credentials"
       });
       return json(response, body.dryRun === false ? 201 : 200, report);
     } catch (error) {
@@ -4725,7 +5079,7 @@ async function handleRequest(request, response) {
     let gatewayMessage = "";
 
     const adapter = device ? deviceAdapter(device) : "GENERIC_TCP";
-    if (device && action?.status !== "DISABLED" && ["HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter)) {
+    if (device && action?.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter)) {
       try {
         const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1);
         delivered = true;
@@ -5509,6 +5863,9 @@ async function handleRequest(request, response) {
       password: body.password || existingDevice?.password || "",
       passwordSet: Boolean(body.password || existingDevice?.password || body.passwordSet),
       authMode: body.authMode || existingDevice?.authMode || "DIGEST",
+      controlIdAction: body.controlIdAction || existingDevice?.controlIdAction || "door",
+      controlIdSecBoxId: body.controlIdSecBoxId || existingDevice?.controlIdSecBoxId || "",
+      controlIdGroupId: body.controlIdGroupId || existingDevice?.controlIdGroupId || "",
       intercomEnabled: deviceProfile.intercomEnabled ?? Boolean(body.intercomEnabled),
       intercomType: deviceProfile.intercomType || body.intercomType || "FACIAL",
       intercomExtension: body.intercomExtension || "",
@@ -5698,7 +6055,7 @@ async function handleRequest(request, response) {
       accessLogs.unshift(log);
       return log;
     };
-    if (device && action.status !== "DISABLED" && ["HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter)) {
+    if (device && action.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter)) {
       try {
         const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1);
         const log = actionLog("ALLOW", result.message || `Acionamento ${action.name} enviado via ${adapter}`);

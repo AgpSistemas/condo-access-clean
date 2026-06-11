@@ -189,6 +189,9 @@ const emptyDeviceForm = {
   apiPort: "80",
   rtspPort: "554",
   channelCount: "",
+  controlIdAction: "door",
+  controlIdSecBoxId: "",
+  controlIdGroupId: "",
   intercomExtension: "",
   intercomType: "FACIAL",
   intercomEnabled: true
@@ -359,6 +362,21 @@ function defaultResourceSettings(resourceId) {
 
 
 function intelbrasDeviceDefaults(category, manufacturer) {
+  if (manufacturer === "Control iD" && category === "access-control") {
+    return {
+      model: "",
+      apiProtocol: "http",
+      apiPort: "80",
+      rtspPort: "554",
+      channelCount: "",
+      controlIdAction: "door",
+      controlIdSecBoxId: "",
+      controlIdGroupId: "",
+      intercomType: "FACIAL",
+      intercomEnabled: true
+    };
+  }
+
   if (manufacturer === "Hikvision") {
     if (category === "cameras") {
       return {
