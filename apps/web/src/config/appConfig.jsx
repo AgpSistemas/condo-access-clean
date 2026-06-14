@@ -297,7 +297,8 @@ const emptyCredentialForm = {
   type: "APP",
   value: "",
   valueLabel: "",
-  deviceId: ""
+  deviceId: "",
+  photoUrl: ""
 };
 
 const emptyVehicleForm = {

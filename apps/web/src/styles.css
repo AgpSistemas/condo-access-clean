@@ -396,6 +396,29 @@ nav button:hover {
   gap: 14px;
 }
 
+.face-photo-upload {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid #b8d8ca;
+  border-radius: 8px;
+  background: #f2faf6;
+}
+
+.face-photo-upload .avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 8px;
+}
+
+.face-photo-upload .form-hint {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
 .checkbox-row {
   min-height: 46px;
   border: 1px solid #d6e1e5;
@@ -2695,6 +2718,14 @@ button.simple-row.selected {
   .person-row,
   .extension-directory-row {
     grid-template-columns: 1fr;
+  }
+
+  .face-photo-upload {
+    grid-template-columns: 1fr;
+  }
+
+  .face-photo-upload .form-hint {
+    grid-column: auto;
   }
 
   .subtabs,

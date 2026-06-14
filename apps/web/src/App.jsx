@@ -1327,6 +1327,56 @@ function App() {
     void refreshApiCache();
   }
 
+  async function handleFacePhotoFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!["image/jpeg", "image/png"].includes(file.type)) {
+      setMessage("Selecione uma imagem JPG ou PNG.");
+      event.target.value = "";
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      setMessage("A imagem original deve ter no maximo 8 MB.");
+      event.target.value = "";
+      return;
+    }
+
+    try {
+      const source = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("Falha ao ler imagem"));
+        reader.readAsDataURL(file);
+      });
+      const image = await new Promise((resolve, reject) => {
+        const nextImage = new Image();
+        nextImage.onload = () => resolve(nextImage);
+        nextImage.onerror = () => reject(new Error("Imagem invalida"));
+        nextImage.src = source;
+      });
+      const side = Math.min(image.naturalWidth, image.naturalHeight);
+      const sourceX = Math.max(0, Math.floor((image.naturalWidth - side) / 2));
+      const sourceY = Math.max(0, Math.floor((image.naturalHeight - side) / 2));
+      const outputSize = Math.min(720, side);
+      const canvas = document.createElement("canvas");
+      canvas.width = outputSize;
+      canvas.height = outputSize;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, sourceX, sourceY, side, side, 0, 0, outputSize, outputSize);
+      const photoUrl = canvas.toDataURL("image/jpeg", 0.82);
+      if (photoUrl.length > 1000000) {
+        setMessage("A foto ficou muito grande. Selecione uma imagem mais simples ou com menor resolucao.");
+        return;
+      }
+      setCredentialForm((current) => ({ ...current, type: "FACE", photoUrl }));
+      setMessage("Foto facial preparada. Salve a credencial para enviar ao equipamento.");
+    } catch {
+      setMessage("Nao foi possivel preparar a foto facial.");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
   async function deleteCredential(credential) {
     if (!credential?.id) return;
     if (!window.confirm(`Excluir credencial ${credential.valueLabel || credential.value || credential.type}?`)) return;
@@ -1345,7 +1395,7 @@ function App() {
     void refreshApiCache();
   }
 
-  async function generateCredentialForPerson(person, type = person?.credentialType || "APP") {
+  async function generateCredentialForPerson(person, type = person?.credentialType || "APP", options = {}) {
     if (!person?.id) return;
     const response = await apiFetch("/api/credentials/generate", {
       method: "POST",
@@ -1354,7 +1404,9 @@ function App() {
         tenantId: person.tenantId || selectedTenant?.id,
         unitId: person.unitId,
         personId: person.id,
-        credentialType: type
+        credentialType: type,
+        deviceId: options.deviceId || "",
+        photoUrl: options.photoUrl || ""
       })
     });
     const result = await response.json().catch(() => null);
@@ -2185,7 +2237,7 @@ function App() {
                 <span>CPF: {person.cpf || "-"}<br />RG: {person.rg || "-"}</span>
                 <span>{person.phone || "-"}</span>
                 <span>{kind === "PROVIDER" ? person.serviceType || "-" : person.relation || person.accessReason || "-"}</span>
-                <div className="row-actions"><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, person.credentialType || (isResident ? "APP" : "QR_CODE"))}>Credencial</button><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, "FACE")}>Face</button><button className="compact-action-button secondary-button" onClick={() => setSelectedPersonId(person.id)}>Editar</button><button className="compact-action-button danger-button" onClick={() => void deletePerson(person)}>Excluir</button></div>
+                <div className="row-actions"><button className="compact-action-button secondary-button" onClick={() => void generateCredentialForPerson(person, person.credentialType || (isResident ? "APP" : "QR_CODE"))}>Credencial</button><button className="compact-action-button secondary-button" onClick={() => { setCredentialForm({ ...emptyCredentialForm, tenantId: person.tenantId, unitId: person.unitId, personId: person.id, type: "FACE" }); setActiveSection("credentials"); }}>Face</button><button className="compact-action-button secondary-button" onClick={() => setSelectedPersonId(person.id)}>Editar</button><button className="compact-action-button danger-button" onClick={() => void deletePerson(person)}>Excluir</button></div>
               </div>
             );
           })}
@@ -3178,11 +3230,16 @@ function App() {
               <Field label="Pessoa"><select value={credentialForm.personId} onChange={(event) => setCredentialForm((current) => ({ ...current, personId: event.target.value }))}><option value="">Selecione</option>{data.residents.filter((person) => person.tenantId === selectedTenant?.id && (!credentialForm.unitId || person.unitId === credentialForm.unitId)).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
               <Field label="Tipo de credencial"><select value={credentialForm.type} onChange={(event) => setCredentialForm((current) => ({ ...current, type: event.target.value }))}><option>APP</option><option>FACE</option><option>RFID</option><option>QR_CODE</option><option>PIN</option><option>PLATE</option></select></Field>
               <Field label="Valor"><input value={credentialForm.value} placeholder="Vazio gera automaticamente" onChange={(event) => setCredentialForm((current) => ({ ...current, value: event.target.value }))} /></Field>
-              <Field label="Equipamento alvo"><select value={credentialForm.deviceId} onChange={(event) => setCredentialForm((current) => ({ ...current, deviceId: event.target.value }))}><option value="">Todos compativeis</option>{tenantDevices.map((device) => <option key={device.id} value={device.id}>{device.name} - {device.manufacturer}</option>)}</select></Field>
-              <button type="submit"><Save size={16} /> Salvar credencial</button>
-              <button className="secondary-button" type="button" onClick={() => credentialForm.personId && void generateCredentialForPerson(data.residents.find((person) => person.id === credentialForm.personId), credentialForm.type)}><Plus size={16} /> Gerar automatico</button>
+              <Field label="Equipamento alvo"><select value={credentialForm.deviceId} onChange={(event) => setCredentialForm((current) => ({ ...current, deviceId: event.target.value }))}><option value="">Primeiro equipamento compativel</option>{tenantDevices.map((device) => <option key={device.id} value={device.id}>{device.name} - {device.manufacturer}</option>)}</select></Field>
+              {credentialForm.type === "FACE" && <div className="face-photo-upload">
+                <PersonAvatar name={data.residents.find((person) => person.id === credentialForm.personId)?.name || "Face"} photoUrl={credentialForm.photoUrl} />
+                <Field label="Foto facial para enviar ao equipamento"><input type="file" accept="image/jpeg,image/png" onChange={handleFacePhotoFile} /></Field>
+                <div className="form-hint">Use uma foto frontal, bem iluminada e com apenas uma pessoa. A imagem sera recortada e convertida para JPG. O envio facial esta implementado para Hikvision e Control iD.</div>
+              </div>}
+              <button type="submit" disabled={credentialForm.type === "FACE" && !credentialForm.photoUrl}><Save size={16} /> Salvar credencial</button>
+              <button className="secondary-button" type="button" disabled={credentialForm.type === "FACE" && !credentialForm.photoUrl} onClick={() => credentialForm.personId && void generateCredentialForPerson(data.residents.find((person) => person.id === credentialForm.personId), credentialForm.type, credentialForm)}><Plus size={16} /> Gerar automatico</button>
             </div>
-            <div className="form-hint">Para FACE, APP, QR e PIN o sistema pode gerar o identificador. RFID e placa podem ser importados por planilha ou digitados aqui.</div>
+            <div className="form-hint">Para FACE, selecione uma foto e o equipamento alvo. APP, QR e PIN podem gerar o identificador automaticamente. RFID e placa podem ser importados por planilha ou digitados aqui.</div>
           </form>
           <article className="panel form-panel">
             <div className="panel-heading"><h2>Importar moradores e credenciais</h2><ClipboardList size={20} /></div>

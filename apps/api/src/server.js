@@ -84,6 +84,7 @@ const defaultDataFilePath = process.env.RAILWAY_ENVIRONMENT
   ? "/data/condo-access-state.json"
   : path.join(process.cwd(), "data", "condo-access-state.json");
 const dataFilePath = process.env.DATA_FILE || defaultDataFilePath;
+const facePhotoRoot = process.env.FACE_PHOTO_ROOT || path.join(path.dirname(dataFilePath), "face-photos");
 const databaseUrl = process.env.DATABASE_URL || "";
 const postgresSslMode = resolvePostgresSslMode(databaseUrl);
 const postgresConnectionString = normalizePostgresConnectionString(databaseUrl);
@@ -3089,8 +3090,80 @@ function dataUrlImageBuffer(dataUrl = "") {
   };
 }
 
+function storedFacePhotoId(photoUrl = "") {
+  const match = String(photoUrl || "").trim().match(/^credential-photo:(.+)$/);
+  return match?.[1] || "";
+}
+
+async function storeCredentialFacePhoto(credentialId, dataUrl = "") {
+  const photo = dataUrlImageBuffer(dataUrl);
+  if (!credentialId || !photo?.buffer?.length) return "";
+  if (postgresPool) {
+    await ensurePostgresStateTable();
+    await postgresPool.query(
+      `insert into condo_access_face_photos (credential_id, mime_type, image_data, updated_at)
+       values ($1, $2, $3, now())
+       on conflict (credential_id) do update set mime_type = excluded.mime_type, image_data = excluded.image_data, updated_at = now()`,
+      [credentialId, photo.mimeType, photo.buffer]
+    );
+  } else {
+    fs.mkdirSync(facePhotoRoot, { recursive: true });
+    fs.writeFileSync(path.join(facePhotoRoot, `${credentialId}.bin`), photo.buffer);
+    fs.writeFileSync(path.join(facePhotoRoot, `${credentialId}.json`), JSON.stringify({ mimeType: photo.mimeType }), "utf8");
+  }
+  return `credential-photo:${credentialId}`;
+}
+
+async function loadCredentialFacePhoto(credentialId) {
+  if (!credentialId) throw new Error("Foto facial armazenada sem identificador");
+  if (postgresPool) {
+    await ensurePostgresStateTable();
+    const result = await postgresPool.query(
+      "select mime_type, image_data from condo_access_face_photos where credential_id = $1",
+      [credentialId]
+    );
+    const row = result.rows[0];
+    if (!row?.image_data) throw new Error("Foto facial armazenada nao encontrada");
+    return { mimeType: row.mime_type || "image/jpeg", buffer: Buffer.from(row.image_data) };
+  }
+  const imagePath = path.join(facePhotoRoot, `${credentialId}.bin`);
+  const metadataPath = path.join(facePhotoRoot, `${credentialId}.json`);
+  if (!fs.existsSync(imagePath)) throw new Error("Foto facial armazenada nao encontrada");
+  const metadata = fs.existsSync(metadataPath) ? JSON.parse(fs.readFileSync(metadataPath, "utf8")) : {};
+  return { mimeType: metadata.mimeType || "image/jpeg", buffer: fs.readFileSync(imagePath) };
+}
+
+async function deleteCredentialFacePhoto(credentialId) {
+  if (!credentialId) return;
+  if (postgresPool) {
+    await ensurePostgresStateTable();
+    await postgresPool.query("delete from condo_access_face_photos where credential_id = $1", [credentialId]);
+    return;
+  }
+  for (const suffix of [".bin", ".json"]) {
+    const target = path.join(facePhotoRoot, `${credentialId}${suffix}`);
+    if (fs.existsSync(target)) fs.unlinkSync(target);
+  }
+}
+
+function validateManualFacePhoto(body = {}, person = null) {
+  if (normalizeCredentialType(body.type || body.credentialType) !== "FACE") return "";
+  const photoUrl = String(body.photoUrl || person?.photoUrl || "").trim();
+  if (!photoUrl) return "Selecione uma foto para criar a credencial facial";
+  if (!photoUrl.startsWith("data:")) return "";
+  const photo = dataUrlImageBuffer(photoUrl);
+  if (!photo?.buffer?.length || !["image/jpeg", "image/png"].includes(photo.mimeType)) {
+    return "Foto facial invalida. Envie uma imagem JPG ou PNG";
+  }
+  const maxBytes = Number(process.env.FACE_UPLOAD_MAX_BYTES || 750000);
+  if (photo.buffer.length > maxBytes) return `Foto facial maior que ${maxBytes} bytes`;
+  return "";
+}
+
 async function fetchCredentialPhotoBytes(device, photoUrl = "") {
   const clean = String(photoUrl || "").trim();
+  const storedId = storedFacePhotoId(clean);
+  if (storedId) return loadCredentialFacePhoto(storedId);
   const dataImage = dataUrlImageBuffer(clean);
   if (dataImage?.buffer?.length) return dataImage;
   const targetUrl = absoluteDeviceImageUrl(device, clean);
@@ -3657,7 +3730,7 @@ function credentialTargetDevice(credential = {}) {
   return targetDevices.find((device) => {
     const adapter = deviceAdapter(device);
     if (credential.type === "FACE") {
-      return [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter);
+      return [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI"].includes(adapter);
     }
     return adapter !== "GENERIC_TCP" || device.category === "access-control";
   }) || null;
@@ -3700,7 +3773,7 @@ async function processCredentialSyncJob(job) {
     const compatible = targetDevices.find((device) => {
       const adapter = deviceAdapter(device);
       if (credential.type === "FACE") {
-        return [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter);
+        return [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI"].includes(adapter);
       }
       return adapter !== "GENERIC_TCP" || device.category === "access-control";
     });
@@ -4558,6 +4631,14 @@ async function ensurePostgresStateTable() {
       id text primary key,
       state jsonb not null,
       reason text not null default 'update',
+      updated_at timestamptz not null default now()
+    )
+  `);
+  await postgresPool.query(`
+    create table if not exists condo_access_face_photos (
+      credential_id text primary key,
+      mime_type text not null default 'image/jpeg',
+      image_data bytea not null,
       updated_at timestamptz not null default now()
     )
   `);
@@ -5981,9 +6062,10 @@ async function handleRequest(request, response) {
     const credentialId = decodeURIComponent(credentialPhotoMatch[1]);
     const credential = credentials.find((item) => item.id === credentialId);
     if (!credential?.photoUrl) return json(response, 404, { message: "Foto facial nao encontrada" });
-    const device = devices.find((item) => item.id === credential.deviceId) ||
+    const storedId = storedFacePhotoId(credential.photoUrl);
+    const device = storedId ? null : devices.find((item) => item.id === credential.deviceId) ||
       devices.find((item) => item.tenantId === credential.tenantId && item.category === "access-control");
-    if (!device) return json(response, 404, { message: "Equipamento da facial nao encontrado" });
+    if (!storedId && !device) return json(response, 404, { message: "Equipamento da facial nao encontrado" });
     try {
       const photo = await fetchCredentialPhotoBytes(device, credential.photoUrl);
       response.writeHead(200, {
@@ -6000,8 +6082,12 @@ async function handleRequest(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/credentials") {
     const body = await readBody(request);
-    const result = saveCredential(body);
+    const photoError = validateManualFacePhoto(body, findPersonForCredential(body));
+    if (photoError) return json(response, 400, { message: photoError });
+    const uploadedPhoto = String(body.photoUrl || "").startsWith("data:") ? body.photoUrl : "";
+    const result = saveCredential({ ...body, photoUrl: uploadedPhoto ? "" : body.photoUrl });
     if (result.error) return json(response, result.duplicate ? 409 : 400, { message: result.error, duplicate: result.duplicate });
+    if (uploadedPhoto) result.credential.photoUrl = await storeCredentialFacePhoto(result.credential.id, uploadedPhoto);
     if (!body.id) {
       const event = await emitCredentialEvent("CREATE", result.credential);
       Object.assign(result.credential, {
@@ -6020,6 +6106,9 @@ async function handleRequest(request, response) {
     const person = findPersonForCredential(body);
     if (!person) return json(response, 404, { message: "Pessoa nao encontrada para gerar credencial" });
     const type = normalizeCredentialType(body.type || body.credentialType || person.credentialType || "APP");
+    const photoError = validateManualFacePhoto({ ...body, type }, person);
+    if (photoError) return json(response, 400, { message: photoError });
+    const uploadedPhoto = String(body.photoUrl || "").startsWith("data:") ? body.photoUrl : "";
     const result = saveCredential({
       ...body,
       tenantId: body.tenantId || person.tenantId,
@@ -6029,9 +6118,11 @@ async function handleRequest(request, response) {
       type,
       value: body.value || generatedCredentialValue(type, person),
       valueLabel: body.valueLabel || credentialDisplayValue(type, body.value || "", person),
+      photoUrl: uploadedPhoto ? "" : body.photoUrl,
       source: "GENERATED"
     });
     if (result.error) return json(response, result.duplicate ? 409 : 400, { message: result.error, duplicate: result.duplicate });
+    if (uploadedPhoto) result.credential.photoUrl = await storeCredentialFacePhoto(result.credential.id, uploadedPhoto);
     const event = await emitCredentialEvent("CREATE", result.credential);
     Object.assign(result.credential, {
       syncStatus: event.ok ? "SYNCED" : "ERROR",
@@ -6132,6 +6223,7 @@ async function handleRequest(request, response) {
     const credential = credentials[index];
     const event = await emitCredentialEvent("DELETE", credential);
     const [removed] = credentials.splice(index, 1);
+    await deleteCredentialFacePhoto(credential.id);
     savePersistentState("credential-deleted");
     return json(response, 200, { ok: true, removed, event });
   }
