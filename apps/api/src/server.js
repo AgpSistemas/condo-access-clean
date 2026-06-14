@@ -97,6 +97,7 @@ const postgresPool = databaseUrl
 const CONTROL_ID_ACCESS_ADAPTER = "CONTROL_ID_ACCESS";
 let postgresStateReady = false;
 let postgresSaveQueue = Promise.resolve();
+let lastPostgresSaveError = "";
 const defaultMobileCameraStreamsFile = process.platform === "win32"
   ? "C:\\projetis\\BKPAccess\\condo-access-mobile-novo\\src\\cameras\\mobileCameraStreams.ts"
   : "";
@@ -1558,6 +1559,47 @@ function removeMatching(collection, predicate) {
     removed += 1;
   }
   return removed;
+}
+
+function removeInactiveTenantData() {
+  const activeTenantIds = new Set(allTenants().map((item) => item.id));
+  const inactiveUnitIds = new Set(
+    unitList()
+      .filter((unit) => !activeTenantIds.has(unit.tenantId))
+      .map((unit) => unit.unitId)
+  );
+  let removedUnits = 0;
+  inactiveUnitIds.forEach((unitId) => {
+    if (units.delete(unitId)) removedUnits += 1;
+  });
+
+  const belongsToInactiveTenant = (item) =>
+    Boolean(item?.tenantId && !activeTenantIds.has(item.tenantId));
+  const belongsToInactiveUnit = (item) =>
+    Boolean(item?.unitId && inactiveUnitIds.has(item.unitId));
+
+  return {
+    units: removedUnits,
+    residents: removeMatching(residents, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
+    vehicles: removeMatching(vehicles, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
+    devices: removeMatching(devices, belongsToInactiveTenant),
+    cameras: removeMatching(cameras, belongsToInactiveTenant),
+    actions: removeMatching(actions, belongsToInactiveTenant),
+    credentials: removeMatching(credentials, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
+    syncJobs: removeMatching(credentialSyncJobs, belongsToInactiveTenant),
+    logins: removeMatching(unitLogins, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
+    invites: removeMatching(unitInvites, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
+    routes: removeMatching(accessRoutes, belongsToInactiveTenant),
+    profiles: removeMatching(permissionProfiles, belongsToInactiveTenant),
+    licenses: removeMatching(licenses, belongsToInactiveTenant),
+    configurations: removeMatching(resourceConfigurations, belongsToInactiveTenant),
+    accessLogs: removeMatching(accessLogs, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
+    calls: removeMatching(intercomCalls, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item))
+  };
+}
+
+function removedItemCount(cleanup = {}) {
+  return Object.values(cleanup).reduce((total, count) => total + Number(count || 0), 0);
 }
 
 function normalizeLookup(value = "") {
@@ -3983,23 +4025,26 @@ function compareMobileResident(left, right) {
 
 function mobileResidentList({ tenantId = "", userId = "", email = "", origin = "" } = {}) {
   const normalizedUser = normalizeLookup(userId || email);
+  const activeTenantIds = new Set(allTenants().map((item) => item.id));
   const candidates = residents
     .filter((person) => (person.kind || "RESIDENT") === "RESIDENT")
     .filter((person) => {
       const unit = units.get(person.unitId);
       if (!unit) return false;
+      if (!activeTenantIds.has(unit.tenantId)) return false;
       if (tenantId && unit.tenantId !== tenantId) return false;
       if (normalizedUser) {
         return [person.id, person.email, person.cpf, person.phone].some((value) => normalizeLookup(value) === normalizedUser);
       }
       return tenantId ? true : isMobileTenantUnit(unit);
     });
-  const scopedResidents = candidates.length
+  const scopedResidents = normalizedUser || candidates.length
     ? candidates
     : residents.filter((person) => {
       const unit = units.get(person.unitId);
       return (person.kind || "RESIDENT") === "RESIDENT" &&
         Boolean(unit) &&
+        activeTenantIds.has(unit.tenantId) &&
         (!tenantId || unit?.tenantId === tenantId);
     });
   const byUnit = new Map();
@@ -4660,12 +4705,23 @@ async function savePersistentStateToPostgres(state, reason) {
   );
 }
 
+function queuePersistentStateToPostgres(state, reason) {
+  const pendingSave = postgresSaveQueue.then(() => savePersistentStateToPostgres(state, reason));
+  postgresSaveQueue = pendingSave
+    .then(() => {
+      lastPostgresSaveError = "";
+    })
+    .catch((error) => {
+      lastPostgresSaveError = error instanceof Error ? error.message : "Falha ao salvar estado persistente";
+      console.error(`[persistence] ${reason}: ${lastPostgresSaveError}`);
+    });
+  return pendingSave;
+}
+
 function savePersistentState(reason = "update") {
   const state = persistentState();
   if (postgresPool) {
-    postgresSaveQueue = postgresSaveQueue
-      .then(() => savePersistentStateToPostgres(state, reason))
-      .catch(() => undefined);
+    queuePersistentStateToPostgres(state, reason);
     return { ok: true, store: "postgres", queued: true };
   }
 
@@ -4680,6 +4736,18 @@ function savePersistentState(reason = "update") {
       message: error instanceof Error ? error.message : "Falha ao salvar estado persistente"
     };
   }
+}
+
+async function savePersistentStateAndWait(reason = "update") {
+  const state = persistentState();
+  if (postgresPool) {
+    await queuePersistentStateToPostgres(state, reason);
+    return { ok: true, store: "postgres", queued: false };
+  }
+
+  const result = savePersistentState(reason);
+  if (!result.ok) throw new Error(result.message || "Falha ao salvar estado persistente");
+  return result;
 }
 
 async function loadPersistentState() {
@@ -4921,7 +4989,17 @@ function mobileTelephonyConfig(unit = units.get("unit-101")) {
   };
 }
 
-await loadPersistentState();
+const persistentStateLoad = await loadPersistentState();
+if (persistentStateLoad.ok && allTenants().length) {
+  const inactiveTenantCleanup = removeInactiveTenantData();
+  if (removedItemCount(inactiveTenantCleanup)) {
+    try {
+      await savePersistentStateAndWait("inactive-tenant-data-cleanup");
+    } catch (error) {
+      console.error(`[persistence] inactive-tenant-data-cleanup: ${error instanceof Error ? error.message : "Falha ao limpar dados orfaos"}`);
+    }
+  }
+}
 ensureConfiguredNiceLinearListeners();
 const cameraPlaybackMigrated = normalizeCameraRecordsForPlayback();
 if (cameraPlaybackMigrated) {
@@ -4961,6 +5039,7 @@ async function handleRequest(request, response) {
       ok: true,
       service: "condo-access-clean-api",
       storage: postgresPool ? "postgres" : "file",
+      persistenceHealthy: !lastPostgresSaveError,
       cameras: cameras.length,
       devices: devices.length
     });
@@ -6031,7 +6110,7 @@ async function handleRequest(request, response) {
       accessLogs: removeMatching(accessLogs, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
       calls: removeMatching(intercomCalls, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId))
     };
-    savePersistentState("tenant-deleted");
+    await savePersistentStateAndWait("tenant-deleted");
     return json(response, 200, { ok: true, removed, cleanup });
   }
 
@@ -6224,7 +6303,7 @@ async function handleRequest(request, response) {
     const event = await emitCredentialEvent("DELETE", credential);
     const [removed] = credentials.splice(index, 1);
     await deleteCredentialFacePhoto(credential.id);
-    savePersistentState("credential-deleted");
+    await savePersistentStateAndWait("credential-deleted");
     return json(response, 200, { ok: true, removed, event });
   }
 
@@ -6417,7 +6496,7 @@ async function handleRequest(request, response) {
     }
 
     syncMobileCameraStreamsFile();
-    savePersistentState("device-deleted");
+    await savePersistentStateAndWait("device-deleted");
     return json(response, 200, {
       ok: true,
       removed: publicDevice(removed),
@@ -6500,7 +6579,7 @@ async function handleRequest(request, response) {
       }
     }
     syncMobileCameraStreamsFile();
-    savePersistentState("camera-deleted");
+    await savePersistentStateAndWait("camera-deleted");
     return json(response, 200, { ok: true, removed: removed.map(publicCamera) });
   }
 
@@ -6517,7 +6596,7 @@ async function handleRequest(request, response) {
     }
     if (!removed.length) return json(response, 404, { message: "Grupo de cameras nao encontrado" });
     syncMobileCameraStreamsFile();
-    savePersistentState("camera-group-deleted");
+    await savePersistentStateAndWait("camera-group-deleted");
     return json(response, 200, { ok: true, removed: removed.map(publicCamera) });
   }
 
@@ -6545,7 +6624,7 @@ async function handleRequest(request, response) {
     const index = actions.findIndex((item) => item.id === deleteActionMatch[1]);
     if (index === -1) return json(response, 404, { message: "Acionamento nao encontrado" });
     const [removed] = actions.splice(index, 1);
-    savePersistentState("action-deleted");
+    await savePersistentStateAndWait("action-deleted");
     return json(response, 200, { ok: true, removed });
   }
 
@@ -6773,7 +6852,7 @@ async function handleRequest(request, response) {
     for (let index = unitInvites.length - 1; index >= 0; index -= 1) {
       if (unitInvites[index].unitId === unitId) unitInvites.splice(index, 1);
     }
-    savePersistentState("unit-deleted");
+    await savePersistentStateAndWait("unit-deleted");
     return json(response, 200, { ok: true, removed: unit });
   }
 
@@ -6844,7 +6923,7 @@ async function handleRequest(request, response) {
       if (vehicle.personId === removed.id) vehicle.personId = "";
     });
     syncUnitResidentSummary(removed.unitId);
-    savePersistentState("person-deleted");
+    await savePersistentStateAndWait("person-deleted");
     return json(response, 200, { ok: true, removed });
   }
 
@@ -6983,7 +7062,7 @@ async function handleRequest(request, response) {
         now
       });
       Object.assign(vehicle, removed.vehiclePatch);
-      savePersistentState("vehicle-tag-removed");
+      await savePersistentStateAndWait("vehicle-tag-removed");
       return json(response, 200, { ...removed.result, vehicle });
     } catch (error) {
       vehicle.tagStatus = "ERROR";
@@ -6998,7 +7077,7 @@ async function handleRequest(request, response) {
     const index = vehicles.findIndex((vehicle) => vehicle.id === deleteVehicleMatch[1]);
     if (index === -1) return json(response, 404, { message: "Veiculo nao encontrado." });
     const [removed] = vehicles.splice(index, 1);
-    savePersistentState("vehicle-deleted");
+    await savePersistentStateAndWait("vehicle-deleted");
     return json(response, 200, { ok: true, removed });
   }
 
