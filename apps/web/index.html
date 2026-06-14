@@ -11,7 +11,9 @@
   </head>
   <body>
     <div id="root"></div>
-    <form name="demonstracao" data-netlify="true" hidden>
+    <form name="demonstracao" method="POST" action="/" data-netlify="true" netlify-honeypot="bot-field" hidden>
+      <input name="form-name" value="demonstracao" />
+      <input name="bot-field" />
       <input name="nome" />
       <input name="empresa" />
       <input name="cidade" />

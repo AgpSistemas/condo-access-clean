@@ -11,6 +11,7 @@ import {
   Headphones,
   KeyRound,
   LockKeyhole,
+  MessageCircle,
   Menu,
   MonitorCheck,
   Network,
@@ -23,6 +24,8 @@ import {
   X
 } from "lucide-react";
 import logo from "../logo.png";
+
+const whatsappUrl = "https://wa.me/5544991180904?text=Olá!%20Gostaria%20de%20conhecer%20melhor%20a%20plataforma%20Condo%20Access.";
 
 const resources = [
   [Fingerprint, "Reconhecimento facial", "Acesso ágil e seguro com identificação facial."],
@@ -76,7 +79,7 @@ function LandingPage() {
     const body = new URLSearchParams(new FormData(form)).toString();
 
     try {
-      const response = await fetch("/", {
+      const response = await fetch(form.action, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body
@@ -223,8 +226,9 @@ function LandingPage() {
               <span><KeyRound size={20} /><strong>Demonstração personalizada</strong><small>Uma conversa prática sobre sua operação.</small></span>
             </div>
           </div>
-          <form className="demo-form" name="demonstracao" method="POST" data-netlify="true" onSubmit={handleSubmit}>
+          <form className="demo-form" name="demonstracao" method="POST" action="/" data-netlify="true" netlify-honeypot="bot-field" onSubmit={handleSubmit}>
             <input type="hidden" name="form-name" value="demonstracao" />
+            <label className="honeypot">Não preencha este campo<input name="bot-field" /></label>
             <h3>Solicite uma demonstração</h3>
             <p>Preencha os dados e entraremos em contato.</p>
             <label>Nome<input name="nome" required placeholder="Seu nome" /></label>
@@ -232,6 +236,7 @@ function LandingPage() {
             <div className="form-split"><label>Cidade<input name="cidade" required placeholder="Sua cidade" /></label><label>Telefone<input name="telefone" required placeholder="(00) 00000-0000" /></label></div>
             <label>E-mail corporativo<input type="email" name="email" required placeholder="voce@empresa.com.br" /></label>
             <button className="landing-cta" disabled={formState === "sending"}>{formState === "sending" ? "Enviando..." : "Agendar demonstração"} <ArrowRight size={18} /></button>
+            <a className="whatsapp-form-button" href={whatsappUrl} target="_blank" rel="noreferrer"><MessageCircle size={18} /> Falar pelo WhatsApp</a>
             {formState === "sent" && <span className="form-feedback success">Recebemos seus dados. Em breve nossa equipe entrará em contato.</span>}
             {formState === "error" && <span className="form-feedback error">Não foi possível enviar agora. Tente novamente em instantes.</span>}
             <small>Seus dados serão usados somente para contato comercial.</small>
@@ -244,6 +249,10 @@ function LandingPage() {
         <p>Plataforma inteligente para controle de acesso e portaria remota.</p>
         <a href="/app">Acessar sistema <ArrowRight size={15} /></a>
       </footer>
+      <a className="whatsapp-floating" href={whatsappUrl} target="_blank" rel="noreferrer" aria-label="Falar com a Condo Access pelo WhatsApp">
+        <MessageCircle size={24} />
+        <span>Fale conosco</span>
+      </a>
     </div>
   );
 }
