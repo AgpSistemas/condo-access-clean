@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
 import { Invitation, Inviter, Registerer, RegistererState, SessionState, UserAgent } from "sip.js";
 import {
   Activity,
@@ -8,7 +7,6 @@ import {
   Camera,
   Car,
   ClipboardList,
-  CreditCard,
   FileKey2,
   Grid3X3,
   Home,
@@ -16,44 +14,28 @@ import {
   LogIn,
   MoreVertical,
   PhoneCall,
-  PhoneOff,
   Plus,
   RadioTower,
   RefreshCw,
   Save,
   Search,
-  ServerCog,
-  Settings,
   ShieldCheck,
   Smartphone,
   Trash2,
   UserRound,
   UserPlus,
   Users,
-  WifiOff
 } from "lucide-react";
-import Logo from "./logo.png";
-import "./styles.css";
 
 import {
-  railwayApiUrl,
-  apiUrl,
   WEB_PORTER_EXTENSION,
   WEB_PORTER_PASSWORD,
-  sections,
   condoSections,
-  settingsSections,
   equipmentIntegrationResources,
-  emptyData,
-  API_CACHE_KEY,
-  normalizeBootstrap,
-  readCachedBootstrap,
   parsePositiveInteger,
-  condoTotalUnits,
   geocodeAddressFields,
   emptyTelephony,
   normalizeWebSocketForWebPhone,
-  sameText,
   credentialPhotoUrl,
   equipmentPreviewPhotoUrl,
   callTime,
@@ -68,6 +50,10 @@ import {
   emptyVehicleForm,
   resourceConfigurationFields,
   defaultResourceSettings,
+  controlIdActionOptions,
+  controlIdProfileGuidance,
+  isNiceLinearManufacturer,
+  niceLinearProfileGuidance,
   intelbrasDeviceDefaults,
   intelbrasModelDefaults,
   homologatedModelOptions,
@@ -76,19 +62,17 @@ import {
   csvCell,
   downloadCsv,
   readImportRows,
-  faceImportSelectionKey,
-  importSelectionBase
+  faceImportSelectionKey
 } from "./config/appConfig.jsx";
 import {
   PersonAvatar,
   Field,
-  StatusBanner,
   Pagination,
-  usePaged,
   Metric,
   LocalLogin,
   ChangePassword
 } from "./components/common.jsx";
+import { usePagination as usePaged } from "./hooks/usePagination.js";
 import {
   cameraStreamKey,
   cameraSnapshotUrl,
@@ -100,15 +84,29 @@ import {
   CameraConfig,
   ActionConfig
 } from "./components/cameras.jsx";
+import { useSession } from "./hooks/useSession.js";
+import useBootstrapData from "./hooks/useBootstrapData.js";
+import useAppRouting from "./hooks/useAppRouting.js";
+import useEquipmentIntegration from "./hooks/useEquipmentIntegration.js";
+import useTenantSelection from "./hooks/useTenantSelection.js";
+import DashboardPage from "./pages/DashboardPage.jsx";
+import CondominiumDashboardPage from "./pages/CondominiumDashboardPage.jsx";
+import CondominiumsPage from "./pages/CondominiumsPage.jsx";
+import CondominiumFormPage from "./pages/CondominiumFormPage.jsx";
+import AppShell from "./components/layout/AppShell.jsx";
+import SettingsPage from "./pages/SettingsPage.jsx";
+import SdkPage from "./pages/SdkPage.jsx";
+import { TelephonyPage } from "./pages/telephony/index.js";
+import * as deviceController from "./controllers/deviceController.js";
+import * as cameraController from "./controllers/cameraController.js";
+import * as actionController from "./controllers/actionController.js";
+import * as telephonyController from "./controllers/telephonyController.js";
+import * as vehicleController from "./controllers/vehicleController.js";
+import { apiFetch } from "./services/api.js";
 
 function App() {
-  const [session, setSession] = useState(() => {
-    const raw = window.localStorage.getItem("condo-clean-session");
-    return raw ? JSON.parse(raw) : null;
-  });
+  const { session, persistSession, logout } = useSession();
   const [activeSection, setActiveSection] = useState("dashboard");
-  const [data, setData] = useState(readCachedBootstrap);
-  const [syncState, setSyncState] = useState({ status: "idle", error: "", lastSyncAt: null });
   const [selectedTenantId, setSelectedTenantId] = useState("");
   const [selectedUnitId, setSelectedUnitId] = useState("");
   const [condoFormMode, setCondoFormMode] = useState("edit");
@@ -146,25 +144,11 @@ function App() {
   const [actionForm, setActionForm] = useState(emptyActionForm);
   const [credentialForm, setCredentialForm] = useState(emptyCredentialForm);
   const [vehicleForm, setVehicleForm] = useState(emptyVehicleForm);
+  const [vehicleTagBusyId, setVehicleTagBusyId] = useState("");
   const [credentialImportRows, setCredentialImportRows] = useState([]);
   const [credentialImportReport, setCredentialImportReport] = useState(null);
   const [credentialImportFile, setCredentialImportFile] = useState("");
   const [porterReportDate, setPorterReportDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [equipmentIntegration, setEquipmentIntegration] = useState({
-    deviceId: "",
-    resource: "events",
-    loading: false,
-    importing: false,
-    error: "",
-    updatedAt: "",
-    payload: null,
-    importReport: null
-  });
-  const [equipmentFaceSelections, setEquipmentFaceSelections] = useState({});
-  const [equipmentFacePreviewPage, setEquipmentFacePreviewPage] = useState(1);
-  const selectedTenantIdRef = useRef("");
-  const syncInFlightRef = useRef(false);
-  const apiCacheRef = useRef(data);
   const webPhoneAudioRef = useRef(null);
   const webPhoneRingRef = useRef({ context: null, timer: null });
   const webPhoneUserAgentRef = useRef(null);
@@ -181,9 +165,14 @@ function App() {
     remoteIdentity: ""
   });
 
-  useEffect(() => {
-    selectedTenantIdRef.current = selectedTenantId;
-  }, [selectedTenantId]);
+  const { data, setData, syncState, refreshApiCache, syncNow } = useBootstrapData({
+    accessToken: session?.accessToken,
+    selectedTenantId,
+    setSelectedTenantId,
+    setSelectedUnitId,
+    setTelephony,
+    setTenantTelephony
+  });
 
   useEffect(() => {
     if (!actionFeedback) return undefined;
@@ -197,28 +186,28 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [message]);
 
-  const roleSections = session?.role === "PORTER"
-    ? sections.filter((section) => ["dashboard", "remotePorter"].includes(section.id))
-    : session?.role === "RESIDENT"
-      ? sections.filter((section) => section.id === "dashboard")
-      : sections;
-  const allowedSettingsSections = session?.role === "SUPER_ADMIN" ? settingsSections : [];
-  const allSections = [...roleSections, ...condoSections, ...allowedSettingsSections];
-  const active = allSections.find((section) => section.id === activeSection) || sections[0];
-  const visibleCondominiums = data.condominiums.filter((item) =>
-    !session?.companyId || item.companyId === session.companyId
-  );
-  const selectedTenant = visibleCondominiums.find((item) => item.id === selectedTenantId) || visibleCondominiums[0];
-  const sessionCompany = data.companies.find((company) => company.id === session?.companyId) || null;
-  const selectedLicenseCompany = data.companies.find((item) => item.id === licenseForm.companyId) || null;
-  const condoFormTenant = condoFormMode === "new" ? null : selectedTenant;
-  const units = useMemo(() => data.units.filter((unit) => unit.tenantId === selectedTenant?.id), [data.units, selectedTenant?.id]);
-  const filteredUnits = useMemo(() => {
-    const term = unitSearch.trim().toLowerCase();
-    if (!term) return units;
-    return units.filter((unit) => `${unit.unitNumber} ${unit.blockName} ${unit.residentName} ${unit.responsibleName} ${unit.telephony?.extension || unit.extension || ""}`.toLowerCase().includes(term));
-  }, [unitSearch, units]);
-  const selectedUnit = units.find((unit) => unit.unitId === selectedUnitId) || null;
+  const {
+    roleSections,
+    allowedSettingsSections,
+    active,
+    visibleCondominiums,
+    selectedTenant,
+    sessionCompany,
+    selectedLicenseCompany,
+    condoFormTenant,
+    units,
+    filteredUnits,
+    selectedUnit
+  } = useTenantSelection({
+    data,
+    session,
+    activeSection,
+    selectedTenantId,
+    selectedUnitId,
+    unitSearch,
+    licenseCompanyId: licenseForm.companyId,
+    condoFormMode
+  });
 
   useEffect(() => {
     setCondoGeo({
@@ -368,7 +357,7 @@ function App() {
             const inviteKey = invitation.id || `${tenantForPhone.id}:${remoteExtension}:${targetExtension}:${Date.now()}`;
             if (!webPhoneInviteKeysRef.current.has(inviteKey)) {
               webPhoneInviteKeysRef.current.add(inviteKey);
-              void fetch(`${apiUrl}/api/telephony/mobile-call`, {
+              void apiFetch("/api/telephony/mobile-call", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -553,204 +542,21 @@ function App() {
     };
   }, [connectWebPhone, data.condominiums, selectedTenant, session, webPhone.status]);
 
-  const normalizeUnitId = useCallback((rawUnitId) => {
-    if (!rawUnitId) return "";
-    const decoded = decodeURIComponent(rawUnitId);
-    return data.units.find((unit) => unit.unitId === decoded || unit.unitId === `unit-${decoded}` || unit.unitNumber === decoded)?.unitId || decoded;
-  }, [data.units]);
-
-  const applyRoute = useCallback((path) => {
-    const pathname = path || window.location.pathname;
-    const licenseUnitsMatch = pathname.match(/^\/licencas\/([^/]+)\/unidades$/);
-    const licenseCamerasMatch = pathname.match(/^\/licencas\/([^/]+)\/configuracaoCameras$/);
-    const licenseActionsMatch = pathname.match(/^\/licencas\/([^/]+)\/configuracaoAcionamentos$/);
-    const licenseDevicesMatch = pathname.match(/^\/licencas\/([^/]+)\/equipamentos$/);
-    const licenseCredentialsMatch = pathname.match(/^\/licencas\/([^/]+)\/credenciais(?:\/importacao)?$/);
-    const credentialsMatch = pathname.match(/^\/credenciais(?:\/importacao)?$/);
-    const condoCredentialsMatch = pathname.match(/^\/condominios\/([^/]+)\/credenciais(?:\/importacao)?$/);
-    const unitDirectoryMatch = pathname === "/unidades";
-    const unitRootMatch = pathname.match(/^\/unidades\/([^/]+)$/);
-    const unitPeopleMatch = pathname.match(/^\/unidades\/([^/]+)\/pessoas\/([^/]+)\/ver\/([^/]+)$/);
-    const unitLoginsMatch = pathname.match(/^\/unidades\/([^/]+)\/logins$/);
-    const unitInvitesMatch = pathname.match(/^\/unidades\/([^/]+)\/convites\/([^/]+)$/);
-
-    const selectTenantByLicense = (code) => {
-      const license = data.licenses.find((item) => item.code === code || item.id === code || item.id === `license-${code}`);
-      if (license?.tenantId && license.tenantId !== selectedTenantIdRef.current) {
-        setSelectedTenantId(license.tenantId);
-      }
-    };
-
-    if (licenseUnitsMatch) {
-      selectTenantByLicense(licenseUnitsMatch[1]);
-      setSelectedUnitId("");
-      setUnitFormMode("edit");
-      setActiveSection("units");
-      setUnitTab("geral");
-      return true;
-    }
-
-    if (licenseCamerasMatch) {
-      selectTenantByLicense(licenseCamerasMatch[1]);
-      setActiveSection("devices");
-      setDeviceTab("cameras");
-      return true;
-    }
-
-    if (licenseActionsMatch) {
-      selectTenantByLicense(licenseActionsMatch[1]);
-      setActiveSection("devices");
-      setDeviceTab("actions");
-      return true;
-    }
-
-    if (licenseDevicesMatch) {
-      selectTenantByLicense(licenseDevicesMatch[1]);
-      setActiveSection("devices");
-      setDeviceTab("inicio");
-      return true;
-    }
-
-    if (licenseCredentialsMatch) {
-      selectTenantByLicense(licenseCredentialsMatch[1]);
-      setActiveSection("credentials");
-      return true;
-    }
-
-    if (credentialsMatch) {
-      setActiveSection("credentials");
-      return true;
-    }
-
-    if (condoCredentialsMatch) {
-      const tenantId = decodeURIComponent(condoCredentialsMatch[1]);
-      if (data.condominiums.some((item) => item.id === tenantId)) {
-        setSelectedTenantId(tenantId);
-      }
-      setActiveSection("credentials");
-      return true;
-    }
-
-    if (unitDirectoryMatch) {
-      setSelectedUnitId("");
-      setUnitFormMode("edit");
-      setActiveSection("units");
-      setUnitTab("geral");
-      return true;
-    }
-
-    if (unitRootMatch) {
-      setSelectedUnitId(normalizeUnitId(unitRootMatch[1]));
-      setUnitFormMode("edit");
-      setActiveSection("units");
-      setUnitTab("geral");
-      return true;
-    }
-
-    if (unitPeopleMatch) {
-      setSelectedUnitId(normalizeUnitId(unitPeopleMatch[1]));
-      setActiveSection("units");
-      setUnitTab(unitPeopleMatch[2] === "visitantes" ? "visitantes" : unitPeopleMatch[2] === "prestadores" ? "prestadores" : "moradores");
-      setPersonSubtab(unitPeopleMatch[2]);
-      setSelectedPersonId(unitPeopleMatch[3]);
-      return true;
-    }
-
-    if (unitLoginsMatch) {
-      setSelectedUnitId(normalizeUnitId(unitLoginsMatch[1]));
-      setActiveSection("units");
-      setUnitTab("logins");
-      return true;
-    }
-
-    if (unitInvitesMatch) {
-      setSelectedUnitId(normalizeUnitId(unitInvitesMatch[1]));
-      setActiveSection("units");
-      setUnitTab("convites");
-      setInviteSubtab(unitInvitesMatch[2]);
-      return true;
-    }
-
-    return false;
-  }, [data.condominiums, data.licenses, normalizeUnitId]);
-
-  const navigateTo = useCallback((path) => {
-    window.history.pushState({}, "", path);
-    applyRoute(path);
-  }, [applyRoute]);
-
-  const storeApiCache = useCallback((payload) => {
-    const normalized = normalizeBootstrap(payload);
-    apiCacheRef.current = normalized;
-    try {
-      window.localStorage.setItem(API_CACHE_KEY, JSON.stringify({
-        savedAt: new Date().toISOString(),
-        payload: normalized
-      }));
-    } catch {
-      // Cache silencioso: se o navegador negar armazenamento, a tela segue normal.
-    }
-  }, []);
-
-  const refreshApiCache = useCallback(async () => {
-    try {
-      const response = await fetch(`${apiUrl}/api/bootstrap`);
-      if (!response.ok) return null;
-      const payload = normalizeBootstrap(await response.json());
-      storeApiCache(payload);
-      return payload;
-    } catch {
-      return null;
-    }
-  }, [storeApiCache]);
-
-  const syncNow = useCallback(async ({ silent = false } = {}) => {
-    if (syncInFlightRef.current) return;
-    syncInFlightRef.current = true;
-    if (!silent) setSyncState((current) => ({ ...current, status: "syncing", error: "" }));
-    try {
-      const response = await fetch(`${apiUrl}/api/bootstrap`);
-      if (!response.ok) throw new Error(`API ${response.status}`);
-      const payload = normalizeBootstrap(await response.json());
-      const selectedTenantIdSnapshot = selectedTenantIdRef.current;
-      const currentTenantId = payload.condominiums.some((item) => item.id === selectedTenantIdSnapshot)
-        ? selectedTenantIdSnapshot
-        : payload.condominiums[0]?.id || "";
-      const extensionResponse = currentTenantId
-        ? await fetch(`${apiUrl}/api/extensions/status?tenantId=${encodeURIComponent(currentTenantId)}`).catch(() => null)
-        : null;
-      const extensionPayload = extensionResponse?.ok ? await extensionResponse.json().catch(() => null) : null;
-      if (extensionPayload?.extensions) payload.extensionStatus = extensionPayload.extensions;
-      storeApiCache(payload);
-      setData(payload);
-      const nextTenant = payload.condominiums[0];
-      const nextUnit = payload.units[0];
-      setSelectedTenantId((current) => payload.condominiums.some((item) => item.id === current) ? current : nextTenant?.id || "");
-      setSelectedUnitId((current) => current && payload.units.some((item) => item.unitId === current) ? current : "");
-      setTenantTelephony(nextTenant || {});
-      setTelephony(nextUnit?.telephony || emptyTelephony);
-      setSyncState({ status: "synced", error: "", lastSyncAt: new Date() });
-    } catch (error) {
-      setSyncState({ status: "offline", error: error instanceof Error ? error.message : "API indisponivel", lastSyncAt: new Date() });
-    } finally {
-      syncInFlightRef.current = false;
-    }
-  }, [storeApiCache]);
-
-  useEffect(() => {
-    void syncNow();
-  }, []);
-
-  useEffect(() => {
-    if (session?.accessToken) void syncNow({ silent: true });
-  }, [session?.accessToken]);
-
-  useEffect(() => {
-    applyRoute(window.location.pathname);
-    const onPopState = () => applyRoute(window.location.pathname);
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, [applyRoute]);
+  const { navigateTo } = useAppRouting({
+    condominiums: data.condominiums,
+    licenses: data.licenses,
+    units: data.units,
+    selectedTenantId,
+    setSelectedTenantId,
+    setSelectedUnitId,
+    setUnitFormMode,
+    setActiveSection,
+    setUnitTab,
+    setDeviceTab,
+    setPersonSubtab,
+    setSelectedPersonId,
+    setInviteSubtab
+  });
 
   useEffect(() => {
     if (selectedTenant) {
@@ -784,6 +590,7 @@ function App() {
     return selected.length ? selected : tenantMosaicOptions.slice(0, 4);
   }, [selectedMosaicKeys, tenantMosaicOptions]);
   const tenantDevices = useMemo(() => data.devices.filter((device) => device.tenantId === selectedTenant?.id), [data.devices, selectedTenant?.id]);
+  const controlIdDevices = useMemo(() => tenantDevices.filter((device) => device.adapter === "CONTROL_ID_ACCESS" || String(device.manufacturer || "").toLowerCase().includes("control")), [tenantDevices]);
   const tenantCredentials = useMemo(() => data.credentials.filter((credential) => credential.tenantId === selectedTenant?.id), [data.credentials, selectedTenant?.id]);
   const tenantActions = useMemo(() => data.actions.filter((action) => action.tenantId === selectedTenant?.id), [data.actions, selectedTenant?.id]);
   const selectedTenantLicense = useMemo(() => data.licenses.find((license) => license.tenantId === selectedTenant?.id && license.active !== false), [data.licenses, selectedTenant?.id]);
@@ -806,7 +613,28 @@ function App() {
   const activeTenantCalls = useMemo(() => tenantCalls.filter((call) => !["ENDED", "MISSED", "FAILED"].includes(call.status)), [tenantCalls]);
   const tenantEvents = useMemo(() => (data.accessLogs || []).filter((log) => !log.tenantId || log.tenantId === selectedTenant?.id), [data.accessLogs, selectedTenant?.id]);
   const disconnectedDevices = useMemo(() => tenantDevices.filter((device) => device.status && device.status !== "ONLINE"), [tenantDevices]);
-  const selectedIntegrationDevice = tenantDevices.find((device) => device.id === equipmentIntegration.deviceId) || tenantDevices[0];
+  const {
+    equipmentIntegration,
+    setEquipmentIntegration,
+    equipmentFaceSelections,
+    equipmentFacePreviewPage,
+    setEquipmentFacePreviewPage,
+    selectedIntegrationDevice,
+    readEquipmentIntegrationResource,
+    updateEquipmentCredentialSelection,
+    updateEquipmentCredentialUnit,
+    updateAllEquipmentCredentialSelections,
+    importEquipmentCredentials
+  } = useEquipmentIntegration({
+    devices: tenantDevices,
+    units,
+    setMessage,
+    refreshApiCache,
+    setData,
+    setActiveSection,
+    setUnitTab,
+    setPersonSubtab
+  });
   const equipmentPreviewItems = (equipmentIntegration.importReport?.items || [])
     .filter((item) => equipmentIntegration.resource !== "faces" || item.payload?.type === "FACE");
   const equipmentPreviewPageSize = 25;
@@ -917,31 +745,32 @@ function App() {
     return `${unit.blockName ? `${unit.blockName} - ` : ""}Unidade ${unit.unitNumber || unit.unitId || "-"}`;
   }
 
-  async function callUnitFromPorter(unit) {
-    if (!unit) return;
-    selectPorterUnit(unit);
-
-    const extension = unit.telephony?.extension || unit.extension || "";
+  async function callExtensionFromWeb(target) {
+    const extension = String(target?.extension || target?.targetExtension || "").trim();
     if (!extension) {
-      setMessage(`Unidade ${unit.unitNumber || unit.unitId || "-"} sem ramal cadastrado.`);
+      setMessage("Ramal de destino nao informado.");
       return;
     }
 
+    const unit = target?.unit || units.find((item) => unitExtension(item) === extension) || null;
+    const targetLabel = target?.label || (unit ? unitDisplay(unit) : `Ramal ${extension}`);
+
     try {
-      const callResponse = await fetch(`${apiUrl}/api/telephony/porter-call`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tenantId: selectedTenant?.id || unit.tenantId,
-          unitId: unit.unitId,
-          unitNumber: unit.unitNumber,
-          targetExtension: extension,
-          targetLabel: unitDisplay(unit),
-          sourceExtension: selectedTenant?.sipPorterExtension || WEB_PORTER_EXTENSION,
-          visitorLabel: "Portaria"
-        })
+      const { response: callResponse, result: callRecord } = await telephonyController.callExtension({
+        tenantId: selectedTenant?.id || unit?.tenantId,
+        unitId: unit?.unitId || target?.unitId || "",
+        unitNumber: unit?.unitNumber || "",
+        targetExtension: extension,
+        targetLabel,
+        targetType: target?.type || (unit ? "UNIT" : "EXTENSION"),
+        deviceId: target?.deviceId || "",
+        sourceExtension: selectedTenant?.sipPorterExtension || WEB_PORTER_EXTENSION,
+        sourceLabel: "Portaria Web"
       });
-      const callRecord = await callResponse.json().catch(() => null);
+      if (!callResponse.ok) {
+        setMessage(callRecord?.message || `Nao foi possivel ligar para o ramal ${extension}.`);
+        return;
+      }
       if (callRecord?.id) {
         setData((current) => ({
           ...current,
@@ -953,14 +782,14 @@ function App() {
       if (!webPhoneUserAgentRef.current) await connectWebPhone();
       const userAgent = webPhoneUserAgentRef.current;
       if (!userAgent) {
-        setMessage("Audio da portaria ainda nao conectado para ligar para a unidade.");
+        setMessage("Audio da portaria ainda nao conectado para realizar a chamada.");
         return;
       }
 
       const domain = selectedTenant?.sipDomain || "granportalresidency.ddns.net";
       const targetUri = UserAgent.makeURI(`sip:${extension}@${domain}`);
       if (!targetUri) {
-        setMessage(`Ramal ${extension} da unidade invalido.`);
+        setMessage(`Ramal ${extension} invalido.`);
         return;
       }
 
@@ -971,14 +800,14 @@ function App() {
       setWebPhone((current) => ({
         ...current,
         status: "CALLING",
-        diagnostic: `Chamando unidade ${unit.unitNumber || unit.unitId || "-"} no ramal ${extension}`,
-        incomingLabel: `Ligando para ${unitDisplay(unit)}`,
+        diagnostic: `Chamando ${targetLabel} no ramal ${extension}`,
+        incomingLabel: `Ligando para ${targetLabel}`,
         remoteIdentity: extension
       }));
       inviter.stateChange.addListener((state) => {
         if (state === SessionState.Established) {
           attachWebPhoneAudio(inviter);
-          setWebPhone((current) => ({ ...current, status: "IN_CALL", diagnostic: `Em chamada com unidade ${unit.unitNumber || unit.unitId || "-"}` }));
+          setWebPhone((current) => ({ ...current, status: "IN_CALL", diagnostic: `Em chamada com ${targetLabel}` }));
           if (callRecord?.id) void markCallAnswered(callRecord);
         }
         if (state === SessionState.Terminated) {
@@ -994,15 +823,26 @@ function App() {
         }
       });
       await inviter.invite();
-      setMessage(`Ligando para unidade ${unit.unitNumber || unit.unitId || "-"} no ramal ${extension}.`);
+      setMessage(`Ligando para ${targetLabel} no ramal ${extension}.`);
     } catch (error) {
       setWebPhone((current) => ({
         ...current,
         status: webPhoneRegistererRef.current ? "REGISTERED" : "ERROR",
-        diagnostic: error instanceof Error ? error.message : "Falha ao ligar para a unidade"
+        diagnostic: error instanceof Error ? error.message : "Falha ao ligar para o ramal"
       }));
-      setMessage(error instanceof Error ? error.message : "Falha ao ligar para a unidade.");
+      setMessage(error instanceof Error ? error.message : "Falha ao ligar para o ramal.");
     }
+  }
+
+  async function callUnitFromPorter(unit) {
+    if (!unit) return;
+    selectPorterUnit(unit);
+    const extension = unit.telephony?.extension || unit.extension || "";
+    if (!extension) {
+      setMessage(`Unidade ${unit.unitNumber || unit.unitId || "-"} sem ramal cadastrado.`);
+      return;
+    }
+    await callExtensionFromWeb({ extension, label: unitDisplay(unit), type: "UNIT", unit });
   }
 
   const editCamera = useCallback((camera) => {
@@ -1036,7 +876,7 @@ function App() {
     if (!selectedUnit) return;
     setMessage("Salvando ramal da unidade...");
     const { extensionPassword: _extensionPassword, ...sipTelephony } = telephony;
-    const response = await fetch(`${apiUrl}/api/units/${selectedUnit.unitId}/telephony`, {
+    const response = await apiFetch(`/api/units/${selectedUnit.unitId}/telephony`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(sipTelephony)
@@ -1060,7 +900,7 @@ function App() {
     if (!selectedTenant) return;
     setMessage("Salvando configuracao do condominio...");
     const { sipPorterPassword: _sipPorterPassword, ...sipTenantTelephony } = tenantTelephony;
-    const response = await fetch(`${apiUrl}/api/condominiums/${selectedTenant.id}/telephony`, {
+    const response = await apiFetch(`/api/condominiums/${selectedTenant.id}/telephony`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(sipTenantTelephony)
@@ -1100,7 +940,7 @@ function App() {
     }
     const structureGroupCount = parsePositiveInteger(form.get("structureGroupCount"), 0);
     const unitsPerGroup = parsePositiveInteger(form.get("unitsPerGroup"), 0);
-    const response = await fetch(`${apiUrl}/api/condominiums`, {
+    const response = await apiFetch("/api/condominiums", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1191,7 +1031,7 @@ function App() {
 
   async function deleteCondo(condo) {
     if (!window.confirm(`Excluir condominio ${condo.name}?`)) return;
-    const response = await fetch(`${apiUrl}/api/condominiums/${condo.id}`, { method: "DELETE" });
+    const response = await apiFetch(`/api/condominiums/${condo.id}`, { method: "DELETE" });
     if (!response.ok) {
       const result = await response.json().catch(() => ({}));
       setMessage(result.message || "Falha ao excluir condominio.");
@@ -1207,7 +1047,7 @@ function App() {
   async function saveUnitForm(event) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const response = await fetch(`${apiUrl}/api/units`, {
+    const response = await apiFetch("/api/units", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1253,7 +1093,7 @@ function App() {
 
   async function deleteUnit(unit) {
     if (!unit || !window.confirm(`Excluir unidade ${unit.unitNumber}?`)) return;
-    const response = await fetch(`${apiUrl}/api/units/${unit.unitId}`, { method: "DELETE" });
+    const response = await apiFetch(`/api/units/${unit.unitId}`, { method: "DELETE" });
     if (!response.ok) {
       setMessage("Falha ao excluir unidade.");
       return;
@@ -1276,7 +1116,7 @@ function App() {
   async function savePersonForm(event, kind, currentPerson) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const response = await fetch(`${apiUrl}/api/people`, {
+    const response = await apiFetch("/api/people", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1334,16 +1174,11 @@ function App() {
   async function saveVehicleForm(event) {
     event.preventDefault();
     if (!selectedUnit) return;
-    const response = await fetch(`${apiUrl}/api/vehicles`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...vehicleForm,
-        tenantId: selectedTenant?.id,
-        unitId: selectedUnit.unitId
-      })
+    const { response, result: saved } = await vehicleController.saveVehicleForm({
+      ...vehicleForm,
+      tenantId: selectedTenant?.id,
+      unitId: selectedUnit.unitId
     });
-    const saved = await response.json().catch(() => ({}));
     if (!response.ok) {
       setMessage(saved.message || "Falha ao salvar veiculo.");
       return;
@@ -1364,7 +1199,7 @@ function App() {
 
   async function deleteVehicle(vehicle) {
     if (!window.confirm(`Excluir o veiculo ${vehicle.plate}?`)) return;
-    const response = await fetch(`${apiUrl}/api/vehicles/${vehicle.id}`, { method: "DELETE" });
+    const { response } = await vehicleController.deleteVehicle(vehicle.id);
     if (!response.ok) {
       setMessage("Falha ao excluir veiculo.");
       return;
@@ -1378,10 +1213,39 @@ function App() {
     void refreshApiCache();
   }
 
+  async function syncVehicleControlIdTag(vehicle) {
+    const deviceId = vehicle.tagDeviceId || controlIdDevices[0]?.id || "";
+    if (!deviceId) return setMessage("Cadastre ou selecione um equipamento Control iD para enviar a tag.");
+    setVehicleTagBusyId(vehicle.id);
+    const { response, result } = await vehicleController.syncVehicleTag(vehicle.id, deviceId);
+    setVehicleTagBusyId("");
+    if (!response.ok) return setMessage(result.message || "Falha ao enviar tag veicular.");
+    if (result.vehicle) {
+      setData((current) => ({ ...current, vehicles: current.vehicles.map((item) => item.id === result.vehicle.id ? result.vehicle : item) }));
+      setVehicleForm((current) => current.id === result.vehicle.id ? { ...emptyVehicleForm, ...result.vehicle } : current);
+    }
+    setMessage(result.message || "Tag veicular enviada ao Control iD.");
+  }
+
+  async function removeVehicleControlIdTag(vehicle) {
+    const deviceId = vehicle.tagDeviceId || controlIdDevices[0]?.id || "";
+    if (!deviceId) return setMessage("Equipamento Control iD da tag nao encontrado.");
+    if (!window.confirm(`Remover a tag ${vehicle.tagValue} do Control iD?`)) return;
+    setVehicleTagBusyId(vehicle.id);
+    const { response, result } = await vehicleController.removeVehicleTag(vehicle.id, deviceId);
+    setVehicleTagBusyId("");
+    if (!response.ok) return setMessage(result.message || "Falha ao remover tag veicular.");
+    if (result.vehicle) {
+      setData((current) => ({ ...current, vehicles: current.vehicles.map((item) => item.id === result.vehicle.id ? result.vehicle : item) }));
+      setVehicleForm((current) => current.id === result.vehicle.id ? { ...emptyVehicleForm, ...result.vehicle } : current);
+    }
+    setMessage(result.message || "Tag veicular removida do Control iD.");
+  }
+
   async function saveSyndic(event) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const response = await fetch(`${apiUrl}/api/syndics`, {
+    const response = await apiFetch("/api/syndics", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1410,7 +1274,7 @@ function App() {
 
   async function deletePerson(person) {
     if (!person || !window.confirm(`Excluir ${person.name}?`)) return;
-    const response = await fetch(`${apiUrl}/api/people/${person.id}`, { method: "DELETE" });
+    const response = await apiFetch(`/api/people/${person.id}`, { method: "DELETE" });
     if (!response.ok) {
       setMessage("Falha ao excluir pessoa.");
       return;
@@ -1439,7 +1303,7 @@ function App() {
       tenantId: credentialForm.tenantId || selectedTenant?.id || "",
       unitId: credentialForm.unitId || selectedUnit?.unitId || ""
     };
-    const response = await fetch(`${apiUrl}/api/credentials`, {
+    const response = await apiFetch("/api/credentials", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
@@ -1466,7 +1330,7 @@ function App() {
   async function deleteCredential(credential) {
     if (!credential?.id) return;
     if (!window.confirm(`Excluir credencial ${credential.valueLabel || credential.value || credential.type}?`)) return;
-    const response = await fetch(`${apiUrl}/api/credentials/${encodeURIComponent(credential.id)}`, { method: "DELETE" });
+    const response = await apiFetch(`/api/credentials/${encodeURIComponent(credential.id)}`, { method: "DELETE" });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       setMessage(result.message || "Falha ao excluir credencial.");
@@ -1483,7 +1347,7 @@ function App() {
 
   async function generateCredentialForPerson(person, type = person?.credentialType || "APP") {
     if (!person?.id) return;
-    const response = await fetch(`${apiUrl}/api/credentials/generate`, {
+    const response = await apiFetch("/api/credentials/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1502,40 +1366,9 @@ function App() {
       ...current,
       credentials: [result, ...current.credentials.filter((credential) => credential.id !== result.id)]
     }));
-    setMessage(`Credencial ${result.type} gerada para ${person.name}.`);
-    void refreshApiCache();
-  }
-
-  async function syncCredentialTarget(payload) {
-    const response = await fetch(`${apiUrl}/api/credential-sync`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        tenantId: selectedTenant?.id,
-        manufacturer: payload.manufacturer || "Equipamentos",
-        target: payload.target || "Sincronismo manual",
-        credentialType: payload.credentialType || payload.type || "APP",
-        personId: payload.personId || "",
-        credentialId: payload.credentialId || "",
-        deviceId: payload.deviceId || "",
-        direction: payload.direction || "SEND"
-      })
-    });
-    const job = await response.json().catch(() => null);
-    if (!response.ok) {
-      setMessage(job?.message || "Falha ao sincronizar credencial.");
-      return;
-    }
-    setData((current) => ({
-      ...current,
-      credentialSyncJobs: [job, ...current.credentialSyncJobs.filter((item) => item.id !== job.id)],
-      credentials: current.credentials.map((credential) => {
-        const result = job.results?.find((item) => item.credentialId === credential.id);
-        return result?.ok ? { ...credential, syncStatus: "SYNCED", deviceId: result.deviceId, lastSyncedAt: job.lastRunAt } : credential;
-      })
-    }));
-    const failedResult = job.results?.find((item) => !item.ok);
-    setMessage(`Sincronismo ${job.status}: ${job.synced}/${job.total} credenciais.${failedResult?.message ? ` ${failedResult.message}` : ""}`);
+    setMessage(result.syncStatus === "SYNCED"
+      ? `Credencial ${result.type} criada e enviada ao equipamento para ${person.name}.`
+      : `Credencial ${result.type} criada para ${person.name}. ${result.syncMessage || "Falha ao enviar ao equipamento."}`);
     void refreshApiCache();
   }
 
@@ -1546,7 +1379,7 @@ function App() {
       const rows = await readImportRows(file);
       setCredentialImportRows(rows);
       setCredentialImportFile(file.name);
-      const response = await fetch(`${apiUrl}/api/credentials/import`, {
+      const response = await apiFetch("/api/credentials/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tenantId: selectedTenant?.id, rows, dryRun: true })
@@ -1566,7 +1399,7 @@ function App() {
       setMessage("Selecione um arquivo para importar.");
       return;
     }
-    const response = await fetch(`${apiUrl}/api/credentials/import`, {
+    const response = await apiFetch("/api/credentials/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tenantId: selectedTenant?.id, rows: credentialImportRows, dryRun: false })
@@ -1582,43 +1415,17 @@ function App() {
     if (payload) setData(payload);
   }
 
-  function persistSession(nextSession) {
-    setSession(nextSession);
-    if (nextSession) {
-      window.localStorage.setItem("condo-clean-session", JSON.stringify(nextSession));
-    } else {
-      window.localStorage.removeItem("condo-clean-session");
-    }
-  }
-
-  async function logout() {
-    const accessToken = session?.accessToken || "";
-    if (accessToken) {
-      await fetch(`${apiUrl}/api/auth/logout`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accessToken })
-      }).catch(() => undefined);
-    }
-    persistSession(null);
-  }
-
   async function saveDeviceForm(event) {
     event.preventDefault();
     const payload = {
       ...deviceForm,
       tenantId: deviceForm.tenantId || selectedTenant?.id || ""
     };
-    const response = await fetch(`${apiUrl}/api/devices`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    const { response, result: saved } = await deviceController.saveDeviceForm(payload);
     if (!response.ok) {
-      setMessage("Falha ao salvar equipamento.");
+      setMessage(saved?.message || "Falha ao salvar equipamento.");
       return;
     }
-    const saved = await response.json().catch(() => null);
     if (saved?.id) {
       setData((current) => {
         const exists = current.devices.some((device) => device.id === saved.id);
@@ -1648,8 +1455,7 @@ function App() {
     const suffix = detail ? ` Tambem serao removidos ${detail} vinculados.` : "";
     if (!window.confirm(`Excluir equipamento ${device.name}?${suffix}`)) return;
 
-    const response = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
-    const result = await response.json().catch(() => ({}));
+    const { response, result } = await deviceController.deleteDevice(device.id);
     if (!response.ok) {
       setMessage(result.message || "Falha ao excluir equipamento.");
       return;
@@ -1670,7 +1476,7 @@ function App() {
 
   async function saveLicenseForm(event) {
     event.preventDefault();
-    const response = await fetch(`${apiUrl}/api/licenses`, {
+    const response = await apiFetch("/api/licenses", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1702,7 +1508,7 @@ function App() {
 
   async function saveCompanyForm(event) {
     event.preventDefault();
-    const response = await fetch(`${apiUrl}/api/companies`, {
+    const response = await apiFetch("/api/companies", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(companyForm)
@@ -1739,6 +1545,29 @@ function App() {
     void refreshApiCache();
   }
 
+  async function saveCompanyBillingProfile(companyId, profile) {
+    const company = data.companies.find((item) => item.id === companyId);
+    if (!company) throw new Error("Empresa nao encontrada.");
+    const response = await apiFetch("/api/companies", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...company, ...profile, id: company.id })
+    });
+    const saved = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(saved?.message || "Falha ao salvar configuracao financeira.");
+      setMessage(error.message);
+      throw error;
+    }
+    setData((current) => ({
+      ...current,
+      companies: current.companies.map((item) => item.id === saved.id ? saved : item)
+    }));
+    setMessage("Configuracao financeira atualizada.");
+    void refreshApiCache();
+    return saved;
+  }
+
   async function saveCameraForm(event) {
     event.preventDefault();
     const formValues = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -1749,12 +1578,7 @@ function App() {
       photoCaptureEnabled: formValues.photoCaptureEnabled === "true",
       tenantId: cameraForm.tenantId || selectedTenant?.id || ""
     };
-    const response = await fetch(`${apiUrl}/api/cameras`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const result = await response.json().catch(() => null);
+    const { response, result } = await cameraController.saveCameraForm(payload);
     if (!response.ok) {
       setMessage("Falha ao salvar camera.");
       return;
@@ -1783,8 +1607,7 @@ function App() {
 
   async function deleteCamera(camera) {
     if (!window.confirm(`Excluir camera ${camera.description || camera.name}?${camera.groupId ? " Todos os canais deste DVR/NVR tambem serao removidos." : ""}`)) return;
-    const response = await fetch(`${apiUrl}/api/cameras/${encodeURIComponent(camera.id)}`, { method: "DELETE" });
-    const result = await response.json().catch(() => ({}));
+    const { response, result } = await cameraController.deleteCamera(camera.id);
     if (!response.ok) {
       setMessage(result.message || "Falha ao excluir camera.");
       return;
@@ -1801,16 +1624,11 @@ function App() {
 
   async function saveActionForm(event) {
     event.preventDefault();
-    const response = await fetch(`${apiUrl}/api/actions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...actionForm, tenantId: actionForm.tenantId || selectedTenant?.id, relay: Number(actionForm.relay || 1) })
-    });
+    const { response, result: saved } = await actionController.saveActionForm({ ...actionForm, tenantId: actionForm.tenantId || selectedTenant?.id, relay: Number(actionForm.relay || 1) });
     if (!response.ok) {
       setMessage("Falha ao salvar acionamento.");
       return;
     }
-    const saved = await response.json().catch(() => null);
     if (saved?.id) {
       setData((current) => {
         const exists = current.actions.some((action) => action.id === saved.id);
@@ -1829,7 +1647,7 @@ function App() {
 
   async function deleteAction(action) {
     if (!window.confirm(`Excluir acionamento ${action.name}?`)) return;
-    const response = await fetch(`${apiUrl}/api/actions/${action.id}`, { method: "DELETE" });
+    const { response } = await actionController.deleteAction(action.id);
     if (!response.ok) {
       setMessage("Falha ao excluir acionamento.");
       return;
@@ -1843,8 +1661,7 @@ function App() {
   }
 
   async function triggerAction(action) {
-    const response = await fetch(`${apiUrl}/api/actions/${action.id}/trigger`, { method: "POST" });
-    const result = await response.json().catch(() => ({}));
+    const { response, result } = await actionController.triggerAction(action.id);
     if (!response.ok) {
       setMessage(result.message || `Falha ao acionar ${action.name}.`);
       return;
@@ -1870,8 +1687,7 @@ function App() {
 
   async function refreshDeviceStatus() {
     if (!selectedTenant?.id) return;
-    const response = await fetch(`${apiUrl}/api/devices/status?tenantId=${encodeURIComponent(selectedTenant.id)}`, { method: "POST" });
-    const result = await response.json().catch(() => ({}));
+    const { response, result } = await deviceController.refreshDeviceStatus(selectedTenant.id);
     if (!response.ok) {
       setMessage(result.message || "Falha ao atualizar status dos equipamentos.");
       return;
@@ -1887,8 +1703,7 @@ function App() {
   }
 
   async function testDeviceIntegration(device) {
-    const response = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(device.id)}/test`);
-    const result = await response.json().catch(() => ({}));
+    const { response, result } = await deviceController.testDeviceIntegration(device.id);
     const adapter = result.adapter || device.manufacturer || "Generico";
     setData((current) => ({
       ...current,
@@ -1909,147 +1724,9 @@ function App() {
     setMessage(`${adapter}: ${result.message || "integracao OK"}`);
   }
 
-  async function readEquipmentIntegration(resource = equipmentIntegration.resource) {
-    const deviceId = equipmentIntegration.deviceId || selectedIntegrationDevice?.id || "";
-    if (!deviceId) {
-      setMessage("Cadastre um equipamento antes de ler integracoes.");
-      return;
-    }
-    setEquipmentIntegration((current) => ({ ...current, deviceId, resource, loading: true, error: "" }));
-    const response = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(deviceId)}/integration/${resource}?limit=80`);
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = result.message || "Falha ao ler integracao do equipamento.";
-      setEquipmentIntegration((current) => ({ ...current, loading: false, error }));
-      setMessage(error);
-      return;
-    }
-    setEquipmentIntegration((current) => ({
-      ...current,
-      resource,
-      loading: false,
-      error: "",
-      updatedAt: result.generatedAt || new Date().toISOString(),
-      payload: result
-    }));
-    const count = Array.isArray(result.records) ? result.records.length : result.summary?.[resource] || 0;
-    setMessage(`${result.device?.name || "Equipamento"}: ${count} registro(s) em ${resource}.`);
-  }
-
-  function readEquipmentIntegrationResource(resource = equipmentIntegration.resource) {
-    if (resource === "faces") return importEquipmentCredentials(true, "faces");
-    return readEquipmentIntegration(resource);
-  }
-
-  function updateEquipmentCredentialSelection(item, patch = {}) {
-    const key = faceImportSelectionKey(item);
-    setEquipmentFaceSelections((current) => {
-      const currentSelection = current[key] || {};
-      const unit = patch.unitId ? units.find((candidate) => candidate.unitId === patch.unitId) : null;
-      const typedUnit = String(patch.unitNumber || "").trim();
-      const clearedUnit = Object.prototype.hasOwnProperty.call(patch, "unitId") && !patch.unitId && !typedUnit
-        ? { unitId: "", unitNumber: "", blockName: "" }
-        : {};
-      return {
-        ...current,
-        [key]: {
-          ...importSelectionBase(item, currentSelection),
-          ...patch,
-          ...clearedUnit,
-          ...(unit ? { unitId: unit.unitId, unitNumber: unit.unitNumber || "", blockName: unit.blockName || "" } : {})
-        }
-      };
-    });
-  }
-
-  function updateEquipmentCredentialUnit(item, value = "") {
-    const clean = String(value || "").trim();
-    const matchedUnit = units.find((unit) => sameText(
-      `Unidade ${unit.unitNumber}${unit.blockName ? ` - ${unit.blockName}` : ""}`,
-      clean
-    ) || sameText(unit.unitNumber, clean));
-    if (matchedUnit) {
-      updateEquipmentCredentialSelection(item, { unitId: matchedUnit.unitId });
-      return;
-    }
-    const [unitNumber = "", ...blockParts] = clean.replace(/^unidade\s+/i, "").split(/\s+-\s+/);
-    updateEquipmentCredentialSelection(item, {
-      unitId: "",
-      unitNumber: unitNumber.trim(),
-      blockName: blockParts.join(" - ").trim()
-    });
-  }
-
-  function updateAllEquipmentCredentialSelections(selected, items = []) {
-    const visibleKeys = new Set(items
-      .filter((item) => equipmentIntegration.resource !== "faces" || item.payload?.type === "FACE")
-      .map(faceImportSelectionKey));
-    setEquipmentFaceSelections((current) => Object.fromEntries(Object.entries(current).map(([key, selection]) => [
-      key,
-      visibleKeys.has(key) ? { ...selection, selected } : selection
-    ])));
-  }
-
-  async function importEquipmentCredentials(dryRun = true, resource = "credentials") {
-    const deviceId = equipmentIntegration.deviceId || selectedIntegrationDevice?.id || "";
-    if (!deviceId) {
-      setMessage("Selecione um equipamento para buscar credenciais.");
-      return;
-    }
-    setEquipmentIntegration((current) => ({
-      ...current,
-      deviceId,
-      resource,
-      importing: true,
-      error: ""
-    }));
-    const response = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(deviceId)}/integration/credentials/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        dryRun,
-        resource,
-        selections: dryRun ? [] : Object.values(equipmentFaceSelections)
-      })
-    });
-    const report = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = report.message || "Falha ao importar credenciais do equipamento.";
-      setEquipmentIntegration((current) => ({ ...current, importing: false, error, importReport: report }));
-      setMessage(error);
-      return;
-    }
-    setEquipmentIntegration((current) => ({
-      ...current,
-      importing: false,
-      updatedAt: report.generatedAt || new Date().toISOString(),
-      importReport: report
-    }));
-    if (dryRun) {
-      const nextSelections = {};
-      (report.items || [])
-        .filter((item) => item.payload?.type && item.payload?.value)
-        .forEach((item) => {
-          const key = faceImportSelectionKey(item);
-          nextSelections[key] = importSelectionBase(item, {
-            selected: resource !== "faces" || item.payload?.type === "FACE"
-          });
-        });
-      setEquipmentFaceSelections(nextSelections);
-      setEquipmentFacePreviewPage(1);
-    }
-    if (!dryRun) {
-      const payload = await refreshApiCache();
-      if (payload) setData(payload);
-    }
-    setMessage(dryRun
-      ? `${report.total || 0} credencial(is) encontrada(s) no equipamento para conferencia.`
-      : `Importacao concluida: ${report.credentialsCreated || 0} nova(s), ${report.credentialsUpdated || 0} atualizada(s), ${report.eventsCreated || 0} evento(s) salvo(s).`);
-  }
-
   async function refreshExtensionStatus() {
     if (!selectedTenant?.id) return;
-    const response = await fetch(`${apiUrl}/api/extensions/status?tenantId=${encodeURIComponent(selectedTenant.id)}`);
+    const response = await apiFetch(`/api/extensions/status?tenantId=${encodeURIComponent(selectedTenant.id)}`);
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       setMessage(result.message || "Falha ao atualizar ramais.");
@@ -2063,9 +1740,9 @@ function App() {
   async function refreshPorterTelephony({ silent = false } = {}) {
     try {
       const [callsResponse, extensionsResponse] = await Promise.all([
-        fetch(`${apiUrl}/api/telephony/calls`).catch(() => null),
+        apiFetch("/api/telephony/calls").catch(() => null),
         selectedTenant?.id
-          ? fetch(`${apiUrl}/api/extensions/status?tenantId=${encodeURIComponent(selectedTenant.id)}`).catch(() => null)
+          ? apiFetch(`/api/extensions/status?tenantId=${encodeURIComponent(selectedTenant.id)}`).catch(() => null)
           : Promise.resolve(null)
       ]);
       const callsPayload = callsResponse?.ok ? await callsResponse.json().catch(() => []) : [];
@@ -2097,7 +1774,7 @@ function App() {
     try {
       const latestEventTime = Math.max(0, ...tenantEvents.map((event) => Date.parse(event.createdAt || event.occurredAt || "") || 0));
       const sinceParam = latestEventTime ? `&since=${encodeURIComponent(new Date(latestEventTime).toISOString())}` : "";
-      const response = await fetch(`${apiUrl}/api/access/logs?tenantId=${encodeURIComponent(selectedTenant.id)}&limit=80${sinceParam}`);
+      const response = await apiFetch(`/api/access/logs?tenantId=${encodeURIComponent(selectedTenant.id)}&limit=80${sinceParam}`);
       const events = response.ok ? await response.json().catch(() => []) : [];
       if (Array.isArray(events) && events.length) {
         setData((current) => {
@@ -2121,7 +1798,7 @@ function App() {
     const date = porterReportDate || new Date().toISOString().slice(0, 10);
     const from = new Date(`${date}T00:00:00`).toISOString();
     const to = new Date(`${date}T23:59:59.999`).toISOString();
-    const response = await fetch(`${apiUrl}/api/access/logs?tenantId=${encodeURIComponent(selectedTenant.id)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=1000`);
+    const response = await apiFetch(`/api/access/logs?tenantId=${encodeURIComponent(selectedTenant.id)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=1000`);
     const events = response.ok ? await response.json().catch(() => []) : [];
     if (!response.ok || !Array.isArray(events)) {
       setMessage("Falha ao gerar relatorio de eventos.");
@@ -2160,6 +1837,11 @@ function App() {
     void refreshPorterTelephony({ silent: true });
     const timer = window.setInterval(() => void refreshPorterTelephony({ silent: true }), 4000);
     return () => window.clearInterval(timer);
+  }, [activeSection, selectedTenant?.id]);
+
+  useEffect(() => {
+    if (activeSection !== "telephony" || !selectedTenant?.id) return;
+    void refreshExtensionStatus();
   }, [activeSection, selectedTenant?.id]);
 
   useEffect(() => {
@@ -2211,7 +1893,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(`${apiUrl}/api/actions/${action.id}/trigger`, { method: "POST" });
+      const response = await apiFetch(`/api/actions/${action.id}/trigger`, { method: "POST" });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
         const message = result.message || `Falha ao acionar ${action.name}.`;
@@ -2255,7 +1937,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(`${apiUrl}/api/telephony/calls/${call.id}/answer`, { method: "POST" });
+      const response = await apiFetch(`/api/telephony/calls/${call.id}/answer`, { method: "POST" });
       const updated = await response.json().catch(() => null);
       if (!response.ok) throw new Error(updated?.message || "Falha ao atender chamada.");
       if (updated?.id) {
@@ -2277,7 +1959,7 @@ function App() {
 
   async function markCallAnswered(call) {
     if (!call?.id) return;
-    const response = await fetch(`${apiUrl}/api/telephony/calls/${call.id}/answer`, { method: "POST" });
+    const response = await apiFetch(`/api/telephony/calls/${call.id}/answer`, { method: "POST" });
     const updated = await response.json().catch(() => null);
     if (!response.ok) throw new Error(updated?.message || "Falha ao atualizar chamada.");
     if (updated?.id) {
@@ -2303,7 +1985,7 @@ function App() {
 
   async function endCall(call, options = {}) {
     if (!call) return;
-    const response = await fetch(`${apiUrl}/api/telephony/calls/${call.id}/end`, { method: "POST" });
+    const response = await apiFetch(`/api/telephony/calls/${call.id}/end`, { method: "POST" });
     const updated = await response.json().catch(() => null);
     if (updated?.id) {
       setData((current) => ({
@@ -2317,7 +1999,7 @@ function App() {
   }
 
   async function toggleResource(resource, enabled) {
-    const response = await fetch(`${apiUrl}/api/resources/${resource.id}`, {
+    const response = await apiFetch(`/api/resources/${resource.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tenantId: selectedTenant?.id, enabled })
@@ -2357,7 +2039,7 @@ function App() {
   async function saveResourceConfiguration(event) {
     event.preventDefault();
     if (!selectedTenant || !resourceConfig) return;
-    const response = await fetch(`${apiUrl}/api/resources/${encodeURIComponent(resourceConfig)}/configuration`, {
+    const response = await apiFetch(`/api/resources/${encodeURIComponent(resourceConfig)}/configuration`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tenantId: selectedTenant.id, settings: resourceConfigForm })
@@ -2375,14 +2057,6 @@ function App() {
       ]
     }));
     setMessage(`Configuracao de ${selectedResource?.name || resourceConfig} salva.`);
-  }
-
-  async function enqueueCredentialSync(profile, type = "FACE") {
-    await syncCredentialTarget({
-      manufacturer: profile.name,
-      target: `${profile.name} - sincronismo manual`,
-      credentialType: type
-    });
   }
 
   function integrationRecordCells(record, resource) {
@@ -2427,6 +2101,14 @@ function App() {
         <span><strong>{record.valueLabel || "Face cadastrada"}</strong><small>{rawSummary || record.source || "Equipamento"}</small></span>,
         <span className={`status ${record.syncStatus === "PENDING" || record.syncStatus === "ERROR" ? "offline" : ""}`}>{record.syncStatus || "LOCAL"}</span>,
         record.validUntil ? formatDateTime(record.validUntil) : "Sem validade final"
+      ];
+    }
+    if (resource === "vehicleTags") {
+      return [
+        <span><strong>{record.valueLabel || record.value}</strong><small>{record.mode === "STANDARD" ? "Modo padrao (cards)" : "Modo estendido (uhf_tags)"}</small></span>,
+        <span><strong>{record.personName || "Sem nome"}</strong><small>{record.personExternalId || "-"}</small></span>,
+        record.deviceId || selectedIntegrationDevice?.name || "-",
+        <span className="status">CONTROL ID</span>
       ];
     }
     return [
@@ -2481,6 +2163,7 @@ function App() {
             {isVisitor && <Field label="Placa"><input name="vehiclePlate" defaultValue={currentPerson.vehiclePlate || ""} /></Field>}
             <Field label={isResident ? "Credencial padrao" : "Credencial"}><select name="credentialType" defaultValue={currentPerson.credentialType || (isResident ? "APP" : "QR_CODE")}><option>APP</option><option>FACE</option><option>RFID</option><option>QR_CODE</option><option>PIN</option><option>PLATE</option></select></Field>
             {isResident && <Field label="Facial do equipamento"><input readOnly value={currentPersonFace ? `${currentPersonFace.valueLabel || currentPersonFace.value} (${currentPersonFace.source || "equipamento"})` : "Nenhuma facial importada"} /></Field>}
+            {isResident && currentPersonFace && <div className="current-person-face"><PersonAvatar name={currentPerson.name} photoUrl={credentialPhotoUrl(currentPersonFace, currentPerson)} /><span><strong>Foto facial importada</strong><small>{currentPersonFace.syncStatus || "DEVICE"}</small></span></div>}
             {kind === "PROVIDER" && <Field label="Dias permitidos"><input name="allowedDays" defaultValue={currentPerson.allowedDays || ""} /></Field>}
             {kind === "PROVIDER" && <Field label="Horario permitido"><input name="allowedHours" defaultValue={currentPerson.allowedHours || ""} /></Field>}
             {isVisitor && <Field label="Valido de"><input type="datetime-local" /></Field>}
@@ -2513,176 +2196,23 @@ function App() {
 
   function renderContent() {
     if (activeSection === "dashboard") {
-      return (
-        <section className="dashboard-panel">
-          <div className="resource-hero panel">
-            <div>
-              <span>Dashboard do condominio</span>
-              <h2>{selectedTenant?.name || "-"}</h2>
-              <small>{selectedTenant?.document || "Documento nao informado"} - {selectedTenant?.status || "ACTIVE"}</small>
-            </div>
-            <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-          </div>
-          <div className="metrics">
-            <Metric icon={Home} label="unidades" value={units.length} />
-            <Metric icon={RadioTower} label="equipamentos" value={tenantDevices.length} />
-            <Metric icon={Camera} label="cameras" value={tenantCameras.length} />
-            <Metric icon={PhoneCall} label="chamadas ativas" value={tenantCalls.length} />
-          </div>
-          <div className="grid">
-            <article className="panel">
-              <div className="panel-heading"><h2>Operacao</h2><Activity size={20} /></div>
-              <div className="summary-list">
-                <span><strong>API</strong> {syncState.status === "offline" ? "Offline" : "Conectada"}</span>
-                <span><strong>Ramal portaria</strong> {selectedTenant?.sipPorterExtension || "-"}</span>
-                <span><strong>Mobile</strong> Chamada por unidade</span>
-              </div>
-            </article>
-            <article className="panel">
-              <div className="panel-heading"><h2>Fila da portaria</h2><PhoneCall size={20} /></div>
-              {tenantCalls.length ? (
-                <div className="simple-list">{tenantCalls.slice(0, 5).map((call) => <div className="simple-row" key={call.id}><PhoneCall size={18} /><div><strong>Unidade {call.unitNumber || call.unitId}</strong><span>{call.visitorLabel || call.targetType}</span></div><span className="status">{call.status}</span></div>)}</div>
-              ) : <div className="empty-state">Nenhuma chamada ativa. Chamadas do facial/interfone aparecem aqui em tempo real.</div>}
-            </article>
-            <article className="panel">
-              <div className="panel-heading"><h2>Eventos recentes</h2><ClipboardList size={20} /></div>
-              {tenantEvents.length ? (
-                <div className="simple-list">{tenantEvents.slice(0, 5).map((event) => <div className="simple-row" key={event.id}><BadgeCheck size={18} /><div><strong>{event.door?.name || event.reason}</strong><span>{event.user?.name || "Portaria"} - {formatDateTime(event.createdAt)}</span></div><span className="status">{event.decision || "INFO"}</span></div>)}</div>
-              ) : <div className="empty-state">Nenhum evento recebido ainda.</div>}
-            </article>
-          </div>
-        </section>
-      );
+      return <DashboardPage selectedTenant={selectedTenant} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} visibleCondominiums={visibleCondominiums} units={units} tenantDevices={tenantDevices} tenantCameras={tenantCameras} tenantCalls={tenantCalls} tenantEvents={tenantEvents} syncState={syncState} openCameras={() => { setActiveSection("devices"); setDeviceTab("cameras"); }} openTelephony={() => setActiveSection("telephony")} />;
+    }
+
+    if (activeSection === "telephony") {
+      return <TelephonyPage selectedTenant={selectedTenant} units={units} extensionStatus={data.extensionStatus} webPhone={webPhone} onCallExtension={callExtensionFromWeb} onHangup={hangupWebPhone} />;
     }
 
     if (activeSection === "condoHome") {
-      const functionCards = [
-        ["units", "Unidades", Home, "Cadastro, moradores, telefonia e convites", () => navigateTo("/unidades")],
-        ["residents", "Pessoas", Users, "Moradores, visitantes e prestadores", () => setActiveSection("residents")],
-        ["devices", "Equipamentos", RadioTower, "Faciais, NVRs, controladoras e SDK", () => { setActiveSection("devices"); setDeviceTab("inicio"); }],
-        ["cameras", "Cameras", Camera, "Canais e streams do condominio", () => { setActiveSection("devices"); setDeviceTab("cameras"); }],
-        ["actions", "Acionamentos", KeySquare, "Portas, reles e comandos remotos", () => { setActiveSection("devices"); setDeviceTab("actions"); }],
-        ["credentials", "Credenciais", BadgeCheck, "Face, QR, RFID e sincronismo", () => setActiveSection("credentials")],
-        ["permissions", "Permissoes", ShieldCheck, "Perfis por usuario e rota", () => setActiveSection("permissions")],
-        ["resources", "Recursos", ClipboardList, "Modulos habilitados e gateway", () => setActiveSection("resources")]
-      ];
-      return (
-        <section className="dashboard-panel">
-          <div className="resource-hero panel">
-            <div>
-              <span>Painel do condominio</span>
-              <h2>{selectedTenant?.name || "-"}</h2>
-              <small>{selectedTenant?.document || "Documento nao informado"} - {selectedTenant?.status || "ACTIVE"}</small>
-            </div>
-            <button type="button" onClick={() => { setCondoFormMode("edit"); setActiveSection("condoForm"); }}><Building2 size={16} /> Editar cadastro</button>
-          </div>
-          <div className="metrics">
-            <Metric icon={Home} label="unidades" value={units.length} />
-            <Metric icon={Users} label="pessoas" value={data.residents.filter((person) => person.tenantId === selectedTenant?.id).length} />
-            <Metric icon={RadioTower} label="equipamentos" value={tenantDevices.length} />
-            <Metric icon={Camera} label="cameras" value={tenantCameras.length} />
-          </div>
-          <div className="condo-function-grid">
-            {functionCards.map(([id, label, Icon, detail, onClick]) => (
-              <button className="condo-function-card" type="button" key={id} onClick={onClick}>
-                <Icon size={22} />
-                <strong>{label}</strong>
-                <span>{detail}</span>
-              </button>
-            ))}
-          </div>
-          <div className="grid">
-            <article className="panel">
-              <div className="panel-heading"><h2>Eventos do condominio</h2><ClipboardList size={20} /></div>
-              {tenantEvents.length ? (
-                <div className="simple-list">{tenantEvents.slice(0, 6).map((event) => <div className="simple-row" key={event.id}><BadgeCheck size={18} /><div><strong>{event.door?.name || event.reason}</strong><span>{event.user?.name || "Portaria"} - {formatDateTime(event.createdAt)}</span></div><span className="status">{event.decision || "INFO"}</span></div>)}</div>
-              ) : <div className="empty-state">Nenhum evento recebido ainda.</div>}
-            </article>
-            <article className="panel">
-              <div className="panel-heading"><h2>Chamadas</h2><PhoneCall size={20} /></div>
-              {tenantCalls.length ? (
-                <div className="simple-list">{tenantCalls.slice(0, 6).map((call) => <div className="simple-row" key={call.id}><PhoneCall size={18} /><div><strong>Unidade {call.unitNumber || call.unitId}</strong><span>{call.visitorLabel || call.targetType}</span></div><span className="status">{call.status}</span></div>)}</div>
-              ) : <div className="empty-state">Nenhuma chamada para este condominio.</div>}
-            </article>
-          </div>
-        </section>
-      );
+      return <CondominiumDashboardPage selectedTenant={selectedTenant} units={units} residents={data.residents} tenantDevices={tenantDevices} tenantCameras={tenantCameras} tenantCalls={tenantCalls} tenantEvents={tenantEvents} navigateTo={navigateTo} setActiveSection={setActiveSection} setDeviceTab={setDeviceTab} setCondoFormMode={setCondoFormMode} />;
     }
 
     if (activeSection === "condominiums") {
-      return (
-        <section className="condominiums-page">
-          <div className="resource-toolbar">
-            <label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Pesquise o nome ou documento do condominio" /></label>
-            <button type="button" onClick={() => { setCondoFormMode("new"); setActiveSection("condoForm"); }}><Plus size={16} /> Novo condominio</button>
-          </div>
-          <div className="condo-cards">
-            {condoPager.pageItems.map((condo) => (
-              <article className={`condo-card clickable-card ${condo.id === selectedTenantId ? "selected" : ""}`} key={condo.id} onClick={() => { setSelectedTenantId(condo.id); setCondoFormMode("edit"); setActiveSection("condoHome"); }}>
-                <header>
-                  <button className="card-title-button" onClick={(event) => { event.stopPropagation(); setSelectedTenantId(condo.id); setCondoFormMode("edit"); setActiveSection("condoHome"); }}>{condo.name}</button>
-                  <button className="icon-button secondary-button" onClick={(event) => event.stopPropagation()}><MoreVertical size={18} /></button>
-                </header>
-                <div className="condo-card-body">
-                  <span><Building2 size={16} /> {data.companies.find((company) => company.id === condo.companyId)?.name || "Sem empresa vinculada"}</span>
-                  <span><Users size={16} /> {data.units.filter((unit) => unit.tenantId === condo.id).length} unidades</span>
-                  <span><RadioTower size={16} /> {data.devices.filter((device) => device.tenantId === condo.id).length} equipamentos</span>
-                  <span><KeySquare size={16} /> Documento {condo.document || "nao informado"}</span>
-                </div>
-                <footer onClick={(event) => event.stopPropagation()}>
-                  <button className="secondary-button" onClick={() => { setSelectedTenantId(condo.id); navigateTo(`/licencas/${data.licenses.find((license) => license.tenantId === condo.id)?.code || condo.id}/unidades`); }}><Home size={15} /> Unidades</button>
-                  <button className="secondary-button" onClick={() => { setSelectedTenantId(condo.id); setCondoFormMode("edit"); setActiveSection("condoForm"); }}><Save size={15} /> Editar</button>
-                  <button className="danger-button" type="button" onClick={() => void deleteCondo(condo)}><Trash2 size={15} /> Excluir</button>
-                </footer>
-              </article>
-            ))}
-          </div>
-          <Pagination page={condoPager.page} totalPages={condoPager.totalPages} onPage={condoPager.setPage} />
-        </section>
-      );
+      return <CondominiumsPage search={search} setSearch={setSearch} setCondoFormMode={setCondoFormMode} setActiveSection={setActiveSection} condoPager={condoPager} selectedTenantId={selectedTenantId} setSelectedTenantId={setSelectedTenantId} data={data} navigateTo={navigateTo} deleteCondo={deleteCondo} />;
     }
 
     if (activeSection === "condoForm") {
-      return (
-        <section className="condo-form-page">
-          <form className="panel form-panel" key={`${condoFormMode}-${condoFormTenant?.id || "new"}`} onSubmit={createOrUpdateCondo}>
-            <div className="panel-heading"><h2>Cadastro do condominio</h2><Building2 size={20} /></div>
-            <div className="form-grid">
-              <input type="hidden" name="id" value={condoFormTenant?.id || ""} />
-              <Field label="Empresa cliente">
-                <select name="companyId" defaultValue={condoFormTenant?.companyId || ""}>
-                  <option value="">Sem empresa vinculada</option>
-                  {data.companies.filter((company) => company.status !== "INACTIVE" || company.id === condoFormTenant?.companyId).map((company) => (
-                    <option key={company.id} value={company.id}>{company.name} ({data.condominiums.filter((condo) => condo.companyId === company.id).length}/{company.maxCondominiums})</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Nome"><input name="name" defaultValue={condoFormTenant?.name || ""} /></Field>
-              <Field label="Documento"><input name="document" defaultValue={condoFormTenant?.document || ""} /></Field>
-              <Field label="Status"><select name="status" defaultValue={condoFormTenant?.status || "ACTIVE"}><option>ACTIVE</option><option>INACTIVE</option></select></Field>
-              <Field label="Tipo"><select name="structureType" defaultValue={condoFormTenant?.structureType || "VERTICAL"}><option value="VERTICAL">Vertical</option><option value="HORIZONTAL">Horizontal</option></select></Field>
-              <Field label="Andares / quadras"><input name="structureGroupCount" type="number" min="1" defaultValue={condoFormTenant?.structureGroupCount || ""} onChange={updateCondoTotal} /></Field>
-              <Field label="Aps por andar / quadra"><input name="unitsPerGroup" type="number" min="1" defaultValue={condoFormTenant?.unitsPerGroup || ""} onChange={updateCondoTotal} /></Field>
-              <Field label="Quantidade de unidades"><input name="totalUnits" type="number" min="0" readOnly defaultValue={condoTotalUnits(condoFormTenant) || ""} /></Field>
-              <Field label="Endereco"><input name="address" defaultValue={condoFormTenant?.address || ""} /></Field>
-              <Field label="Numero"><input name="addressNumber" defaultValue={condoFormTenant?.addressNumber || ""} /></Field>
-              <Field label="Cidade"><input name="city" defaultValue={condoFormTenant?.city || ""} /></Field>
-              <Field label="Estado"><input name="state" maxLength="2" defaultValue={condoFormTenant?.state || ""} /></Field>
-              <Field label="Latitude"><input name="latitude" value={condoGeo.latitude} onChange={(event) => setCondoGeo((current) => ({ ...current, latitude: event.target.value }))} /></Field>
-              <Field label="Longitude"><input name="longitude" value={condoGeo.longitude} onChange={(event) => setCondoGeo((current) => ({ ...current, longitude: event.target.value }))} /></Field>
-              <Field label="Gerar unidades"><label className="checkbox-row"><input name="generateUnits" type="checkbox" defaultChecked={condoFormMode === "new" || Boolean(condoFormTenant?.structureGroupCount && condoFormTenant?.unitsPerGroup)} /> Criar apartamentos/unidades automaticamente</label></Field>
-              <input type="hidden" name="telephonyProvider" value={condoFormTenant?.telephonyProvider || "DIRECT_SIP"} />
-              <input type="hidden" name="sipDomain" value={condoFormTenant?.sipDomain || ""} />
-              <input type="hidden" name="sipWebSocketUrl" value={condoFormTenant?.sipWebSocketUrl || ""} />
-              <input type="hidden" name="sipExtensionStart" value={condoFormTenant?.sipExtensionStart || "9100"} />
-              <input type="hidden" name="sipExtensionEnd" value={condoFormTenant?.sipExtensionEnd || "9199"} />
-              <Field label="Ramal da portaria"><input name="sipPorterExtension" defaultValue={condoFormTenant?.sipPorterExtension || "9000"} /></Field>
-              <button className="secondary-button" type="button" onClick={geocodeCondoForm}><Search size={16} /> Buscar geolocalizacao</button>
-              <button type="submit"><Save size={16} /> Salvar condominio</button>
-            </div>
-          </form>
-        </section>
-      );
+      return <CondominiumFormPage mode={condoFormMode} tenant={condoFormTenant} data={data} condoGeo={condoGeo} setCondoGeo={setCondoGeo} onSave={createOrUpdateCondo} onGeocode={geocodeCondoForm} onUpdateTotal={updateCondoTotal} />;
     }
 
     if (activeSection === "units") {
@@ -2773,6 +2303,12 @@ function App() {
                   <Field label="Marca"><input value={vehicleForm.brand} onChange={(event) => setVehicleForm((current) => ({ ...current, brand: event.target.value }))} /></Field>
                   <Field label="Modelo"><input value={vehicleForm.model} onChange={(event) => setVehicleForm((current) => ({ ...current, model: event.target.value }))} /></Field>
                   <Field label="Cor"><input value={vehicleForm.color} onChange={(event) => setVehicleForm((current) => ({ ...current, color: event.target.value }))} /></Field>
+                  <Field label="Leitor Control iD"><select value={vehicleForm.tagDeviceId || ""} onChange={(event) => {
+                    const device = controlIdDevices.find((item) => item.id === event.target.value);
+                    setVehicleForm((current) => ({ ...current, tagDeviceId: event.target.value, tagMode: device?.controlIdUhfMode || current.tagMode || "EXTENDED" }));
+                  }}><option value="">Selecione o equipamento</option>{controlIdDevices.map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}</select></Field>
+                  <Field label="Modo da tag"><select value={vehicleForm.tagMode || "EXTENDED"} onChange={(event) => setVehicleForm((current) => ({ ...current, tagMode: event.target.value }))}><option value="EXTENDED">UHF estendido (hexadecimal)</option><option value="STANDARD">UHF padrao (cartao numerico)</option></select></Field>
+                  <Field label="Tag veicular"><input value={vehicleForm.tagValue || ""} onChange={(event) => setVehicleForm((current) => ({ ...current, tagValue: event.target.value.toUpperCase() }))} placeholder={vehicleForm.tagMode === "STANDARD" ? "Ex.: 123.45678" : "Ex.: E28068940000501A2B3C4D5E"} /></Field>
                   <Field label="Observacoes"><input value={vehicleForm.notes} onChange={(event) => setVehicleForm((current) => ({ ...current, notes: event.target.value }))} /></Field>
                 </div>
                 <div className="toolbar-actions unit-actions">
@@ -2788,9 +2324,14 @@ function App() {
                   return (
                     <div className="unit-table row vehicle-table" key={vehicle.id}>
                       <span><strong>{vehicle.plate}</strong><small>{vehicle.type}</small></span>
-                      <span><strong>{[vehicle.brand, vehicle.model].filter(Boolean).join(" ") || "-"}</strong><small>{vehicle.color || "Cor nao informada"}</small></span>
+                      <span><strong>{[vehicle.brand, vehicle.model].filter(Boolean).join(" ") || "-"}</strong><small>{vehicle.color || "Cor nao informada"}</small><small>{vehicle.tagValue ? `Tag ${vehicle.tagValue} - ${vehicle.tagStatus || "PENDING"}` : "Sem tag veicular"}</small></span>
                       <span>{person?.name || "Nao informado"}</span>
-                      <div className="row-actions"><button className="compact-action-button secondary-button" type="button" onClick={() => setVehicleForm(vehicle)}>Editar</button><button className="compact-action-button danger-button" type="button" onClick={() => void deleteVehicle(vehicle)}>Excluir</button></div>
+                      <div className="row-actions">
+                        {vehicle.tagValue && <button className="compact-action-button secondary-button" type="button" disabled={vehicleTagBusyId === vehicle.id} onClick={() => void syncVehicleControlIdTag(vehicle)}>Enviar tag</button>}
+                        {vehicle.tagValue && vehicle.tagStatus === "SYNCED" && <button className="compact-action-button secondary-button" type="button" disabled={vehicleTagBusyId === vehicle.id} onClick={() => void removeVehicleControlIdTag(vehicle)}>Remover tag</button>}
+                        <button className="compact-action-button secondary-button" type="button" onClick={() => setVehicleForm({ ...emptyVehicleForm, ...vehicle })}>Editar</button>
+                        <button className="compact-action-button danger-button" type="button" onClick={() => void deleteVehicle(vehicle)}>Excluir</button>
+                      </div>
                     </div>
                   );
                 })}
@@ -2962,18 +2503,30 @@ function App() {
                   <Field label="Modelo homologacao">{homologatedModelOptions(deviceForm.manufacturer, deviceForm.category).length
                     ? <select value={deviceForm.model} onChange={(event) => setDeviceForm((current) => ({ ...current, ...intelbrasModelDefaults(event.target.value) }))}><option value="">Selecione o modelo</option>{homologatedModelOptions(deviceForm.manufacturer, deviceForm.category).map((model) => <option key={model} value={model}>{model}</option>)}</select>
                     : <input value={deviceForm.model} onChange={(event) => setDeviceForm((current) => ({ ...current, model: event.target.value }))} placeholder="Modelo do equipamento" />}</Field>
-                  <Field label="IP / DDNS"><input value={deviceForm.ipAddress} onChange={(event) => setDeviceForm((current) => ({ ...current, ipAddress: event.target.value }))} /></Field>
-                  <Field label="Protocolo API"><select value={deviceForm.apiProtocol} onChange={(event) => setDeviceForm((current) => ({ ...current, apiProtocol: event.target.value }))}><option value="http">HTTP</option><option value="https">HTTPS</option></select></Field>
-                  <Field label="Porta API"><input value={deviceForm.apiPort} onChange={(event) => setDeviceForm((current) => ({ ...current, apiPort: event.target.value }))} /></Field>
+                  <Field label={isNiceLinearManufacturer(deviceForm.manufacturer) && deviceForm.niceConnectionMode !== "HTTP_GATEWAY" ? "IP de origem do equipamento" : "IP / DDNS"}><input value={deviceForm.ipAddress} onChange={(event) => setDeviceForm((current) => ({ ...current, ipAddress: event.target.value }))} /></Field>
+                  <Field label="Protocolo API"><select value={deviceForm.apiProtocol} onChange={(event) => setDeviceForm((current) => ({ ...current, apiProtocol: event.target.value }))}><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP iniciado pelo equipamento</option></select></Field>
+                  <Field label={isNiceLinearManufacturer(deviceForm.manufacturer) && deviceForm.niceConnectionMode !== "HTTP_GATEWAY" ? "Porta de escuta TCP" : "Porta API"}><input required={isNiceLinearManufacturer(deviceForm.manufacturer)} value={deviceForm.apiPort} onChange={(event) => setDeviceForm((current) => ({ ...current, apiPort: event.target.value.replace(/\D/g, "") }))} /></Field>
                   <Field label="Porta RTSP"><input value={deviceForm.rtspPort} onChange={(event) => setDeviceForm((current) => ({ ...current, rtspPort: event.target.value }))} /></Field>
                   <Field label="Canais esperados"><input value={deviceForm.channelCount} onChange={(event) => setDeviceForm((current) => ({ ...current, channelCount: event.target.value }))} placeholder="Ex.: 4, 8, 16" /></Field>
-                  <Field label="Usuario"><input value={deviceForm.username} onChange={(event) => setDeviceForm((current) => ({ ...current, username: event.target.value }))} /></Field>
-                  <Field label="Senha"><input type="password" autoComplete="new-password" value={deviceForm.password} onChange={(event) => setDeviceForm((current) => ({ ...current, password: event.target.value }))} placeholder={deviceForm.id ? "Preencha para alterar" : ""} /></Field>
-                  {deviceForm.manufacturer === "Control iD" && <Field label="Acionamento Control iD"><select value={deviceForm.controlIdAction || "door"} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdAction: event.target.value }))}><option value="door">Rele interno</option><option value="sec_box">SecBox</option><option value="catra">Catraca</option></select></Field>}
-                  {deviceForm.manufacturer === "Control iD" && deviceForm.controlIdAction === "sec_box" && <Field label="ID do SecBox"><input value={deviceForm.controlIdSecBoxId || ""} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdSecBoxId: event.target.value }))} placeholder="Ex.: 65793" /></Field>}
-                  {deviceForm.manufacturer === "Control iD" && <Field label="ID grupo de acesso"><input value={deviceForm.controlIdGroupId || ""} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdGroupId: event.target.value }))} placeholder="Grupo com regra de liberacao" /></Field>}
-                  <Field label="Ramal interfone"><input value={deviceForm.intercomExtension} onChange={(event) => setDeviceForm((current) => ({ ...current, intercomExtension: event.target.value }))} /></Field>
-                  <Field label="Tipo interfone"><select value={deviceForm.intercomType} onChange={(event) => setDeviceForm((current) => ({ ...current, intercomType: event.target.value }))}><option>FACIAL</option><option>TELEFONE_IP</option><option>ATA_VOIP</option></select></Field>
+                  {!isNiceLinearManufacturer(deviceForm.manufacturer) && <Field label="Usuario"><input value={deviceForm.username} onChange={(event) => setDeviceForm((current) => ({ ...current, username: event.target.value }))} /></Field>}
+                  {(!isNiceLinearManufacturer(deviceForm.manufacturer) || deviceForm.niceConnectionMode === "HTTP_GATEWAY") && <Field label={isNiceLinearManufacturer(deviceForm.manufacturer) ? "Token do gateway" : "Senha"}><input type="password" autoComplete="new-password" value={deviceForm.password} onChange={(event) => setDeviceForm((current) => ({ ...current, password: event.target.value }))} placeholder={deviceForm.id ? "Preencha para alterar" : ""} /></Field>}
+                  {deviceForm.manufacturer === "Control iD" && <Field label="Acionamento Control iD"><select value={deviceForm.controlIdAction || "door"} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdAction: event.target.value, controlIdSecBoxId: event.target.value === "sec_box" ? current.controlIdSecBoxId : "" }))}>{controlIdActionOptions(deviceForm.model).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>}
+                  {deviceForm.manufacturer === "Control iD" && deviceForm.controlIdAction === "sec_box" && <Field label="ID do SecBox / MAE"><input inputMode="numeric" pattern="[0-9]+" required value={deviceForm.controlIdSecBoxId || ""} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdSecBoxId: event.target.value.replace(/\D/g, "") }))} placeholder="Ex.: 65793" /></Field>}
+                  {deviceForm.manufacturer === "Control iD" && <Field label="Grupo de acesso (standalone)"><input inputMode="numeric" pattern="[0-9]*" value={deviceForm.controlIdGroupId || ""} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdGroupId: event.target.value.replace(/\D/g, "") }))} placeholder="Opcional. Ex.: 1" /></Field>}
+                  {deviceForm.manufacturer === "Control iD" && deviceForm.model === "iDUHF" && <Field label="Modo do leitor UHF"><select value={deviceForm.controlIdUhfMode || "EXTENDED"} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdUhfMode: event.target.value }))}><option value="EXTENDED">Estendido - objeto uhf_tags, ate 96 bits</option><option value="STANDARD">Padrao - objeto cards/Wiegand</option></select></Field>}
+                  {deviceForm.manufacturer === "Control iD" && controlIdProfileGuidance(deviceForm) && <div className="form-hint">{controlIdProfileGuidance(deviceForm)}</div>}
+                  {isNiceLinearManufacturer(deviceForm.manufacturer) && <Field label="Modo de conexao Nice/Linear"><select value={deviceForm.niceConnectionMode || "DEVICE_CONNECTS_TCP"} onChange={(event) => setDeviceForm((current) => ({
+                    ...current,
+                    niceConnectionMode: event.target.value,
+                    apiProtocol: event.target.value === "HTTP_GATEWAY" ? "http" : "tcp",
+                    apiPort: event.target.value === "HTTP_GATEWAY" && !current.apiPort ? "80" : current.apiPort
+                  }))}><option value="DEVICE_CONNECTS_TCP">Equipamento conecta ao Condo Access</option><option value="HTTP_GATEWAY">Bridge HTTP local</option></select></Field>}
+                  {isNiceLinearManufacturer(deviceForm.manufacturer) && <Field label="ID / serial no sistema Nice"><input value={deviceForm.niceDeviceId || ""} onChange={(event) => setDeviceForm((current) => ({ ...current, niceDeviceId: event.target.value }))} placeholder="Opcional para identificar o modulo" /></Field>}
+                  {isNiceLinearManufacturer(deviceForm.manufacturer) && deviceForm.niceConnectionMode === "HTTP_GATEWAY" && <Field label="Rota de saude do bridge"><input value={deviceForm.niceGatewayHealthPath || "/health"} onChange={(event) => setDeviceForm((current) => ({ ...current, niceGatewayHealthPath: event.target.value }))} /></Field>}
+                  {isNiceLinearManufacturer(deviceForm.manufacturer) && deviceForm.niceConnectionMode === "HTTP_GATEWAY" && <Field label="Rota de abertura do bridge"><input value={deviceForm.niceGatewayOpenPath || "/api/nice-linear/open"} onChange={(event) => setDeviceForm((current) => ({ ...current, niceGatewayOpenPath: event.target.value }))} /></Field>}
+                  {isNiceLinearManufacturer(deviceForm.manufacturer) && <div className="form-hint">{niceLinearProfileGuidance(deviceForm)}</div>}
+                  {!(deviceForm.manufacturer === "Control iD" && deviceForm.model === "iDUHF") && !isNiceLinearManufacturer(deviceForm.manufacturer) && <Field label="Ramal interfone"><input value={deviceForm.intercomExtension} onChange={(event) => setDeviceForm((current) => ({ ...current, intercomExtension: event.target.value }))} /></Field>}
+                  {!(deviceForm.manufacturer === "Control iD" && deviceForm.model === "iDUHF") && !isNiceLinearManufacturer(deviceForm.manufacturer) && <Field label="Tipo interfone"><select value={deviceForm.intercomType} onChange={(event) => setDeviceForm((current) => ({ ...current, intercomType: event.target.value }))}><option>FACIAL</option><option>UHF</option><option>TELEFONE_IP</option><option>ATA_VOIP</option></select></Field>}
                   <button type="submit"><Save size={16} /> Salvar equipamento</button>
                 </div>
               </form>
@@ -3006,6 +2559,11 @@ function App() {
                         controlIdAction: device.controlIdAction || "door",
                         controlIdSecBoxId: device.controlIdSecBoxId || "",
                         controlIdGroupId: device.controlIdGroupId || "",
+                        controlIdUhfMode: device.controlIdUhfMode || "EXTENDED",
+                        niceConnectionMode: device.niceConnectionMode || "DEVICE_CONNECTS_TCP",
+                        niceGatewayHealthPath: device.niceGatewayHealthPath || "/health",
+                        niceGatewayOpenPath: device.niceGatewayOpenPath || "/api/nice-linear/open",
+                        niceDeviceId: device.niceDeviceId || "",
                         intercomExtension: device.intercomExtension || "",
                         intercomType: device.intercomType || "FACIAL",
                         intercomEnabled: Boolean(device.intercomEnabled)
@@ -3025,7 +2583,7 @@ function App() {
                 <div className="panel-heading">
                   <div>
                     <h2>Integracao de equipamentos</h2>
-                    <small>{selectedTenant?.name} - leitura de eventos, credenciais, horarios, faciais e usuarios</small>
+                    <small>{selectedTenant?.name} - leitura de eventos, credenciais, horarios, faciais, tags veiculares e usuarios</small>
                   </div>
                   <button className="secondary-button" type="button" disabled={equipmentIntegration.loading || equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void readEquipmentIntegrationResource(equipmentIntegration.resource)}>
                     <RefreshCw size={16} /> Atualizar leitura
@@ -3041,8 +2599,6 @@ function App() {
                       {tenantDevices.map((device) => <option key={device.id} value={device.id}>{device.name} - {device.manufacturer} {device.model}</option>)}
                     </select>
                   </Field>
-                  <Field label="Adapter"><input readOnly value={selectedIntegrationDevice?.adapter || "GENERIC_TCP"} /></Field>
-                  <Field label="Endereco"><input readOnly value={selectedIntegrationDevice ? `${selectedIntegrationDevice.ipAddress || "-"}:${selectedIntegrationDevice.apiPort || 80}` : "-"} /></Field>
                   <Field label="Ultima leitura"><input readOnly value={equipmentIntegration.updatedAt ? formatDateTime(equipmentIntegration.updatedAt) : "Ainda nao executada"} /></Field>
                 </div>
                 <div className="equipment-read-actions">
@@ -3052,14 +2608,14 @@ function App() {
                     </button>
                   ))}
                 </div>
-                <div className="toolbar-actions unit-actions">
+                {["credentials", "faces"].includes(equipmentIntegration.resource) && <div className="toolbar-actions unit-actions">
                   <button className="secondary-button" type="button" disabled={equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void importEquipmentCredentials(true, equipmentIntegration.resource === "faces" ? "faces" : "credentials")}>
                     <Search size={16} /> {equipmentIntegration.resource === "faces" ? "Atualizar previa facial" : "Previa credenciais do equipamento"}
                   </button>
                   <button type="button" disabled={equipmentIntegration.importing || !(equipmentIntegration.importReport?.total || equipmentIntegration.payload?.summary?.credentials)} onClick={() => void importEquipmentCredentials(false, equipmentIntegration.resource === "faces" ? "faces" : "credentials")}>
                     <Save size={16} /> Importar para o banco
                   </button>
-                </div>
+                </div>}
                 {equipmentIntegration.error && <div className="form-hint">{equipmentIntegration.error}</div>}
                 {!tenantDevices.length && <div className="empty-state">Nenhum equipamento cadastrado neste condominio.</div>}
               </article>
@@ -3070,7 +2626,6 @@ function App() {
                     <h2>Resultado da leitura</h2>
                     <small>{equipmentIntegration.payload?.message || "Selecione uma leitura para consultar os dados consolidados."}</small>
                   </div>
-                  <span className="status">{equipmentIntegration.payload?.source || "LOCAL_STATE"}</span>
                 </div>
                 <div className="integration-summary-grid">
                   {equipmentIntegrationResources.map(([resource, label, Icon]) => (
@@ -3080,53 +2635,18 @@ function App() {
                     </button>
                   ))}
                 </div>
-
-                <div className="unit-table header integration-table"><span>Registro</span><span>Tipo / origem</span><span>Status / validade</span><span>Destino</span></div>
-                {(equipmentIntegration.payload?.records || []).map((record) => {
-                  const cells = integrationRecordCells(record, equipmentIntegration.resource);
-                  return (
-                    <div className="unit-table row integration-table" key={record.id}>
-                      <span>{cells[0]}</span>
-                      <span>{cells[1]}</span>
-                      <span>{cells[2]}</span>
-                      <span>{cells[3]}</span>
-                    </div>
-                  );
-                })}
-                {equipmentIntegration.loading && <div className="empty-state">Lendo informacoes do equipamento...</div>}
-                {!equipmentIntegration.loading && equipmentIntegration.payload && !equipmentIntegration.payload.records?.length && <div className="empty-state">Nenhum registro encontrado para esta leitura.</div>}
-                {!equipmentIntegration.payload && !equipmentIntegration.loading && <div className="empty-state">Execute uma leitura para carregar os dados.</div>}
-                {equipmentIntegration.payload?.attempts?.length ? (
-                  <div className="simple-list">
-                    {equipmentIntegration.payload.attempts.map((attempt, index) => (
-                      <div className="simple-row" key={`${attempt.path}-${index}`}>
-                        <ServerCog size={18} />
-                        <div><strong>{attempt.label}</strong><span>{attempt.path}{attempt.bodyFormat ? ` - ${attempt.bodyFormat}` : ""}</span>{attempt.error && <small>{attempt.error}</small>}{attempt.bodyPreview && <small>{attempt.bodyPreview}</small>}</div>
-                        <span className={`status ${attempt.ok ? "" : "offline"}`}>{attempt.ok ? `${attempt.records || 0} registro(s)` : "Falhou"}</span>
+                {(equipmentIntegration.payload?.records || []).length > 0 && (
+                  <div>
+                    <div className="unit-table header integration-table"><span>Registro</span><span>Vinculo</span><span>Origem</span><span>Status</span></div>
+                    {(equipmentIntegration.payload.records || []).map((record) => (
+                      <div className="unit-table row integration-table" key={record.id || `${equipmentIntegration.resource}-${record.value || record.name}`}>
+                        {integrationRecordCells(record, equipmentIntegration.resource)}
                       </div>
                     ))}
                   </div>
-                ) : null}
+                )}
               </article>}
 
-              {equipmentIntegration.resource === "faces" && equipmentIntegration.importing && !equipmentIntegration.importReport && (
-                <article className="panel">
-                  <div className="panel-heading">
-                    <div>
-                      <h2>Previa de cadastros faciais</h2>
-                      <small>Carregando fotos e preparando os campos para validacao.</small>
-                    </div>
-                    <span className="status">CARREGANDO</span>
-                  </div>
-                  <div className="face-import-review">
-                    <div className="unit-table header credential-review-table">
-                      <label className="check-cell"><input type="checkbox" disabled />Importar</label>
-                      <span>Credencial</span><span>Facial</span><span>Pessoa</span><span>Unidade</span>
-                    </div>
-                    <div className="empty-state">Buscando as fotos faciais no equipamento...</div>
-                  </div>
-                </article>
-              )}
 
               {equipmentIntegration.importReport && (
                 <article className="panel">
@@ -3146,9 +2666,6 @@ function App() {
                     <span><strong>{equipmentIntegration.importReport.unitsCreated || 0}</strong>unidades novas</span>
                     <span><strong>{equipmentIntegration.importReport.credentialsCreated || 0}</strong>novas</span>
                     <span><strong>{equipmentIntegration.importReport.credentialsUpdated || 0}</strong>atualizadas</span>
-                    <span><strong>{equipmentIntegration.importReport.eventsRead || 0}</strong>eventos lidos</span>
-                    <span><strong>{equipmentIntegration.importReport.eventsCreated || 0}</strong>eventos salvos</span>
-                    <span><strong>{equipmentIntegration.importReport.syncJob?.synced || 0}</strong>ressincronizadas</span>
                   </div>
                   {(equipmentIntegration.importReport.items || []).length ? (
                     <div className="face-import-review">
@@ -3174,7 +2691,7 @@ function App() {
                         return (
                           <div className="unit-table row credential-review-table" key={key}>
                             <label className="check-cell"><input type="checkbox" checked={selected} onChange={(event) => updateEquipmentCredentialSelection(item, { selected: event.target.checked })} /></label>
-                            <span><strong>{item.payload?.type || "-"}</strong><small>{item.payload?.valueLabel || item.payload?.value || "-"}</small><small>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</small></span>
+                            <span><strong>{item.payload?.type || "-"}</strong><small>{item.payload?.valueLabel || item.payload?.value || "-"}</small></span>
                             <span className="credential-face-cell">
                               <PersonAvatar name={item.payload?.personName || item.payload?.valueLabel || item.payload?.value || "Face"} photoUrl={photoUrl} />
                               <small>{photoUrl ? "Foto facial" : "Sem foto facial"}</small>
@@ -3188,30 +2705,6 @@ function App() {
                     </div>
                   ) : null}
 
-                  {equipmentIntegration.resource !== "faces" && (
-                    <>
-                      <div className="unit-table header integration-table"><span>Credencial</span><span>Pessoa</span><span>Status</span><span>Origem</span></div>
-                      {(equipmentIntegration.importReport.items || []).slice(0, 12).map((item) => (
-                        <div className="unit-table row integration-table" key={`${item.row}-${item.payload?.value}`}>
-                          <span><strong>{item.payload?.type || "-"}</strong><small>{item.payload?.valueLabel || item.payload?.value || "-"}</small></span>
-                          <span>{item.payload?.personName || item.personId || "Sem vinculo"}</span>
-                          <span className={`status ${item.status === "INVALID" ? "offline" : ""}`}>{item.status}</span>
-                          <span>{item.payload?.devicePath || equipmentIntegration.importReport.adapter}</span>
-                        </div>
-                      ))}
-                      {equipmentIntegration.importReport.attempts?.length ? (
-                        <div className="simple-list">
-                          {equipmentIntegration.importReport.attempts.map((attempt) => (
-                            <div className="simple-row" key={attempt.path}>
-                              <ServerCog size={18} />
-                              <div><strong>{attempt.label}</strong><span>{attempt.path}{attempt.bodyFormat ? ` - ${attempt.bodyFormat}` : ""}</span>{attempt.error && <small>{attempt.error}</small>}{attempt.bodyPreview && <small>{attempt.bodyPreview}</small>}</div>
-                              <span className={`status ${attempt.ok ? "" : "offline"}`}>{attempt.ok ? `${attempt.records || 0} registro(s)` : "Falhou"}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </>
-                  )}
                 </article>
               )}
             </section>
@@ -3512,17 +3005,17 @@ function App() {
               <article className="panel">
                 <div className="panel-heading"><h2>Portaria remota</h2><span>{data.intercomCalls.length} ativas</span></div>
                 <div className="webphone-panel">
-                <div><strong>Atendimento de audio</strong><span>{webPhone.incomingLabel || (webPhone.status === "DISCONNECTED" ? "Desconectado" : "Conectado")}</span></div>
-                <div className="toolbar-actions">
-                  <button type="button" disabled={["CONNECTING", "REGISTERED", "RINGING", "IN_CALL"].includes(webPhone.status)} onClick={() => void connectWebPhone()}><PhoneCall size={16} /> Conectar audio</button>
+                  <div><strong>Atendimento de audio</strong><span>{webPhone.incomingLabel || (webPhone.status === "DISCONNECTED" ? "Desconectado" : "Conectado")}</span></div>
+                  <div className="toolbar-actions">
+                    <button type="button" disabled={["CONNECTING", "REGISTERED", "RINGING", "IN_CALL"].includes(webPhone.status)} onClick={() => void connectWebPhone()}><PhoneCall size={16} /> Conectar audio</button>
                     {webPhone.status === "RINGING" && !incomingCall && <button type="button" onClick={() => void answerWebPhone()}>Atender</button>}
                     {["RINGING", "IN_CALL"].includes(webPhone.status) && <button type="button" className="danger-button" onClick={() => void hangupWebPhone()}>Encerrar</button>}
-                  <button type="button" className="secondary-button" disabled={webPhone.status === "DISCONNECTED"} onClick={() => void disconnectWebPhone()}>Desconectar</button>
-                </div>
+                    <button type="button" className="secondary-button" disabled={webPhone.status === "DISCONNECTED"} onClick={() => void disconnectWebPhone()}>Desconectar</button>
+                  </div>
                   <audio ref={webPhoneAudioRef} autoPlay playsInline />
                 </div>
                 <div className="extensions-status-panel">
-                <div className="panel-heading compact-heading"><h2>Ramais do condominio</h2><button className="secondary-button" type="button" onClick={() => void refreshExtensionStatus()}><RefreshCw size={16} /> Atualizar</button></div>
+                  <div className="panel-heading compact-heading"><h2>Ramais do condominio</h2><button className="secondary-button" type="button" onClick={() => void refreshExtensionStatus()}><RefreshCw size={16} /> Atualizar</button></div>
                   <div className="extensions-status-list">
                     {data.extensionStatus.map((item) => <span key={item.extension} className={item.registrationStatus === "REGISTERED" ? "registered" : item.configured ? "unregistered" : ""}><strong>{item.extension}</strong><em>{item.label}</em><small>{item.type} - {item.provisioningStatus || item.status}</small></span>)}
                   </div>
@@ -3541,7 +3034,7 @@ function App() {
                   </div>
                   {resourceConfig === "cameras" && (
                     <CameraConfig
-                    cameras={tenantCameraGroups}
+                      cameras={tenantCameraGroups}
                       devices={tenantDevices}
                       form={cameraForm}
                       setForm={setCameraForm}
@@ -3782,38 +3275,13 @@ function App() {
 
     if (activeSection === "payments") {
       return (
-        <section className="resource-page">
-          <article className="panel">
-            <div className="panel-heading"><h2>Formas de pagamento</h2><CreditCard size={20} /></div>
-            <div className="payment-grid">
-              {[
-                ["PIX", "Chave PIX, QR Code e conciliacao manual"],
-                ["Boleto", "Vencimento, multa, juros e arquivo de retorno"],
-                ["Cartao", "Credito/debito com gateway de pagamento"],
-                ["Transferencia", "Dados bancarios e comprovante"]
-              ].map(([title, description]) => (
-                <article className="payment-card" key={title}>
-                  <strong>{title}</strong>
-                  <span>{description}</span>
-                  <label><input type="checkbox" defaultChecked={title === "PIX" || title === "Boleto"} /> Ativo para novas licencas</label>
-                </article>
-              ))}
-            </div>
-          </article>
-          <article className="panel form-panel">
-            <div className="panel-heading"><h2>Configuracao financeira da licenca</h2><Settings size={20} /></div>
-            <div className="form-grid">
-              <Field label="Licenca"><select>{data.licenses.map((license) => <option key={license.id} value={license.id}>{license.name}</option>)}</select></Field>
-              <Field label="Plano"><select><option>Full</option><option>Showroom</option><option>Basico</option></select></Field>
-              <Field label="Valor mensal"><input defaultValue="0,00" /></Field>
-              <Field label="Vencimento"><input defaultValue="10" /></Field>
-              <Field label="Forma padrao"><select><option>PIX</option><option>Boleto</option><option>Cartao</option><option>Transferencia</option></select></Field>
-              <Field label="Status"><select><option>Ativa</option><option>Em teste</option><option>Bloqueada</option></select></Field>
-              <button type="button"><Save size={16} /> Salvar pagamento</button>
-            </div>
-            <div className="form-hint">Nesta etapa a tela ja separa o cadastro financeiro. A persistencia real entra junto com o modelo de licencas no banco definitivo.</div>
-          </article>
-        </section>
+        <SettingsPage
+          companies={data.companies}
+          condominiums={data.condominiums}
+          licenses={data.licenses}
+          gateway={data.billingGateway}
+          onSaveBillingProfile={saveCompanyBillingProfile}
+        />
       );
     }
 
@@ -3983,32 +3451,7 @@ function App() {
       );
     }
 
-    return (
-      <section className="resource-page">
-        <article className="panel">
-          <div className="panel-heading"><h2>SDK equipamentos</h2><ServerCog size={20} /></div>
-          <div className="manufacturer-grid">
-            {data.manufacturerProfiles.map((profile) => (
-              <article className="manufacturer-card" key={profile.id}>
-                <div>
-                  <strong>{profile.name}</strong>
-                  <span>{profile.families.join(" / ")}</span>
-                </div>
-                <div className="tag-list">{profile.protocols.map((item) => <em key={item}>{item}</em>)}</div>
-                <small>Portas padrao: {profile.defaultPorts.join(", ")}</small>
-                <small>Credenciais: {profile.credentialTypes.join(", ")}</small>
-                <p>{profile.notes}</p>
-                <button className="secondary-button" onClick={() => void enqueueCredentialSync(profile)}><RefreshCw size={16} /> Sincronizar</button>
-              </article>
-            ))}
-          </div>
-        </article>
-        <article className="panel">
-          <div className="panel-heading"><h2>Checklist de integracao</h2><ClipboardList size={20} /></div>
-          <div className="resource-checklist">{["Nao salvar imagem pesada na API", "Usar URL/stream e snapshot sob demanda", "Fila para credenciais faciais", "Gateway local para equipamentos sem API HTTP", "Webhooks/eventos para atualizar status em tempo real"].map((item) => <span key={item}><Save size={16} /> {item}</span>)}</div>
-        </article>
-      </section>
-    );
+    return <SdkPage manufacturerProfiles={data.manufacturerProfiles} />;
   }
 
   const isCondoSection = activeSection === "condoHome" || condoSections.some((section) => section.id === activeSection);
@@ -4023,120 +3466,15 @@ function App() {
   const primarySections = showCondoMenu ? roleSections.filter((section) => section.id !== "condominiums") : roleSections;
 
   return (
-    <main className="shell">
-      {incomingCall && incomingCall.status === "RINGING" && (
-        <div className="call-modal-backdrop" role="presentation">
-          <section className="call-notification call-modal" role="dialog" aria-modal="true" aria-labelledby="incoming-call-title">
-            <div className="call-modal-icon"><PhoneCall size={24} /></div>
-            <div className="call-modal-content">
-              <span className="call-modal-kicker">Chamada recebida</span>
-              <h2 id="incoming-call-title">{incomingCallTenant?.name || "Condominio"}</h2>
-              <div className="call-modal-grid">
-                <span><strong>Unidade</strong>{incomingCallUnit?.unitNumber || incomingCall.unitNumber || incomingCall.unitId || "-"}</span>
-                <span><strong>Ramal</strong>{incomingCall.sourceExtension || incomingCallUnit?.telephony?.extension || incomingCallUnit?.extension || "-"}</span>
-                <span><strong>Origem</strong>{incomingCall.visitorLabel || incomingCall.targetType || "Aplicativo do morador"}</span>
-                <span><strong>Status</strong>{incomingCall.status}</span>
-              </div>
-              {incomingCallUnit?.residentName && <p>{incomingCallUnit.residentName}</p>}
-            </div>
-            <div className="call-modal-actions">
-              <button type="button" className="call-modal-button call-modal-reject" title="Recusar chamada" aria-label="Recusar chamada" onClick={() => void rejectIncomingCall(incomingCall)}><PhoneOff size={22} /></button>
-              <button type="button" className="call-modal-button call-modal-answer" title="Atender chamada" aria-label="Atender chamada" onClick={() => void answerCall(incomingCall)}><PhoneCall size={22} /></button>
-            </div>
-          </section>
-        </div>
-      )}
-      {message && (
-        <div className="change-toast" role="status">
-          <BadgeCheck size={20} />
-          <span>{message}</span>
-        </div>
-      )}
-      {supportAlert && (
-        <div className="call-modal-backdrop" role="presentation">
-          <section className="support-limit-modal" role="dialog" aria-modal="true" aria-labelledby="support-limit-title">
-            <FileKey2 size={28} />
-            <h2 id="support-limit-title">Limite da licenca atingido</h2>
-            <p>{supportAlert}</p>
-            <button type="button" onClick={() => setSupportAlert("")}>Entendi</button>
-          </section>
-        </div>
-      )}
-      {disconnectedDevices.length > 0 && (
-        <button className="device-alert-notification" type="button" onClick={() => { setActiveSection("devices"); setDeviceTab("painel"); }}>
-          <WifiOff size={20} />
-          <div>
-            <strong>Equipamento desconectado</strong>
-            <span>{disconnectedDevices[0].name}{disconnectedDevices.length > 1 ? ` +${disconnectedDevices.length - 1}` : ""}</span>
-          </div>
-        </button>
-      )}
-      <aside className="sidebar">
-        <div className="brand">
-          <img src={sessionCompany?.logoUrl || Logo} alt={sessionCompany?.name || "Condo Access"} />
-          <div><strong>{sessionCompany?.name || "Condo Access"}</strong><span>{session?.role === "SUPER_ADMIN" ? "Gestao geral do sistema" : session?.role === "COMPANY_ADMIN" ? "Gestao da empresa" : session?.role === "PORTER" ? "Painel da portaria" : "Area do morador"}</span></div>
-        </div>
-        <nav>
-          {primarySections.map((section) => {
-            const Icon = section.icon;
-            return (
-              <button key={section.id} className={section.id === activeSection || (section.id === "condominiums" && activeSection === "condoForm") ? "active" : ""} onClick={() => {
-                setActiveSection(section.id);
-                if (section.id === "remotePorter") setResourceTab("portaria");
-              }}>
-                <Icon size={18} />
-                {section.label}
-              </button>
-            );
-          })}
-          {!showCondoMenu && <div className="nav-group">
-            <span>Configuracoes</span>
-            {allowedSettingsSections.map((section) => {
-              const Icon = section.icon;
-            return (
-              <button key={section.id} className={section.id === activeSection ? "active" : ""} onClick={() => setActiveSection(section.id)}>
-                <Icon size={18} />
-                {section.label}
-              </button>
-              );
-            })}
-          </div>}
-          {showCondoMenu && <div className="nav-group">
-            <span>{selectedTenant?.name || "Condominio"}</span>
-            {condoSections.map((section) => {
-              const Icon = section.icon;
-            return (
-                <button key={section.id} className={section.id === activeSection ? "active" : ""} onClick={() => {
-                  if (section.id === "units") navigateTo("/unidades");
-                  else setActiveSection(section.id);
-                  if (section.id === "devices") setDeviceTab("inicio");
-                }}>
-                  <Icon size={18} />
-                  {section.label}
-                </button>
-              );
-            })}
-          </div>}
-        </nav>
-      </aside>
-
-      <section className="workspace">
-        <header className="topbar">
-          <div className="titulo">
-            {(activeSection === "condoHome" || activeSection === "condoForm") && <button className="secondary-button back-title-button" type="button" onClick={() => setActiveSection("condominiums")}>{"<-"} Voltar</button>}
-            <img className="logo" src={Logo} alt="" />
-            <h1><ActiveIcon size={28} /> {topbarLabel}</h1>
-          </div>
-          <div className="toolbar-actions">
-            <button onClick={() => void syncNow()}><RefreshCw size={16} /> Sincronizar</button>
-            <button className="secondary-button" onClick={() => void logout()}>Sair</button>
-          </div>
-        </header>
-        <StatusBanner status={syncState.status} error={syncState.error} lastSyncAt={syncState.lastSyncAt} />
-        {renderContent()}
-      </section>
-    </main>
+    <AppShell
+      notifications={{ incomingCall, incomingCallTenant, incomingCallUnit, rejectIncomingCall, answerCall, message, supportAlert, setSupportAlert, disconnectedDevices, openDisconnectedDevices: () => { setActiveSection("devices"); setDeviceTab("painel"); } }}
+      sidebar={{ session, sessionCompany, primarySections, allowedSettingsSections, condoSections, showCondoMenu, selectedTenant, activeSection, setActiveSection, setResourceTab, setDeviceTab, navigateTo }}
+      header={{ activeSection, ActiveIcon, topbarLabel, setActiveSection, syncNow, logout }}
+      syncState={syncState}
+    >
+      {renderContent()}
+    </AppShell>
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+export default App;

@@ -25,6 +25,24 @@ import {
 } from "./integrations/intelbras/ss3532Mfw.js";
 import { createHikvisionParsers } from "./integrations/hikvision/parsers.js";
 import {
+  controlIdIduhfDefaults,
+  matchesControlIdIduhf,
+  validateControlIdIduhfConfiguration
+} from "./integrations/controlid/iduhf.js";
+import { controlIdVehicleTagRecords, normalizeControlIdUhfMode } from "./integrations/controlid/vehicleTags.js";
+import { removeVehicleTag, syncVehicleTag } from "./modules/vehicles/vehicleTagController.js";
+import {
+  NICE_LINEAR_ADAPTER,
+  NICE_LINEAR_DEVICE_TCP_MODE,
+  matchesNiceLinear,
+  niceLinearDefaults,
+  niceLinearEventToAccessLog,
+  normalizeNiceLinearMode,
+  openNiceLinearDoor,
+  testNiceLinearIntegration,
+  validateNiceLinearConfiguration
+} from "./integrations/nice-linear/gateway.js";
+import {
   applyCameraProfileDefaults,
   cameraRtspPathFromProfile,
   cameraStreamSettings,
@@ -91,6 +109,11 @@ const publicSipHost = "granportalresidency.ddns.net";
 const standardSipPassword = process.env.SIP_DEFAULT_PASSWORD || "CondoAccess@2026";
 const oneSignalAppId = String(process.env.ONESIGNAL_APP_ID || "").trim();
 const oneSignalRestApiKey = String(process.env.ONESIGNAL_REST_API_KEY || "").trim();
+const asaasApiKey = String(process.env.ASAAS_API_KEY || "").trim();
+const asaasEnvironment = String(process.env.ASAAS_ENVIRONMENT || "sandbox").trim().toLowerCase() === "production"
+  ? "production"
+  : "sandbox";
+const asaasWebhookTokenConfigured = Boolean(String(process.env.ASAAS_WEBHOOK_TOKEN || "").trim());
 const defaultCompanyPassword = "123456";
 const masterAdminEmail = String(process.env.MASTER_ADMIN_EMAIL || "agpsistemascorp@gmail.com").trim().toLowerCase();
 
@@ -260,11 +283,154 @@ const devices = [];
 
 const cameras = [];
 
+const niceLinearListeners = new Map();
+const niceLinearSessions = new Map();
+const niceLinearUnknownConnections = new Map();
+
+function normalizedRemoteAddress(value = "") {
+  return String(value || "").replace(/^::ffff:/, "").trim().toLowerCase();
+}
+
+function niceLinearDeviceForSocket(socket, port) {
+  const remoteAddress = normalizedRemoteAddress(socket.remoteAddress);
+  const candidates = devices.filter((device) =>
+    matchesNiceLinear(device) &&
+    normalizeNiceLinearMode(device.niceConnectionMode) === NICE_LINEAR_DEVICE_TCP_MODE &&
+    Number(device.apiPort) === Number(port)
+  );
+  return candidates.find((device) =>
+    normalizedRemoteAddress(device.ipAddress || device.apiHost) === remoteAddress
+  ) || null;
+}
+
+function niceLinearPacketRecord(chunk) {
+  const buffer = Buffer.from(chunk);
+  return {
+    receivedAt: now(),
+    bytes: buffer.length,
+    hex: buffer.subarray(0, 512).toString("hex").toUpperCase(),
+    text: buffer.subarray(0, 512).toString("utf8").replace(/[^\x20-\x7E\r\n\t]/g, ".")
+  };
+}
+
+function niceLinearTryJsonEvents(device, chunk) {
+  const text = Buffer.from(chunk).toString("utf8").trim();
+  if (!text || (!text.startsWith("{") && !text.startsWith("["))) return;
+  try {
+    const parsed = JSON.parse(text);
+    const events = Array.isArray(parsed) ? parsed : [parsed];
+    events.forEach((payload) => {
+      const log = niceLinearEventToAccessLog(device, payload, { makeId, now, tenantId: tenant.id });
+      accessLogs.unshift(log);
+    });
+    if (events.length) savePersistentState("nice-linear-tcp-event");
+  } catch {
+    // O protocolo binario permanece disponivel no diagnostico para homologacao.
+  }
+}
+
+function niceLinearConnectionStatus(device = {}) {
+  const session = niceLinearSessions.get(device.id);
+  const listener = niceLinearListeners.get(Number(device.apiPort));
+  if (!session || session.socket.destroyed) {
+    return {
+      online: false,
+      reason: listener?.error
+        ? `Listener TCP indisponivel: ${listener.error}`
+        : listener?.listening
+          ? "Aguardando o equipamento iniciar a conexao TCP"
+          : "Listener TCP ainda nao iniciado",
+      listenPort: Number(device.apiPort || 0),
+      listener: Boolean(listener?.listening)
+    };
+  }
+  return {
+    online: true,
+    reason: "Equipamento conectado",
+    listenPort: Number(device.apiPort || 0),
+    listener: Boolean(listener?.listening),
+    remoteAddress: session.remoteAddress,
+    remotePort: session.remotePort,
+    connectedAt: session.connectedAt,
+    lastSeenAt: session.lastSeenAt,
+    packets: session.packets.length
+  };
+}
+
+function ensureNiceLinearTcpListener(portValue) {
+  const port = Number(portValue);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  if (niceLinearListeners.has(port)) return niceLinearListeners.get(port);
+
+  const state = { port, listening: false, error: "", server: null };
+  const tcpServer = net.createServer((socket) => {
+    socket.setKeepAlive(true, 30000);
+    const device = niceLinearDeviceForSocket(socket, port);
+    const session = {
+      socket,
+      deviceId: device?.id || "",
+      remoteAddress: normalizedRemoteAddress(socket.remoteAddress),
+      remotePort: socket.remotePort || 0,
+      connectedAt: now(),
+      lastSeenAt: now(),
+      packets: []
+    };
+    const unknownKey = `${session.remoteAddress}:${session.remotePort}`;
+    if (device) {
+      niceLinearSessions.get(device.id)?.socket?.destroy();
+      niceLinearSessions.set(device.id, session);
+      device.status = "ONLINE";
+      device.lastSeenAt = session.lastSeenAt;
+      device.statusReason = "Equipamento conectou ao listener TCP";
+    } else {
+      niceLinearUnknownConnections.set(unknownKey, session);
+    }
+
+    socket.on("data", (chunk) => {
+      session.lastSeenAt = now();
+      session.packets.unshift(niceLinearPacketRecord(chunk));
+      session.packets = session.packets.slice(0, 30);
+      if (device) {
+        device.lastSeenAt = session.lastSeenAt;
+        niceLinearTryJsonEvents(device, chunk);
+      }
+    });
+    socket.on("close", () => {
+      if (device && niceLinearSessions.get(device.id) === session) {
+        niceLinearSessions.delete(device.id);
+        device.status = "OFFLINE";
+        device.statusReason = "Conexao TCP encerrada pelo equipamento";
+      }
+      niceLinearUnknownConnections.delete(unknownKey);
+    });
+    socket.on("error", () => undefined);
+  });
+
+  state.server = tcpServer;
+  niceLinearListeners.set(port, state);
+  tcpServer.once("error", (error) => {
+    state.error = error.code || error.message || "Falha no listener TCP";
+    state.listening = false;
+  });
+  tcpServer.listen(port, process.env.NICE_LINEAR_LISTEN_HOST || "0.0.0.0", () => {
+    state.listening = true;
+    state.error = "";
+  });
+  return state;
+}
+
+function ensureConfiguredNiceLinearListeners() {
+  devices
+    .filter((device) => matchesNiceLinear(device) &&
+      normalizeNiceLinearMode(device.niceConnectionMode) === NICE_LINEAR_DEVICE_TCP_MODE)
+    .forEach((device) => ensureNiceLinearTcpListener(device.apiPort));
+}
+
 const deviceCategories = [
   {
     id: "access-control",
     name: "Controle de Acesso",
-    manufacturers: ["Control iD", "Linear HCS", "Bravas", "Hikvision", "Intelbras"],
+    manufacturers: ["Control iD", "Nice/Linear", "Linear HCS", "Nice Guarita", "Bravas", "Hikvision", "Intelbras"],
     deviceTypes: ["Facial", "Controladora", "Leitora", "Video porteiro", "ATA VoIP", "Telefone IP"]
   },
   {
@@ -276,7 +442,7 @@ const deviceCategories = [
   {
     id: "iot",
     name: "IoT e Acionamentos",
-    manufacturers: ["Bravas", "Moni Software", "Nice Guarita", "Linear HCS", "Generico"],
+    manufacturers: ["Bravas", "Moni Software", "Nice/Linear", "Nice Guarita", "Linear HCS", "Generico"],
     deviceTypes: ["Rele", "Gateway", "Modulo porta", "Modulo RF", "Locker"]
   },
   {
@@ -301,22 +467,22 @@ const manufacturerProfiles = [
   {
     id: "control-id",
     name: "Control iD",
-    families: ["Facial", "Controlador de acesso", "Relogio de ponto"],
+    families: ["Facial", "Controlador de acesso", "Leitor veicular iDUHF", "Relogio de ponto"],
     protocols: ["HTTP API", "SDK", "Eventos por polling"],
     defaultPorts: ["80", "443"],
-    credentialTypes: ["FACE", "RFID", "PIN", "BIOMETRIA"],
-    syncModes: ["Pessoas", "Templates faciais", "Eventos", "Portas"],
-    notes: "Integracao pede sessao/token e fila de sincronismo para evitar travar equipamento em carga alta."
+    credentialTypes: ["FACE", "RFID", "UHF_TAG", "PIN", "BIOMETRIA"],
+    syncModes: ["Pessoas", "Templates faciais", "Tags veiculares", "Eventos", "Portas"],
+    notes: "iDUHF homologado com API HTTP na porta 80, sem RTSP. Use door no rele interno, sec_box somente para MAE/SecBox e grupo de acesso no modo standalone."
   },
   {
     id: "linear-hcs",
-    name: "Linear HCS",
-    families: ["Controladora", "Receptor veicular", "Gateway"],
-    protocols: ["Gateway local", "Serial/SDK", "HTTP quando disponivel"],
-    defaultPorts: ["80", "5000"],
-    credentialTypes: ["RFID", "CONTROLE_REMOTO", "PLACA"],
-    syncModes: ["Credenciais", "Eventos", "Rotas de acesso"],
-    notes: "Ideal isolar via agente local quando o controlador nao oferece API web direta."
+    name: "Nice/Linear HCS",
+    families: ["Modulo Guarita MG3000", "Modulo Guarita IP", "Controladora Ethernet II/III", "Receptores CAN"],
+    protocols: ["TCP/IP iniciado pelo equipamento", "CAN entre modulo e receptores", "Gateway HTTP opcional"],
+    defaultPorts: ["Configuravel na instalacao"],
+    credentialTypes: ["RFID", "UHF_TAG", "CONTROLE_REMOTO", "BIOMETRIA", "QR"],
+    syncModes: ["Conexao TCP", "Eventos", "Abertura via bridge", "Diagnostico de pacotes"],
+    notes: "O equipamento conecta ao software. O listener TCP e o diagnostico estao implementados; comandos binarios diretos exigem o protocolo/SDK da Nice."
   },
   {
     id: "bravas",
@@ -574,18 +740,25 @@ function extensionStatus(tenantId = "", registrationMap = null) {
   const targetTenant = tenantId ? findTenant(tenantId) : allTenants()[0];
   if (!targetTenant) return [];
   const start = Number(targetTenant.sipExtensionStart || 9100);
-  const max = Math.min(Number(targetTenant.sipExtensionEnd || start + 5), start + 9);
-  const used = new Map(unitList()
+  const previewEnd = Math.min(Number(targetTenant.sipExtensionEnd || start + 9), start + 9);
+  const tenantUnits = unitList()
     .filter((unit) => unit.tenantId === targetTenant.id)
-    .map((unit) => [unit.telephony.extension, unit]));
-  const intercomByExtension = new Map(devices
-    .filter((device) => device.tenantId === targetTenant.id && device.intercomEnabled && device.intercomExtension)
-    .map((device) => [String(device.intercomExtension), device]));
-  return Array.from({ length: Math.max(0, max - start + 1) }, (_, index) => {
-    const extension = String(start + index);
+    .filter((unit) => unitExtension(unit));
+  const tenantIntercoms = devices
+    .filter((device) => device.tenantId === targetTenant.id && device.intercomEnabled && device.intercomExtension);
+  const used = new Map(tenantUnits.map((unit) => [unitExtension(unit), unit]));
+  const intercomByExtension = new Map(tenantIntercoms.map((device) => [String(device.intercomExtension), device]));
+  const extensionNumbers = new Set(
+    Array.from({ length: Math.max(0, previewEnd - start + 1) }, (_, index) => String(start + index))
+  );
+  tenantUnits.forEach((unit) => extensionNumbers.add(unitExtension(unit)));
+  tenantIntercoms.forEach((device) => extensionNumbers.add(String(device.intercomExtension)));
+  if (targetTenant.sipPorterExtension) extensionNumbers.add(String(targetTenant.sipPorterExtension));
+
+  return Array.from(extensionNumbers).sort((left, right) => Number(left) - Number(right)).map((extension) => {
     const unit = used.get(extension);
     const device = intercomByExtension.get(extension);
-    const isPorter = extension === targetTenant.sipPorterExtension;
+    const isPorter = extension === String(targetTenant.sipPorterExtension || "");
     const configured = Boolean(unit || device || isPorter);
     const registration = extensionRegistrationStatus(extension, configured, registrationMap);
     return {
@@ -651,6 +824,12 @@ function bootstrap() {
     accessRoutes,
     companies: companies.map(publicCompany),
     licenses,
+    billingGateway: {
+      provider: "ASAAS",
+      environment: asaasEnvironment,
+      configured: Boolean(asaasApiKey),
+      webhookConfigured: asaasWebhookTokenConfigured
+    },
     resources,
     resourceConfigurations,
     accessLogs,
@@ -817,6 +996,7 @@ function manufacturerKey(item = {}) {
 
 function deviceAdapter(device) {
   const manufacturer = manufacturerKey(device);
+  if (matchesNiceLinear(device)) return NICE_LINEAR_ADAPTER;
   if (manufacturer.includes("control") || manufacturer.includes("control id") || manufacturer.includes("controlid")) {
     return CONTROL_ID_ACCESS_ADAPTER;
   }
@@ -1022,7 +1202,6 @@ function controlIdCredentialRecords(snapshot = {}) {
 
   const records = [
     ...(objects.cards || []).map((row) => recordFromObject("cards", row, "RFID")),
-    ...(objects.uhf_tags || []).map((row) => recordFromObject("uhf_tags", row, "RFID")),
     ...(objects.qrcodes || []).map((row) => recordFromObject("qrcodes", row, "QR_CODE")),
     ...(objects.pins || []).map((row) => recordFromObject("pins", row, "PIN")),
     ...Array.from(userFaceIds).map((userId) => {
@@ -1110,8 +1289,11 @@ async function openHikvisionDoor(device, relay = 1) {
 async function openControlIdDoor(device, relay = 1) {
   const session = await controlIdLogin(device);
   const action = String(device.controlIdAction || "door").trim() || "door";
+  if (action === "sec_box" && !/^[1-9]\d*$/.test(String(device.controlIdSecBoxId || "").trim())) {
+    throw new Error("ID do SecBox/MAE nao configurado para este equipamento Control iD");
+  }
   const parameters = action === "sec_box"
-    ? `id=${String(device.controlIdSecBoxId || relay).trim()}, reason=3`
+    ? `id=${String(device.controlIdSecBoxId).trim()}, reason=3`
     : action === "catra"
       ? `relay=${Math.max(1, Math.min(2, Number(relay) || 1))}`
       : `door=${Math.max(1, Number(relay) || 1)}`;
@@ -1120,7 +1302,7 @@ async function openControlIdDoor(device, relay = 1) {
   });
 }
 
-async function openDeviceDoor(device, relay = 1) {
+async function openDeviceDoor(device, relay = 1, action = {}) {
   const adapter = deviceAdapter(device);
   if (adapter === "HIKVISION_ISAPI") {
     const result = await openHikvisionDoor(device, relay);
@@ -1146,6 +1328,15 @@ async function openDeviceDoor(device, relay = 1) {
       adapter,
       status: result.status,
       message: `Control iD respondeu ${result.status}`
+    };
+  }
+
+  if (adapter === NICE_LINEAR_ADAPTER) {
+    const result = await openNiceLinearDoor(device, relay, action);
+    return {
+      adapter,
+      status: result.status,
+      message: result.message
     };
   }
 
@@ -1302,9 +1493,36 @@ function publicCompany(company = {}) {
   return safeCompany;
 }
 
+function importedFaceCredentialForPerson(person = {}) {
+  return credentials.find((credential) =>
+    credential.type === "FACE" &&
+    credential.photoUrl &&
+    (
+      (person.id && credential.personId === person.id) ||
+      (
+        person.tenantId === credential.tenantId &&
+        person.unitId === credential.unitId &&
+        normalizeLookup(person.name) === normalizeLookup(credential.personName)
+      )
+    )
+  ) || null;
+}
+
+function publicPersonPhotoUrl(person = {}, origin = "") {
+  const faceCredential = importedFaceCredentialForPerson(person);
+  if (faceCredential) {
+    const path = `/api/credentials/${encodeURIComponent(faceCredential.id)}/photo`;
+    return origin ? `${origin}${path}` : path;
+  }
+  return person.photoUrl || "";
+}
+
 function publicPerson(person = {}) {
   const { passwordHash: _passwordHash, passwordSalt: _passwordSalt, ...safePerson } = person;
-  return safePerson;
+  return {
+    ...safePerson,
+    photoUrl: publicPersonPhotoUrl(person)
+  };
 }
 
 function ensureMasterAdmin() {
@@ -2062,7 +2280,7 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [],
   return report;
 }
 
-const equipmentIntegrationResources = new Set(["summary", "events", "credentials", "schedules", "faces", "users"]);
+const equipmentIntegrationResources = new Set(["summary", "events", "credentials", "schedules", "faces", "vehicleTags", "users"]);
 
 function unitForId(unitId = "") {
   return units.get(unitId) || unitList().find((unit) => unit.unitId === unitId) || null;
@@ -2420,6 +2638,7 @@ async function deviceIntegrationPayload(device, resource = "summary", { limit = 
       credentials: credentialRecords,
       schedules: controlIdDeviceSchedules(snapshot),
       faces: credentialRecords.filter((credential) => credential.type === "FACE"),
+      vehicleTags: controlIdVehicleTagRecords(snapshot, device),
       users: controlIdDeviceUsers(snapshot, device),
       events: controlIdDeviceEvents(snapshot, device, limit)
     };
@@ -2451,6 +2670,7 @@ async function deviceIntegrationPayload(device, resource = "summary", { limit = 
     credentials: credentialRecords,
     schedules: scheduleRecords,
     faces: faceRecords,
+    vehicleTags: directPayload?.vehicleTags || [],
     users: userRecords
   };
   const summary = Object.fromEntries(Object.entries(resourcesPayload).map(([key, records]) => [key, records.length]));
@@ -2475,6 +2695,7 @@ async function deviceIntegrationPayload(device, resource = "summary", { limit = 
       localCredentials: true,
       localSchedules: true,
       localFaces: true,
+      vehicleTags: adapter === CONTROL_ID_ACCESS_ADAPTER,
       localUsers: true
     },
     device: publicDevice(device),
@@ -3648,7 +3869,7 @@ function toMobileUnit(unit) {
   };
 }
 
-function toMobileResident(person) {
+function toMobileResident(person, origin = "") {
   const unit = units.get(person.unitId);
   return {
     id: person.id,
@@ -3657,7 +3878,7 @@ function toMobileResident(person) {
     cpf: person.cpf || "",
     rg: person.rg || "",
     birthDate: person.birthDate || "",
-    photoUrl: person.photoUrl || "",
+    photoUrl: publicPersonPhotoUrl(person, origin),
     relation: person.relation || "",
     user: {
       id: person.email || person.id,
@@ -3687,7 +3908,7 @@ function compareMobileResident(left, right) {
   return residentDateScore(left) - residentDateScore(right);
 }
 
-function mobileResidentList({ tenantId = "", userId = "", email = "" } = {}) {
+function mobileResidentList({ tenantId = "", userId = "", email = "", origin = "" } = {}) {
   const normalizedUser = normalizeLookup(userId || email);
   const candidates = residents
     .filter((person) => (person.kind || "RESIDENT") === "RESIDENT")
@@ -3717,7 +3938,7 @@ function mobileResidentList({ tenantId = "", userId = "", email = "" } = {}) {
     }
   });
 
-  return Array.from(byUnit.values()).map(toMobileResident);
+  return Array.from(byUnit.values()).map((person) => toMobileResident(person, origin));
 }
 
 function findMobileUnit(unitId = "") {
@@ -3914,6 +4135,20 @@ function cameraDiagnostic(camera, origin = "") {
 
 async function testDeviceIntegration(device) {
   const adapter = deviceAdapter(device);
+  if (adapter === NICE_LINEAR_ADAPTER) {
+    const result = await testNiceLinearIntegration(device, {
+      checkTcpDevice,
+      connectionStatus: niceLinearConnectionStatus
+    });
+    return {
+      ...result,
+      deviceId: device.id,
+      adapter,
+      manufacturer: device.manufacturer || "Nice/Linear",
+      checkedAt: now()
+    };
+  }
+
   const tcp = await checkTcpDevice(device);
   const base = {
     ok: tcp.online,
@@ -4585,6 +4820,19 @@ function mobileTelephonyConfig(unit = units.get("unit-101")) {
     },
     callTargets: [
       { type: "PORTER", id: "porter", label: "Portaria", extension: tenantData.sipPorterExtension, available: true },
+      ...unitList()
+        .filter((targetUnit) =>
+          targetUnit.tenantId === tenantData.id &&
+          targetUnit.unitId !== unitData?.unitId &&
+          unitExtension(targetUnit)
+        )
+        .map((targetUnit) => ({
+          type: "UNIT",
+          id: targetUnit.unitId,
+          label: `${targetUnit.blockName ? `${targetUnit.blockName} - ` : ""}Unidade ${targetUnit.unitNumber || targetUnit.unitId}`,
+          extension: unitExtension(targetUnit),
+          available: true
+        })),
       ...devices
         .filter((device) => device.tenantId === tenantData.id && device.intercomEnabled && device.intercomExtension)
         .map((device) => ({ type: "FACIAL", id: device.id, label: device.name, extension: device.intercomExtension, available: true, device: toMobileDevice(device) }))
@@ -4593,6 +4841,7 @@ function mobileTelephonyConfig(unit = units.get("unit-101")) {
 }
 
 await loadPersistentState();
+ensureConfiguredNiceLinearListeners();
 const cameraPlaybackMigrated = normalizeCameraRecordsForPlayback();
 if (cameraPlaybackMigrated) {
   savePersistentState("camera-playback-normalized");
@@ -4763,6 +5012,13 @@ async function handleRequest(request, response) {
       includedExtensions: Number(body.includedExtensions ?? existingCompany?.includedExtensions ?? 0),
       maxExtensions: Number(body.maxExtensions ?? existingCompany?.maxExtensions ?? 0),
       extensionUnitPrice: Number(body.extensionUnitPrice ?? existingCompany?.extensionUnitPrice ?? 0),
+      billingDueDay: Math.min(31, parsePositiveInteger(body.billingDueDay, existingCompany?.billingDueDay || 10)),
+      defaultPaymentMethod: ["PIX", "BOLETO", "CREDIT_CARD", "TRANSFER"].includes(body.defaultPaymentMethod)
+        ? body.defaultPaymentMethod
+        : existingCompany?.defaultPaymentMethod || "PIX",
+      billingStatus: ["ACTIVE", "TRIAL", "BLOCKED"].includes(body.billingStatus)
+        ? body.billingStatus
+        : existingCompany?.billingStatus || "ACTIVE",
       resourceIds,
       updatedAt: now()
     };
@@ -4815,7 +5071,8 @@ async function handleRequest(request, response) {
     return json(response, 200, mobileResidentList({
       tenantId: url.searchParams.get("tenantId") || "",
       userId: url.searchParams.get("userId") || "",
-      email: url.searchParams.get("email") || ""
+      email: url.searchParams.get("email") || "",
+      origin: requestOrigin(request)
     }));
   }
 
@@ -4849,7 +5106,7 @@ async function handleRequest(request, response) {
       unit.residentEmail = person.email;
     }
     savePersistentState("mobile-resident-updated");
-    return json(response, 200, toMobileResident(person));
+    return json(response, 200, toMobileResident(person, requestOrigin(request)));
   }
 
   const mobileUnitMatch = url.pathname.match(/^\/api\/condominiums\/units\/([^/]+)$/);
@@ -4939,6 +5196,61 @@ async function handleRequest(request, response) {
       channels: deviceChannels(device),
       cameras: deviceCameras.map((camera) => cameraDiagnostic(camera, origin))
     });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/nice-linear/connections") {
+    return json(response, 200, {
+      listeners: Array.from(niceLinearListeners.values()).map((listener) => ({
+        port: listener.port,
+        listening: listener.listening,
+        error: listener.error
+      })),
+      devices: devices
+        .filter(matchesNiceLinear)
+        .map((device) => ({
+          device: publicDevice(device),
+          connection: niceLinearConnectionStatus(device)
+        })),
+      unknownConnections: Array.from(niceLinearUnknownConnections.values()).map((session) => ({
+        remoteAddress: session.remoteAddress,
+        remotePort: session.remotePort,
+        connectedAt: session.connectedAt,
+        lastSeenAt: session.lastSeenAt,
+        packets: session.packets.length
+      }))
+    });
+  }
+
+  const niceLinearPacketsMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/nice-linear\/packets$/);
+  if (request.method === "GET" && niceLinearPacketsMatch) {
+    const device = devices.find((item) => item.id === decodeURIComponent(niceLinearPacketsMatch[1]));
+    if (!device || deviceAdapter(device) !== NICE_LINEAR_ADAPTER) {
+      return json(response, 404, { message: "Equipamento Nice/Linear nao encontrado" });
+    }
+    const session = niceLinearSessions.get(device.id);
+    return json(response, 200, {
+      device: publicDevice(device),
+      connection: niceLinearConnectionStatus(device),
+      packets: session?.packets || []
+    });
+  }
+
+  const niceLinearEventMatch = url.pathname.match(/^\/api\/nice-linear\/events\/([^/]+)$/);
+  if (request.method === "POST" && niceLinearEventMatch) {
+    const device = devices.find((item) => item.id === decodeURIComponent(niceLinearEventMatch[1]));
+    if (!device || deviceAdapter(device) !== NICE_LINEAR_ADAPTER) {
+      return json(response, 404, { message: "Equipamento Nice/Linear nao encontrado" });
+    }
+    const authorization = String(request.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    const apiKey = String(request.headers["x-api-key"] || "");
+    if (!device.password || (authorization !== device.password && apiKey !== device.password)) {
+      return json(response, 401, { message: "Token do gateway Nice/Linear invalido" });
+    }
+    const payload = await readBody(request);
+    const log = niceLinearEventToAccessLog(device, payload, { makeId, now, tenantId: tenant.id });
+    accessLogs.unshift(log);
+    savePersistentState("nice-linear-http-event");
+    return json(response, 201, { ok: true, log });
   }
 
   const deviceIntegrationPhotoMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/integration\/photo$/);
@@ -5080,9 +5392,9 @@ async function handleRequest(request, response) {
     let gatewayMessage = "";
 
     const adapter = device ? deviceAdapter(device) : "GENERIC_TCP";
-    if (device && action?.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter)) {
+    if (device && action?.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
       try {
-        const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1);
+        const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1, action);
         delivered = true;
         gatewayMessage = result.message;
       } catch (error) {
@@ -5278,6 +5590,78 @@ async function handleRequest(request, response) {
     });
     call.push = { ok: push.ok, skipped: Boolean(push.skipped), reason: push.reason || "", recipients: push.result?.recipients || 0 };
     savePersistentState("porter-call-created");
+    return json(response, 201, call);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/telephony/extension-call") {
+    const body = await readBody(request);
+    const callTenant = findTenant(body.tenantId || activeMobileTenantId());
+    const targetExtension = String(body.targetExtension || "").trim();
+    const sourceExtension = String(body.sourceExtension || callTenant.sipPorterExtension || "9000").trim();
+    if (!/^\d{2,8}$/.test(targetExtension)) {
+      return json(response, 400, { message: "Ramal de destino invalido." });
+    }
+    if (targetExtension === sourceExtension) {
+      return json(response, 400, { message: "O ramal de origem e destino nao podem ser iguais." });
+    }
+
+    const targetUnit = unitList().find((unit) => unit.tenantId === callTenant.id && unitExtension(unit) === targetExtension);
+    const targetDevice = devices.find((device) =>
+      device.tenantId === callTenant.id &&
+      device.intercomEnabled &&
+      String(device.intercomExtension || "") === targetExtension
+    );
+    const targetsPorter = String(callTenant.sipPorterExtension || "") === targetExtension;
+    if (!targetUnit && !targetDevice && !targetsPorter) {
+      return json(response, 404, { message: "Ramal nao cadastrado neste condominio." });
+    }
+
+    const targetType = targetsPorter ? "PORTER" : targetUnit ? "UNIT" : targetDevice?.intercomType || "DEVICE";
+    const targetLabel = body.targetLabel || (targetsPorter
+      ? "Portaria"
+      : targetUnit
+        ? `Unidade ${targetUnit.unitNumber || targetUnit.unitId}`
+        : targetDevice.name);
+    const call = {
+      id: makeId("call"),
+      tenantId: callTenant.id,
+      unitId: targetUnit?.unitId || body.unitId || "",
+      unitNumber: targetUnit?.unitNumber || body.unitNumber || "",
+      targetType,
+      deviceId: targetDevice?.id || body.deviceId || "",
+      targetExtension,
+      targetLabel,
+      sourceExtension,
+      visitorLabel: body.sourceLabel || `Ramal ${sourceExtension}`,
+      status: "RINGING",
+      sipHandled: Boolean(body.sipHandled),
+      createdAt: now(),
+      answeredAt: "",
+      endedAt: ""
+    };
+    intercomCalls.unshift(call);
+    accessLogs.unshift({
+      id: makeId("access"),
+      tenantId: call.tenantId,
+      unitId: call.unitId,
+      decision: "INFO",
+      reason: `Chamada interna para ${targetLabel}`,
+      createdAt: call.createdAt,
+      user: { name: call.visitorLabel },
+      door: { name: "Telefonia interna" }
+    });
+
+    if (targetUnit) {
+      const push = await sendOneSignalPushToUnit(targetUnit, {
+        callId: call.id,
+        sourceExtension,
+        targetExtension,
+        title: "Chamada interna",
+        body: `${callTenant.name} - ${call.visitorLabel}`
+      });
+      call.push = { ok: push.ok, skipped: Boolean(push.skipped), reason: push.reason || "", recipients: push.result?.recipients || 0 };
+    }
+    savePersistentState("extension-call-created");
     return json(response, 201, call);
   }
 
@@ -5842,11 +6226,40 @@ async function handleRequest(request, response) {
     const existingDevice = body.id ? devices.find((item) => item.id === body.id) : null;
     const manufacturer = body.manufacturer || existingDevice?.manufacturer || "Generico";
     const model = body.model || existingDevice?.model || "";
-    const deviceProfile = matchesSs3532Mfw({ ...body, manufacturer, model })
-      ? ss3532MfwDefaults({ ...body, manufacturer, model }, existingDevice)
-      : matchesMhdx3116c({ ...body, manufacturer, model })
-        ? mhdx3116cDefaults({ ...body, manufacturer, model }, existingDevice)
-        : {};
+    const deviceProfile = matchesControlIdIduhf({ ...body, manufacturer, model })
+      ? controlIdIduhfDefaults({ ...body, manufacturer, model }, existingDevice)
+      : matchesNiceLinear({ ...body, manufacturer, model })
+        ? niceLinearDefaults({ ...body, manufacturer, model }, existingDevice)
+      : matchesSs3532Mfw({ ...body, manufacturer, model })
+        ? ss3532MfwDefaults({ ...body, manufacturer, model }, existingDevice)
+        : matchesMhdx3116c({ ...body, manufacturer, model })
+          ? mhdx3116cDefaults({ ...body, manufacturer, model }, existingDevice)
+          : {};
+    if (matchesControlIdIduhf({ ...body, manufacturer, model })) {
+      const validation = validateControlIdIduhfConfiguration(deviceProfile);
+      if (!validation.ok) {
+        return json(response, 400, {
+          message: validation.errors[0],
+          errors: validation.errors
+        });
+      }
+    }
+    if (matchesNiceLinear({ ...body, manufacturer, model })) {
+      const validation = validateNiceLinearConfiguration({
+        ...deviceProfile,
+        ...body,
+        model: deviceProfile.model || model,
+        ipAddress: body.ipAddress || body.host || existingDevice?.ipAddress || "",
+        apiPort: deviceProfile.apiPort || body.apiPort || existingDevice?.apiPort || 0,
+        password: body.password || existingDevice?.password || ""
+      });
+      if (!validation.ok) {
+        return json(response, 400, {
+          message: validation.errors[0],
+          errors: validation.errors
+        });
+      }
+    }
     const device = {
       id: body.id || makeId("device"),
       tenantId: body.tenantId || tenant.id,
@@ -5856,17 +6269,22 @@ async function handleRequest(request, response) {
       model: deviceProfile.model || model,
       ipAddress: body.ipAddress || body.host || "",
       apiHost: body.apiHost || body.ipAddress || body.host || "",
-      apiPort: Number(deviceProfile.apiPort || body.apiPort || existingDevice?.apiPort || 80),
-      apiProtocol: body.apiProtocol || existingDevice?.apiProtocol || "http",
-      rtspPort: Number(deviceProfile.rtspPort || body.rtspPort || existingDevice?.rtspPort || 554),
+      apiPort: Number(deviceProfile.apiPort ?? body.apiPort ?? existingDevice?.apiPort ?? 80),
+      apiProtocol: deviceProfile.apiProtocol || body.apiProtocol || existingDevice?.apiProtocol || "http",
+      rtspPort: Number(deviceProfile.rtspPort ?? body.rtspPort ?? existingDevice?.rtspPort ?? 554),
       channelCount: Number(deviceProfile.channelCount ?? body.channelCount ?? existingDevice?.channelCount ?? 0),
-      username: body.username || existingDevice?.username || "admin",
+      username: body.username || deviceProfile.username || existingDevice?.username || "admin",
       password: body.password || existingDevice?.password || "",
       passwordSet: Boolean(body.password || existingDevice?.password || body.passwordSet),
       authMode: body.authMode || existingDevice?.authMode || "DIGEST",
-      controlIdAction: body.controlIdAction || existingDevice?.controlIdAction || "door",
-      controlIdSecBoxId: body.controlIdSecBoxId || existingDevice?.controlIdSecBoxId || "",
-      controlIdGroupId: body.controlIdGroupId || existingDevice?.controlIdGroupId || "",
+      controlIdAction: deviceProfile.controlIdAction || body.controlIdAction || existingDevice?.controlIdAction || "door",
+      controlIdSecBoxId: deviceProfile.controlIdSecBoxId ?? body.controlIdSecBoxId ?? existingDevice?.controlIdSecBoxId ?? "",
+      controlIdGroupId: deviceProfile.controlIdGroupId ?? body.controlIdGroupId ?? existingDevice?.controlIdGroupId ?? "",
+      controlIdUhfMode: normalizeControlIdUhfMode(deviceProfile.controlIdUhfMode || body.controlIdUhfMode || existingDevice?.controlIdUhfMode),
+      niceConnectionMode: deviceProfile.niceConnectionMode || body.niceConnectionMode || existingDevice?.niceConnectionMode || "",
+      niceGatewayHealthPath: deviceProfile.niceGatewayHealthPath || body.niceGatewayHealthPath || existingDevice?.niceGatewayHealthPath || "",
+      niceGatewayOpenPath: deviceProfile.niceGatewayOpenPath || body.niceGatewayOpenPath || existingDevice?.niceGatewayOpenPath || "",
+      niceDeviceId: deviceProfile.niceDeviceId ?? body.niceDeviceId ?? existingDevice?.niceDeviceId ?? "",
       intercomEnabled: deviceProfile.intercomEnabled ?? Boolean(body.intercomEnabled),
       intercomType: deviceProfile.intercomType || body.intercomType || "FACIAL",
       intercomExtension: body.intercomExtension || "",
@@ -5874,6 +6292,10 @@ async function handleRequest(request, response) {
     };
     const updated = body.id ? updateById(devices, body.id, device) : null;
     if (!updated) devices.unshift(device);
+    if (deviceAdapter(updated || device) === NICE_LINEAR_ADAPTER &&
+        normalizeNiceLinearMode((updated || device).niceConnectionMode) === NICE_LINEAR_DEVICE_TCP_MODE) {
+      ensureNiceLinearTcpListener((updated || device).apiPort);
+    }
     if (cameras.some((camera) => camera.deviceId === device.id)) syncMobileCameraStreamsFile();
     savePersistentState("device-saved");
     return json(response, body.id ? 200 : 201, publicDevice(updated || device));
@@ -6056,9 +6478,9 @@ async function handleRequest(request, response) {
       accessLogs.unshift(log);
       return log;
     };
-    if (device && action.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER].includes(adapter)) {
+    if (device && action.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
       try {
-        const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1);
+        const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1, action);
         const log = actionLog("ALLOW", result.message || `Acionamento ${action.name} enviado via ${adapter}`);
         savePersistentState("action-triggered");
         return json(response, 200, {
@@ -6376,6 +6798,20 @@ async function handleRequest(request, response) {
     if (!plate) return json(response, 400, { message: "Informe a placa do veiculo." });
     const duplicate = vehicles.find((vehicle) => vehicle.id !== existing?.id && normalizeLookup(vehicle.plate) === normalizeLookup(plate));
     if (duplicate) return json(response, 409, { message: "Esta placa ja esta cadastrada." });
+    const tagValue = String(body.tagValue ?? existing?.tagValue ?? "").trim().toUpperCase();
+    const duplicateTag = tagValue && vehicles.find((vehicle) =>
+      vehicle.id !== existing?.id &&
+      vehicle.tenantId === unit.tenantId &&
+      normalizeLookup(vehicle.tagValue) === normalizeLookup(tagValue)
+    );
+    if (duplicateTag) return json(response, 409, { message: "Esta tag veicular ja esta vinculada a outro veiculo." });
+    const tagMode = normalizeControlIdUhfMode(body.tagMode || existing?.tagMode);
+    const tagDeviceId = body.tagDeviceId ?? existing?.tagDeviceId ?? "";
+    const tagChanged = body.tagValue !== undefined && (
+      tagValue !== String(existing?.tagValue || "") ||
+      tagMode !== normalizeControlIdUhfMode(existing?.tagMode) ||
+      tagDeviceId !== String(existing?.tagDeviceId || "")
+    );
     const vehicle = {
       id: existing?.id || makeId("vehicle"),
       tenantId: unit.tenantId,
@@ -6387,6 +6823,15 @@ async function handleRequest(request, response) {
       color: body.color || "",
       type: body.type || "CARRO",
       notes: body.notes || "",
+      tagValue,
+      tagMode,
+      tagDeviceId,
+      tagExternalId: tagChanged ? "" : existing?.tagExternalId || "",
+      tagUserId: existing?.tagUserId || "",
+      tagStatus: tagChanged
+        ? (tagValue ? "PENDING" : "")
+        : existing?.tagStatus || (tagValue ? "PENDING" : ""),
+      tagSyncedAt: existing?.tagSyncedAt || "",
       createdAt: existing?.createdAt || now(),
       updatedAt: now()
     };
@@ -6394,6 +6839,66 @@ async function handleRequest(request, response) {
     if (!updated) vehicles.unshift(vehicle);
     savePersistentState("vehicle-saved");
     return json(response, existing ? 200 : 201, updated || vehicle);
+  }
+
+  const syncVehicleTagMatch = url.pathname.match(/^\/api\/vehicles\/([^/]+)\/control-id-tag\/sync$/);
+  if (request.method === "POST" && syncVehicleTagMatch) {
+    const vehicle = vehicles.find((item) => item.id === decodeURIComponent(syncVehicleTagMatch[1]));
+    if (!vehicle) return json(response, 404, { message: "Veiculo nao encontrado." });
+    const body = await readBody(request);
+    const device = devices.find((item) => item.id === (body.deviceId || vehicle.tagDeviceId));
+    const person = residents.find((item) => item.id === vehicle.personId) || null;
+    try {
+      const synced = await syncVehicleTag({
+        vehicle,
+        device,
+        person,
+        adapter: deviceAdapter,
+        controlIdAdapter: CONTROL_ID_ACCESS_ADAPTER,
+        login: controlIdLogin,
+        loadObjects: controlIdLoadObjects,
+        post: controlIdPost,
+        ensureUser: ensureControlIdCredentialUser,
+        ensureGroup: ensureControlIdUserGroup,
+        now
+      });
+      Object.assign(vehicle, synced.vehiclePatch);
+      savePersistentState("vehicle-tag-synced");
+      return json(response, 200, { ...synced.result, vehicle });
+    } catch (error) {
+      vehicle.tagStatus = "ERROR";
+      vehicle.updatedAt = now();
+      savePersistentState("vehicle-tag-sync-error");
+      return json(response, 502, { message: error instanceof Error ? error.message : "Falha ao enviar tag veicular" });
+    }
+  }
+
+  const removeVehicleTagMatch = url.pathname.match(/^\/api\/vehicles\/([^/]+)\/control-id-tag$/);
+  if (request.method === "DELETE" && removeVehicleTagMatch) {
+    const vehicle = vehicles.find((item) => item.id === decodeURIComponent(removeVehicleTagMatch[1]));
+    if (!vehicle) return json(response, 404, { message: "Veiculo nao encontrado." });
+    const body = await readBody(request);
+    const device = devices.find((item) => item.id === (body.deviceId || vehicle.tagDeviceId));
+    try {
+      const removed = await removeVehicleTag({
+        vehicle,
+        device,
+        adapter: deviceAdapter,
+        controlIdAdapter: CONTROL_ID_ACCESS_ADAPTER,
+        login: controlIdLogin,
+        loadObjects: controlIdLoadObjects,
+        post: controlIdPost,
+        now
+      });
+      Object.assign(vehicle, removed.vehiclePatch);
+      savePersistentState("vehicle-tag-removed");
+      return json(response, 200, { ...removed.result, vehicle });
+    } catch (error) {
+      vehicle.tagStatus = "ERROR";
+      vehicle.updatedAt = now();
+      savePersistentState("vehicle-tag-remove-error");
+      return json(response, 502, { message: error instanceof Error ? error.message : "Falha ao remover tag veicular" });
+    }
   }
 
   const deleteVehicleMatch = url.pathname.match(/^\/api\/vehicles\/([^/]+)$/);
@@ -6487,6 +6992,7 @@ async function shutdown() {
   try {
     await postgresSaveQueue;
     await postgresPool?.end();
+    niceLinearListeners.forEach((listener) => listener.server?.close());
   } catch {
     // O encerramento continua mesmo se o armazenamento ja estiver indisponivel.
   } finally {

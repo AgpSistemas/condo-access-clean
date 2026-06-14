@@ -327,6 +327,61 @@ nav button:hover {
   gap: 16px;
 }
 
+.dashboard-quick-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.telephony-page {
+  max-width: 1080px;
+}
+
+.extension-directory {
+  display: grid;
+  gap: 9px;
+}
+
+.extension-directory-row {
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 11px;
+  border: 1px solid #dce5e8;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.extension-number {
+  min-height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #10232b;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.extension-directory-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.extension-directory-copy span,
+.extension-directory-copy small {
+  color: #66787e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.extension-directory-copy .online-text {
+  color: #13785b;
+}
+
 .form-panel {
   align-self: start;
 }
@@ -717,6 +772,94 @@ nav button:hover {
   font-weight: 700;
 }
 
+.billing-page {
+  display: grid;
+  gap: 16px;
+}
+
+.billing-company-list {
+  display: grid;
+  gap: 12px;
+}
+
+.billing-company-card {
+  border: 1px solid #d9e2e4;
+  border-radius: 8px;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+  background: #ffffff;
+}
+
+.billing-company-card header,
+.billing-company-card header div,
+.billing-breakdown span,
+.gateway-status,
+.gateway-status div {
+  display: flex;
+}
+
+.billing-company-card header {
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.billing-company-card header div,
+.gateway-status div {
+  flex-direction: column;
+  gap: 4px;
+}
+
+.billing-company-card header > strong {
+  color: #0f7b63;
+  font-size: 22px;
+}
+
+.billing-company-card span,
+.billing-company-card small,
+.gateway-status span {
+  color: #60747a;
+  font-size: 12px;
+}
+
+.billing-breakdown {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.billing-breakdown span {
+  min-height: 60px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f8fbfa;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.billing-breakdown strong {
+  color: #10232b;
+  font-size: 16px;
+}
+
+.gateway-status {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #efcf88;
+  border-radius: 8px;
+  background: #fff9ea;
+  color: #6b5319;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.gateway-status.configured {
+  border-color: #9bd2ba;
+  background: #eef8f2;
+  color: #155e4b;
+}
+
 .breadcrumb-bar {
   min-height: 54px;
   border-bottom: 1px solid #d9e2e4;
@@ -841,6 +984,26 @@ nav button:hover {
   display: block;
   color: #56656b;
   font-size: 12px;
+}
+
+.current-person-face {
+  min-height: 74px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #d9e5e1;
+  border-radius: 8px;
+  background: #f3faf7;
+}
+
+.current-person-face span {
+  display: grid;
+  gap: 4px;
+}
+
+.current-person-face small {
+  color: #58706b;
 }
 
 .avatar {
@@ -2204,7 +2367,7 @@ nav button:hover {
 .credential-face-cell {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 25px;
 }
 
 .credential-face-cell .avatar {
@@ -2520,6 +2683,7 @@ button.simple-row.selected {
   .permission-grid,
   .equipment-read-actions,
   .integration-summary-grid,
+  .billing-breakdown,
   .integration-table,
   .credential-review-table,
   .unit-directory-grid,
@@ -2528,7 +2692,8 @@ button.simple-row.selected {
   .webphone-form,
   .extensions-status-list,
   .people-header,
-  .person-row {
+  .person-row,
+  .extension-directory-row {
     grid-template-columns: 1fr;
   }
 

@@ -260,15 +260,49 @@ Objetos/funcoes:
 Status no sistema:
 
 - Adapter proprio implementado: `CONTROL_ID_ACCESS`.
+- Perfil de modelo pronto no cadastro: `iDUHF`.
+- Instalacao observada em 12 de junho de 2026: firmware `V5.18.3`, hardware `0N0100/0033B6`.
+- Interface web validada com usuarios, tags, horarios, relatorios, sincronizacao e abertura remota.
 - Nao deve ser tratado como camera RTSP comum.
 - Sessao, leitura de usuarios/credenciais/faces/eventos e teste de conexao implementados.
 - Criacao e exclusao de usuarios, RFID, PIN, QR Code e foto facial implementadas.
-- Abertura remota implementada para rele interno, SecBox e catraca.
+- Leitura, envio e exclusao de tags veiculares UHF implementados.
+- Modo UHF estendido usa `uhf_tags` com valor hexadecimal de ate 96 bits.
+- Modo UHF padrao usa `cards` com valor numerico/Wiegand.
+- Abertura remota do iDUHF usa `door` para o rele interno.
+- Abertura por `sec_box` fica disponivel somente para o modulo externo SecBox/MAE e exige o ID numerico do modulo.
+- A opcao de catraca nao e oferecida para o perfil iDUHF, pois pertence a familia iDBlock.
 - Vinculo opcional ao grupo de acesso configurado no cadastro do equipamento.
+
+Perfil padrao do iDUHF:
+
+| Campo | Padrao | Regra |
+| --- | --- | --- |
+| API | `http`, porta `80` | API REST `.fcgi` com sessao |
+| RTSP | porta `0` | iDUHF nao entra como camera |
+| Canais | `0` | nao gera canais de video |
+| Usuario | `admin` | senha deve ser cadastrada por instalacao |
+| Acionamento | `door` | rele ligado diretamente ao iDUHF |
+| SecBox/MAE | vazio | preencher somente ao selecionar `sec_box` |
+| Grupo de acesso | vazio | opcional; recomendado no modo standalone |
+| UHF | `EXTENDED` | usa `uhf_tags`; modo `STANDARD` usa `cards` |
+| Interfonia | desabilitada | perfil veicular, sem ramal SIP |
+
+Quando usar grupo de acesso:
+
+- No modo standalone, preencha o ID de um grupo/departamento que ja tenha `group_access_rules`, portais e horarios configurados. O sincronismo adiciona o usuario a `user_groups`.
+- Deixe vazio no modo online Pro/Enterprise, quando a autorizacao for decidida pelo servidor.
+- Regra direta por `user_access_rules` deve ficar restrita a excecoes; o fluxo por grupo e o recomendado pela documentacao oficial.
+
+Quando usar SecBox:
+
+- Use `door` quando a fechadura, cancela ou rele estiver conectado diretamente ao iDUHF.
+- Use `sec_box` apenas para o rele externo MAE/SecBox.
+- Informe o ID retornado/configurado pelo equipamento. O sistema nao usa mais o numero do rele como substituto silencioso para esse ID.
 
 Pendencias:
 
-- Homologar os comandos no modelo e firmware reais.
+- Executar gravacao e exclusao controladas de uma tag de teste no iDUHF antes da liberacao em producao.
 - Confirmar o grupo e as regras de acesso existentes no equipamento.
 - Verificar particularidades iDFace Lite/Pro, limite de faces e SIP.
 

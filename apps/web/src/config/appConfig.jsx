@@ -1,41 +1,6 @@
 import readXlsxFile from "read-excel-file/browser";
-import { Activity, BadgeCheck, Building2, ClipboardList, CreditCard, FileKey2, Home, KeySquare, PhoneCall, RadioTower, ServerCog, ShieldCheck, UserRound, Users } from "lucide-react";
-
-const railwayApiUrl = "https://api-production-441f.up.railway.app";
-const apiUrl = import.meta.env.VITE_API_URL || railwayApiUrl;
-const WEB_PORTER_EXTENSION = "9000";
-const WEB_PORTER_PASSWORD = "CondoAccess@2026";
-
-const sections = [
-  { id: "dashboard", label: "Dashboard", icon: Activity },
-  { id: "condominiums", label: "Condominios", icon: Building2 },
-  { id: "remotePorter", label: "Portaria Remota", icon: PhoneCall }
-];
-
-const condoSections = [
-  { id: "syndic", label: "Sindico", icon: ShieldCheck },
-  { id: "units", label: "Unidades", icon: Home },
-  { id: "residents", label: "Pessoas", icon: UserRound },
-  { id: "devices", label: "Equipamentos", icon: RadioTower },
-  { id: "credentials", label: "Credenciais", icon: BadgeCheck },
-  { id: "permissions", label: "Permissoes", icon: KeySquare },
-  { id: "resources", label: "Recursos", icon: ClipboardList },
-  { id: "sdk", label: "SDK equipamentos", icon: ServerCog }
-];
-
-const settingsSections = [
-  { id: "companies", label: "Empresas e planos", icon: Building2 },
-  { id: "licenses", label: "Licencas", icon: FileKey2 },
-  { id: "payments", label: "Pagamentos", icon: CreditCard }
-];
-
-const equipmentIntegrationResources = [
-  ["events", "Ler eventos", Activity],
-  ["credentials", "Buscar credenciais", BadgeCheck],
-  ["schedules", "Horarios", ClipboardList],
-  ["faces", "Faciais", UserRound],
-  ["users", "Usuarios", Users]
-];
+import { apiUrl, API_CACHE_KEY, railwayApiUrl, WEB_PORTER_EXTENSION, WEB_PORTER_PASSWORD } from "./constants.js";
+import { condoSections, equipmentIntegrationResources, sections, settingsSections } from "./routes.js";
 
 const emptyData = {
   generatedAt: null,
@@ -58,13 +23,17 @@ const emptyData = {
   accessRoutes: [],
   companies: [],
   licenses: [],
+  billingGateway: {
+    provider: "ASAAS",
+    environment: "sandbox",
+    configured: false,
+    webhookConfigured: false
+  },
   resources: [],
   resourceConfigurations: [],
   intercomCalls: [],
   extensionStatus: []
 };
-
-const API_CACHE_KEY = "condo-clean-api-cache";
 
 function normalizeBootstrap(payload = {}) {
   return Object.fromEntries(Object.entries(emptyData).map(([key, fallback]) => {
@@ -142,7 +111,9 @@ function sameText(left, right) {
 
 
 function credentialPhotoUrl(credential = {}, person = {}) {
-  if (person?.photoUrl) return person.photoUrl;
+  if (person?.photoUrl) {
+    return String(person.photoUrl).startsWith("/") ? `${apiUrl}${person.photoUrl}` : person.photoUrl;
+  }
   const photoUrl = String(credential?.photoUrl || "").trim();
   if (!photoUrl) return "";
   if (photoUrl.startsWith("data:") || photoUrl.startsWith("https://")) return photoUrl;
@@ -192,10 +163,62 @@ const emptyDeviceForm = {
   controlIdAction: "door",
   controlIdSecBoxId: "",
   controlIdGroupId: "",
+  controlIdUhfMode: "EXTENDED",
+  niceConnectionMode: "DEVICE_CONNECTS_TCP",
+  niceGatewayHealthPath: "/health",
+  niceGatewayOpenPath: "/api/nice-linear/open",
+  niceDeviceId: "",
   intercomExtension: "",
   intercomType: "FACIAL",
   intercomEnabled: true
 };
+
+const controlIdIduhfProfile = {
+  model: "iDUHF",
+  actionOptions: [
+    ["door", "Rele interno do iDUHF"],
+    ["sec_box", "Rele externo via SecBox/MAE"]
+  ],
+  guidance: {
+    door: "Use rele interno quando a fechadura ou cancela estiver ligada diretamente ao iDUHF.",
+    sec_box: "Use SecBox somente para o modulo externo MAE e informe o ID numerico exibido pelo equipamento.",
+    group: "Preencha o grupo no modo standalone para incluir automaticamente usuarios sincronizados no departamento/grupo que ja possui regras e horarios. Deixe vazio no modo online ou quando o servidor controlar a autorizacao.",
+    device: "O perfil usa API HTTP na porta 80, sem RTSP, canais de video ou ramal SIP."
+  }
+};
+
+function controlIdActionOptions(model = "") {
+  return model === controlIdIduhfProfile.model
+    ? controlIdIduhfProfile.actionOptions
+    : [["door", "Rele interno"], ["sec_box", "SecBox"], ["catra", "Catraca"]];
+}
+
+function controlIdProfileGuidance(device = {}) {
+  if (device.model !== controlIdIduhfProfile.model) return "";
+  const actionHint = device.controlIdAction === "sec_box"
+    ? controlIdIduhfProfile.guidance.sec_box
+    : controlIdIduhfProfile.guidance.door;
+  return `${controlIdIduhfProfile.guidance.device} ${actionHint} ${controlIdIduhfProfile.guidance.group}`;
+}
+
+const niceLinearModels = [
+  "Modulo Guarita MG3000",
+  "Modulo Guarita IP",
+  "Controladora Ethernet II",
+  "Controladora Ethernet III"
+];
+
+function isNiceLinearManufacturer(value = "") {
+  return ["Nice/Linear", "Nice Guarita", "Linear HCS"].includes(value);
+}
+
+function niceLinearProfileGuidance(device = {}) {
+  if (!isNiceLinearManufacturer(device.manufacturer)) return "";
+  if (device.niceConnectionMode === "HTTP_GATEWAY") {
+    return "Modo bridge: informe o endereco do gateway HTTP, as rotas e um token no campo Senha. A abertura sera enviada ao bridge e os eventos podem retornar pelo webhook do Condo Access.";
+  }
+  return "Modo usado nas instalacoes Nice/Linear: o equipamento inicia a conexao. Configure nele o IP do servidor Condo Access e a mesma porta de escuta informada aqui. O status e os pacotes recebidos ficam disponiveis para diagnostico; o comando binario de abertura depende do protocolo/SDK da Nice.";
+}
 
 const emptyLicenseForm = {
   id: "",
@@ -286,6 +309,13 @@ const emptyVehicleForm = {
   model: "",
   color: "",
   type: "CARRO",
+  tagValue: "",
+  tagMode: "EXTENDED",
+  tagDeviceId: "",
+  tagExternalId: "",
+  tagUserId: "",
+  tagStatus: "",
+  tagSyncedAt: "",
   notes: ""
 };
 
@@ -362,16 +392,32 @@ function defaultResourceSettings(resourceId) {
 
 
 function intelbrasDeviceDefaults(category, manufacturer) {
+  if (isNiceLinearManufacturer(manufacturer) && ["access-control", "iot"].includes(category)) {
+    return {
+      model: "Modulo Guarita MG3000",
+      apiProtocol: "tcp",
+      apiPort: "",
+      rtspPort: "0",
+      channelCount: "0",
+      niceConnectionMode: "DEVICE_CONNECTS_TCP",
+      niceGatewayHealthPath: "/health",
+      niceGatewayOpenPath: "/api/nice-linear/open",
+      niceDeviceId: "",
+      intercomEnabled: false
+    };
+  }
+
   if (manufacturer === "Control iD" && category === "access-control") {
     return {
-      model: "",
+      model: "iDUHF",
       apiProtocol: "http",
       apiPort: "80",
-      rtspPort: "554",
-      channelCount: "",
+      rtspPort: "0",
+      channelCount: "0",
       controlIdAction: "door",
       controlIdSecBoxId: "",
       controlIdGroupId: "",
+      controlIdUhfMode: "EXTENDED",
       intercomType: "FACIAL",
       intercomEnabled: true
     };
@@ -430,6 +476,41 @@ function intelbrasDeviceDefaults(category, manufacturer) {
 }
 
 function intelbrasModelDefaults(model) {
+  if (niceLinearModels.includes(model)) {
+    return {
+      category: "access-control",
+      manufacturer: "Nice/Linear",
+      model,
+      apiProtocol: "tcp",
+      apiPort: "",
+      rtspPort: "0",
+      channelCount: "0",
+      niceConnectionMode: "DEVICE_CONNECTS_TCP",
+      niceGatewayHealthPath: "/health",
+      niceGatewayOpenPath: "/api/nice-linear/open",
+      niceDeviceId: "",
+      intercomEnabled: false
+    };
+  }
+
+  if (model === "iDUHF") {
+    return {
+      category: "access-control",
+      manufacturer: "Control iD",
+      model,
+      apiProtocol: "http",
+      apiPort: "80",
+      rtspPort: "0",
+      channelCount: "0",
+      controlIdAction: "door",
+      controlIdSecBoxId: "",
+      controlIdGroupId: "",
+      controlIdUhfMode: "EXTENDED",
+      intercomType: "UHF",
+      intercomEnabled: false
+    };
+  }
+
   if (model === "DS-7616NI-E2 / 16P") {
     return {
       category: "cameras",
@@ -499,6 +580,18 @@ function homologatedModelOptions(manufacturer, categoryOrType) {
     if (key.includes("camera") || key === "dvr" || key === "nvr") return ["MHDX 3116-C"];
     if (key.includes("access") || key.includes("facial")) return ["SS 3532 MF W"];
     return ["SS 3532 MF W", "MHDX 3116-C"];
+  }
+
+  if (manufacturer === "Control iD") {
+    if (key.includes("access") || key.includes("uhf") || key.includes("vehicle")) return ["iDUHF"];
+    return ["iDUHF"];
+  }
+
+  if (isNiceLinearManufacturer(manufacturer)) {
+    if (key.includes("access") || key.includes("iot") || key.includes("gateway") || key.includes("control")) {
+      return niceLinearModels;
+    }
+    return niceLinearModels;
   }
 
   return [];
@@ -655,6 +748,10 @@ export {
   emptyVehicleForm,
   resourceConfigurationFields,
   defaultResourceSettings,
+  controlIdActionOptions,
+  controlIdProfileGuidance,
+  isNiceLinearManufacturer,
+  niceLinearProfileGuidance,
   intelbrasDeviceDefaults,
   intelbrasModelDefaults,
   homologatedModelOptions,

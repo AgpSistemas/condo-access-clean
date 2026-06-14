@@ -186,8 +186,14 @@ export class NativeSoftphone {
 
   callPorter(unitTelephony) {
     const account = mapApiTelephonyToNativeAccount(unitTelephony);
+    return this.callExtension(account.porterExtension);
+  }
+
+  callExtension(targetExtension) {
+    const extension = String(targetExtension || "").trim();
+    if (!extension) return Promise.reject(new Error("Ramal de destino nao informado"));
     return Promise.resolve(this.useEarpiece())
-      .then(() => this.nativeModule.call(account.porterExtension, {
+      .then(() => this.nativeModule.call(extension, {
         audioRoute: "EARPIECE",
         speakerphoneEnabled: false
       }));

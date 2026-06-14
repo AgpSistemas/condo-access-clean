@@ -1,8 +1,9 @@
 import Hls from "hls.js";
 import React, { useEffect, useRef, useState } from "react";
-import { Camera, RadioTower, Save, Trash2 } from "lucide-react";
+import { Camera, Plus, RadioTower, Save, Trash2 } from "lucide-react";
 import { apiUrl, homologatedModelOptions, intelbrasCameraDefaults } from "../config/appConfig.jsx";
 import { Field } from "./common.jsx";
+import { stopCameraStream } from "../services/cameraService.js";
 
 function cameraStreamKey(camera, channel) {
   if (!camera) return "";
@@ -149,7 +150,7 @@ function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
       video.removeAttribute("src");
       video.load();
       if (streamKey) {
-        void fetch(`${apiUrl}/streams/${encodeURIComponent(streamKey)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+        void stopCameraStream(streamKey).catch(() => undefined);
       }
     };
   }, [streamKey, streamUrl]);
@@ -263,7 +264,7 @@ function CameraTile({ camera, channel, description, index, onSelect }) {
       video.removeAttribute("src");
       video.load();
       if (streamKey) {
-        void fetch(`${apiUrl}/streams/${encodeURIComponent(streamKey)}`, { method: "DELETE", keepalive: true }).catch(() => undefined);
+        void stopCameraStream(streamKey).catch(() => undefined);
       }
     };
   }, [streamKey, streamUrl]);

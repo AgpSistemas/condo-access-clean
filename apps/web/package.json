@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3100",
-    "build": "vite build"
+    "build": "node --test src/services/billingCalculator.test.js && vite build",
+    "test": "node --test src/services/billingCalculator.test.js"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
