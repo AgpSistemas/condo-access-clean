@@ -5,6 +5,16 @@ param(
 $ErrorActionPreference = "Stop"
 $ApiUrl = "https://api-production-441f.up.railway.app/api"
 
+trap {
+  Write-Host ""
+  Write-Host "Falha na instalacao do Condo Access Gateway." -ForegroundColor Red
+  Write-Host ($_.Exception.Message) -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "Confira se voce extraiu o ZIP antes de executar o run-install.cmd." -ForegroundColor Cyan
+  Read-Host "Pressione ENTER para fechar"
+  exit 1
+}
+
 $CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal($CurrentIdentity)
 if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -59,6 +69,9 @@ Get-CimInstance Win32_Process |
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir | Out-Null
 $SourceExe = Join-Path $PSScriptRoot "CondoAccessGateway.exe"
+if (-not (Test-Path -LiteralPath $SourceExe)) {
+  throw "CondoAccessGateway.exe nao encontrado. Extraia todo o ZIP em uma pasta e execute o run-install.cmd dentro da pasta extraida."
+}
 Copy-Item -LiteralPath $SourceExe -Destination $InstalledExe -Force
 $SourceHash = (Get-FileHash -LiteralPath $SourceExe -Algorithm SHA256).Hash
 $InstalledHash = (Get-FileHash -LiteralPath $InstalledExe -Algorithm SHA256).Hash
