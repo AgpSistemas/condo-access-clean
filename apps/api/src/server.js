@@ -1080,9 +1080,36 @@ function deviceAdapter(device) {
   return "GENERIC_TCP";
 }
 
-async function authenticatedDeviceRequest(device, targetPath, { method = "GET", body = undefined, contentType = "application/xml", timeoutMs = 7000 } = {}) {
+async function authenticatedDeviceRequest(device, targetPath, {
+  method = "GET",
+  body = undefined,
+  contentType = "application/xml",
+  timeoutMs = 7000,
+  responseType = "text"
+} = {}) {
   if (!device.password) {
     throw new Error("Senha de integracao nao cadastrada para este equipamento");
+  }
+
+  if (device.useLocalGateway) {
+    const command = queueGatewayCommand(device, 1, {
+      request: { path: targetPath, method, body, contentType, timeoutMs, responseType }
+    }, "DEVICE_HTTP");
+    if (!command) throw new Error("Gateway local nao configurado para este condominio");
+    await waitForGatewayCommands([command], Math.max(timeoutMs + 10000, 20000));
+    if (["PENDING", "DELIVERED"].includes(command.status)) {
+      throw new Error("Gateway local nao respondeu a requisicao do equipamento");
+    }
+    if (command.result?.ok === false) {
+      throw new Error(command.result.message || "Falha ao acessar equipamento pelo Gateway local");
+    }
+    return {
+      ok: true,
+      status: Number(command.result?.status || 200),
+      body: command.result?.body || "",
+      bodyBase64: command.result?.bodyBase64 || "",
+      contentType: command.result?.contentType || ""
+    };
   }
 
   const targetUrl = `${deviceBaseUrl(device)}${targetPath}`;
@@ -1095,13 +1122,21 @@ async function authenticatedDeviceRequest(device, targetPath, { method = "GET", 
       body,
       signal: request.signal
     });
-    const text = await response.text();
+    const responseContentType = response.headers.get("content-type") || "";
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const text = responseType === "base64" ? "" : buffer.toString("utf8");
     if (!response.ok) {
       throw new Error(`Equipamento respondeu ${response.status}: ${text.slice(0, 240)}`);
     }
     const responseError = deviceAdapter(device) === "HIKVISION_ISAPI" ? hikvisionResponseError(text) : "";
     if (responseError) throw new Error(responseError);
-    return { ok: true, status: response.status, body: text };
+    return {
+      ok: true,
+      status: response.status,
+      body: text,
+      bodyBase64: responseType === "base64" ? buffer.toString("base64") : "",
+      contentType: responseContentType
+    };
   } finally {
     request.done();
   }
@@ -1321,16 +1356,27 @@ function gatewayRequestInstallation(request) {
   return gatewayInstallations.find((item) => item.tenantId === tenantId && item.activationCode === token) || null;
 }
 
-function queueGatewayCommand(device, relay = 1, action = {}) {
+function queueGatewayCommand(device, relay = 1, action = {}, type = "OPEN_DOOR") {
   const installation = gatewayInstallations.find((item) => item.tenantId === device.tenantId);
   if (!installation) return null;
+  const existingCommand = type === "TEST_DEVICE"
+    ? gatewayCommands.find((item) =>
+      item.tenantId === device.tenantId &&
+      item.deviceId === device.id &&
+      item.type === type &&
+      ["PENDING", "DELIVERED"].includes(item.status)
+    )
+    : null;
+  if (existingCommand) return existingCommand;
   const command = {
     id: makeId("gateway-command"),
     tenantId: device.tenantId,
     gatewayId: installation.gatewayId || "",
-    type: "OPEN_DOOR",
+    type,
+    deviceId: device.id,
     relay: Number(relay || 1),
     actionId: action.id || "",
+    request: action.request || null,
     device: { ...device },
     status: "PENDING",
     createdAt: now(),
@@ -1340,6 +1386,15 @@ function queueGatewayCommand(device, relay = 1, action = {}) {
   };
   gatewayCommands.push(command);
   return command;
+}
+
+async function waitForGatewayCommands(commands, timeoutMs = 15000) {
+  const pending = commands.filter(Boolean);
+  const deadline = Date.now() + timeoutMs;
+  while (pending.some((command) => ["PENDING", "DELIVERED"].includes(command.status)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return pending;
 }
 
 function gatewayWindowsInstallerPath() {
@@ -1988,6 +2043,18 @@ async function hikvisionFetchImageAsDataUrl(device, photoRef = "") {
 
   const maxBytes = Number(process.env.HIKVISION_FACE_IMAGE_MAX_BYTES || 350000);
   const targetUrl = absoluteDeviceImageUrl(device, clean);
+  if (device.useLocalGateway) {
+    const parsed = new URL(targetUrl);
+    const result = await authenticatedDeviceRequest(device, `${parsed.pathname}${parsed.search}`, {
+      method: "GET",
+      timeoutMs: 10000,
+      responseType: "base64"
+    });
+    const buffer = Buffer.from(result.bodyBase64 || "", "base64");
+    if (!buffer.length || buffer.length > maxBytes) return targetUrl;
+    const contentType = String(result.contentType || "image/jpeg").split(";")[0];
+    return `data:${contentType};base64,${result.bodyBase64}`;
+  }
   const headers = await hikvisionAuthHeaders(device, targetUrl, "GET");
   const request = withTimeout(10000);
   try {
@@ -3400,6 +3467,20 @@ async function fetchCredentialPhotoBytes(device, photoUrl = "") {
   if (dataImage?.buffer?.length) return dataImage;
   const targetUrl = absoluteDeviceImageUrl(device, clean);
   const sameDeviceOrigin = new URL(targetUrl).origin === new URL(deviceBaseUrl(device)).origin;
+  if (device.useLocalGateway && sameDeviceOrigin && deviceAdapter(device) === "HIKVISION_ISAPI") {
+    const parsed = new URL(targetUrl);
+    const result = await authenticatedDeviceRequest(device, `${parsed.pathname}${parsed.search}`, {
+      method: "GET",
+      timeoutMs: 12000,
+      responseType: "base64"
+    });
+    const buffer = Buffer.from(result.bodyBase64 || "", "base64");
+    if (!buffer.length) throw new Error("Foto vazia");
+    return {
+      mimeType: String(result.contentType || "image/jpeg").split(";")[0],
+      buffer
+    };
+  }
   let requestUrl = targetUrl;
   let headers = {};
   if (deviceAdapter(device) === CONTROL_ID_ACCESS_ADAPTER && sameDeviceOrigin) {
@@ -4347,7 +4428,9 @@ function checkTcpDevice(device, timeoutMs = 2500) {
 
 async function refreshDeviceStatuses(tenantId) {
   const targetDevices = devices.filter((device) => !tenantId || device.tenantId === tenantId);
-  await Promise.all(targetDevices.map(async (device) => {
+  const directDevices = targetDevices.filter((device) => !device.useLocalGateway);
+  const localDevices = targetDevices.filter((device) => device.useLocalGateway);
+  await Promise.all(directDevices.map(async (device) => {
     const result = await checkTcpDevice(device);
     device.status = result.online ? "ONLINE" : "OFFLINE";
     device.latencyMs = result.latencyMs;
@@ -4355,6 +4438,23 @@ async function refreshDeviceStatuses(tenantId) {
     device.statusReason = result.reason;
     if (result.online) device.lastSeenAt = device.lastCheckedAt;
   }));
+  const commands = localDevices.map((device) => {
+    const command = queueGatewayCommand(device, 1, {}, "TEST_DEVICE");
+    device.status = command ? "CHECKING" : "OFFLINE";
+    device.lastCheckedAt = now();
+    device.statusReason = command ? "Aguardando teste pelo Gateway local" : "Gateway local nao configurado";
+    return command;
+  });
+  await waitForGatewayCommands(commands);
+  localDevices.forEach((device) => {
+    const command = commands.find((item) => item?.deviceId === device.id);
+    if (command && ["PENDING", "DELIVERED"].includes(command.status)) {
+      device.status = "OFFLINE";
+      device.statusReason = "Gateway local nao respondeu ao teste";
+      device.lastCheckedAt = now();
+    }
+  });
+  savePersistentState("device-status-refreshed");
   return targetDevices;
 }
 
@@ -5661,6 +5761,29 @@ async function handleRequest(request, response) {
     if (!device) return json(response, 404, { message: "Equipamento nao encontrado" });
 
     try {
+      if (device.useLocalGateway) {
+        const command = queueGatewayCommand(device, 1, {}, "TEST_DEVICE");
+        if (!command) return json(response, 409, { message: "Gateway local nao configurado para este condominio" });
+        await waitForGatewayCommands([command]);
+        if (["PENDING", "DELIVERED"].includes(command.status)) {
+          device.status = "OFFLINE";
+          device.lastCheckedAt = now();
+          device.statusReason = "Gateway local nao respondeu ao teste";
+          return json(response, 504, {
+            ok: false,
+            deviceId: device.id,
+            adapter: "CONDO_ACCESS_GATEWAY",
+            checkedAt: device.lastCheckedAt,
+            message: device.statusReason
+          });
+        }
+        return json(response, command.result?.ok === false ? 502 : 200, {
+          deviceId: device.id,
+          adapter: "CONDO_ACCESS_GATEWAY",
+          checkedAt: device.lastCheckedAt,
+          ...command.result
+        });
+      }
       const result = await testDeviceIntegration(device);
       device.status = result.ok ? "ONLINE" : "OFFLINE";
       device.lastCheckedAt = now();
@@ -6038,10 +6161,19 @@ async function handleRequest(request, response) {
     command.status = body.ok === false ? "ERROR" : "DONE";
     command.finishedAt = now();
     command.result = body;
+    if (command.type === "TEST_DEVICE") {
+      const device = devices.find((item) => item.id === command.deviceId);
+      if (device) {
+        device.status = body.ok === false ? "OFFLINE" : "ONLINE";
+        device.latencyMs = body.latencyMs ?? null;
+        device.lastCheckedAt = now();
+        device.statusReason = body.message || (body.ok === false ? "Equipamento nao respondeu" : "Conectado pelo Gateway local");
+        if (body.ok !== false) device.lastSeenAt = device.lastCheckedAt;
+      }
+    }
     savePersistentState("gateway-command-result");
     return json(response, 200, { ok: true });
   }
-
 
   if (request.method === "POST" && url.pathname === "/api/access/open-door") {
     const body = await readBody(request);

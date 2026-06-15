@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const http = require("node:http");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -84,7 +85,8 @@ async function digestHeader(url, method, username, password) {
     return { Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}` };
   }
   const params = Object.fromEntries([...challenge.matchAll(/(\w+)="?([^",]+)"?/g)].map((match) => [match[1], match[2]]));
-  const uri = new URL(url).pathname;
+  const parsedUrl = new URL(url);
+  const uri = `${parsedUrl.pathname}${parsedUrl.search}`;
   const nc = "00000001";
   const cnonce = crypto.randomBytes(8).toString("hex");
   const qop = params.qop?.split(",")[0];
@@ -138,19 +140,83 @@ async function openDoor(command) {
   throw new Error(`Fabricante ${device.manufacturer || "desconhecido"} ainda nao suportado pelo Gateway`);
 }
 
+async function deviceHttp(command) {
+  const device = command.device || {};
+  const request = command.request || {};
+  const method = String(request.method || "GET").toUpperCase();
+  const targetUrl = `${deviceBaseUrl(device)}${String(request.path || "/")}`;
+  const headers = await digestHeader(
+    targetUrl,
+    method,
+    device.username || "admin",
+    device.password || ""
+  );
+  if (request.body !== undefined && request.body !== null) {
+    headers["Content-Type"] = request.contentType || "application/json";
+  }
+  const response = await fetch(targetUrl, {
+    method,
+    headers,
+    body: request.body === undefined || request.body === null ? undefined : request.body,
+    signal: AbortSignal.timeout(Number(request.timeoutMs || 12000))
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const text = request.responseType === "base64" ? "" : buffer.toString("utf8");
+  if (!response.ok) {
+    throw new Error(`Equipamento respondeu ${response.status}: ${text.slice(0, 300)}`);
+  }
+  return {
+    ok: true,
+    status: response.status,
+    body: text,
+    bodyBase64: request.responseType === "base64" ? buffer.toString("base64") : "",
+    contentType,
+    message: `Requisicao local concluida (${response.status})`
+  };
+}
+
+function testDeviceTcp(device, timeoutMs = 8000) {
+  const host = String(device.apiHost || device.ipAddress || "").replace(/^https?:\/\//i, "").split(/[/:]/)[0];
+  const port = Number(device.apiPort || device.httpPort || 80);
+  if (!host || !port) return Promise.resolve({ ok: false, latencyMs: null, message: "IP ou porta nao configurados" });
+
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish({
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      message: `Conectado a ${host}:${port} pelo Gateway local`
+    }));
+    socket.once("timeout", () => finish({ ok: false, latencyMs: null, message: `Timeout ao conectar em ${host}:${port}` }));
+    socket.once("error", (error) => finish({
+      ok: false,
+      latencyMs: null,
+      message: `Falha ao conectar em ${host}:${port}: ${error.code || error.message}`
+    }));
+  });
+}
+
 async function execute(command) {
   if (command.type === "OPEN_DOOR") return openDoor(command);
-  if (command.type === "TEST_DEVICE") {
-    const response = await fetch(deviceBaseUrl(command.device), { signal: AbortSignal.timeout(8000) });
-    return { ok: response.ok, message: `Equipamento respondeu ${response.status}` };
-  }
+  if (command.type === "TEST_DEVICE") return testDeviceTcp(command.device);
+  if (command.type === "DEVICE_HTTP") return deviceHttp(command);
   throw new Error(`Comando ${command.type} ainda nao suportado`);
 }
 
 async function cycle() {
   await cloud("/gateways/heartbeat", {
     method: "POST",
-    body: JSON.stringify({ hostname: os.hostname(), platform: os.platform(), version: "0.1.0" })
+    body: JSON.stringify({ hostname: os.hostname(), platform: os.platform(), version: "0.3.0" })
   });
   const commands = await cloud("/gateways/commands");
   for (const command of commands.items || []) {
