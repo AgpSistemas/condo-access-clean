@@ -217,6 +217,31 @@ function App() {
     setGatewayForm({ label: gateway?.label || "Portaria principal" });
   }, [data.gateways, selectedTenant?.id]);
 
+  useEffect(() => {
+    if (activeSection !== "devices" || deviceTab !== "gateway" || !selectedTenant?.id) return undefined;
+
+    let activeRequest = true;
+    const refreshGateway = async () => {
+      const response = await apiFetch(`/api/gateways?tenantId=${encodeURIComponent(selectedTenant.id)}`);
+      const gateways = await response.json().catch(() => []);
+      if (!activeRequest || !response.ok) return;
+      setData((current) => ({
+        ...current,
+        gateways: [
+          ...gateways,
+          ...(current.gateways || []).filter((item) => item.tenantId !== selectedTenant.id)
+        ]
+      }));
+    };
+
+    void refreshGateway();
+    const timer = window.setInterval(() => void refreshGateway(), 5000);
+    return () => {
+      activeRequest = false;
+      window.clearInterval(timer);
+    };
+  }, [activeSection, deviceTab, selectedTenant?.id, setData]);
+
   const resolveSipIncomingContext = useCallback((sourceExtension, targetExtension, fallbackTenant) => {
     const cleanSource = String(sourceExtension || "").trim();
     const cleanTarget = String(targetExtension || "").trim();
@@ -1578,6 +1603,15 @@ function App() {
     }
   }
 
+  function startLocalGatewayDeviceRegistration() {
+    setDeviceForm({
+      ...emptyDeviceForm,
+      tenantId: selectedTenant?.id || "",
+      useLocalGateway: true
+    });
+    setDeviceTab("inicio");
+  }
+
   async function deleteDevice(device) {
     if (!device) return;
     const linkedCameras = data.cameras.filter((camera) => camera.deviceId === device.id).length;
@@ -2918,6 +2952,7 @@ function App() {
                       <span><strong>Computador</strong>{gateway?.hostname || "Ainda nao conectado"}</span>
                       <span><strong>Ultima conexao</strong>{gateway?.lastSeenAt ? formatDateTime(gateway.lastSeenAt) : "Aguardando instalacao"}</span>
                     </div>
+                    {gateway?.online && <button type="button" onClick={startLocalGatewayDeviceRegistration}>Cadastrar equipamento local</button>}
                     {gateway?.installCode && !installCodeValid && <div className="form-hint">O ultimo codigo expirou. Clique abaixo para preparar outro.</div>}
                     {gateway?.installCode && <button className="secondary-button" type="button" onClick={(event) => void prepareGatewayInstallation(event, true)}>Gerar novo codigo</button>}
                   </article>
