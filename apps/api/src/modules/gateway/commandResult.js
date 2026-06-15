@@ -41,9 +41,10 @@ export async function requestGatewayCameraSnapshot(camera, device, {
 } = {}) {
   const channel = Math.max(1, Number(camera.channel || camera.activeChannels?.[0]?.channel || 1));
   const channelId = `${channel}01`;
+  const hasParentDevice = Boolean(camera.deviceId && camera.deviceId === device.id);
   const deviceChannelCount = Number(device.channelCount || 0);
   const deviceModel = String(device.model || "").toLowerCase();
-  const isDeviceChannel = deviceChannelCount > 1 || /dvr|nvr|ds-7|ds-76|mhdx/i.test(deviceModel);
+  const isDeviceChannel = hasParentDevice || deviceChannelCount > 1 || /dvr|nvr|ds-7|ds-76|mhdx/i.test(deviceModel);
   const apiHost = isDeviceChannel
     ? device.apiHost || device.ipAddress || camera.apiHost || camera.ipAddress || camera.host
     : camera.apiHost || camera.ipAddress || camera.host || device.apiHost || device.ipAddress;

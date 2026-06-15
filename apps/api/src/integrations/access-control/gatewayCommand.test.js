@@ -16,12 +16,12 @@ test("confirma comando concluido pelo gateway local", async () => {
   assert.equal(result.message, "Porta aberta");
 });
 
-test("monta snapshot Hikvision pelo IP privado da camera", async () => {
+test("monta snapshot Hikvision pelo IP privado do equipamento pai", async () => {
   let queuedCommand = null;
   const image = Buffer.from("jpeg-test");
   const result = await requestGatewayCameraSnapshot(
-    { id: "camera-1", tenantId: "tenant-1", ipAddress: "192.168.1.20", channel: 2 },
-    { id: "device-1", tenantId: "tenant-1", ipAddress: "192.168.1.10", channelCount: 16, username: "admin", password: "secret" },
+    { id: "camera-1", deviceId: "device-1", tenantId: "tenant-1", ipAddress: "192.168.1.20", channel: 2 },
+    { id: "device-1", tenantId: "tenant-1", ipAddress: "192.168.1.10", username: "admin", password: "secret" },
     {
       queueCommand: (device, relay, action, type) => {
         queuedCommand = { device, relay, action, type };
