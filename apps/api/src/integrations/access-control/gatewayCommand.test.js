@@ -38,8 +38,8 @@ test("monta snapshot Hikvision pelo IP privado do equipamento pai", async () => 
     }
   );
 
-  assert.equal(queuedCommand.type, "DEVICE_HTTP");
+  assert.equal(queuedCommand.type, "CAMERA_SNAPSHOT");
   assert.equal(queuedCommand.device.apiHost, "192.168.1.10");
-  assert.equal(queuedCommand.action.request.path, "/ISAPI/Streaming/channels/201/picture");
+  assert.equal(queuedCommand.action.request.rtspPath, "/Streaming/channels/201");
   assert.equal(result.buffer.toString(), "jpeg-test");
 });

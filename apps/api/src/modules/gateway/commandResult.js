@@ -61,12 +61,13 @@ export async function requestGatewayCameraSnapshot(camera, device, {
   };
   const command = queueCommand(localTarget, 1, {
     request: {
-      path: `/ISAPI/Streaming/channels/${channelId}/picture`,
-      method: "GET",
+      channel,
+      rtspPath: camera.rtspPath || `/Streaming/channels/${channelId}`,
+      rtspTransport: camera.rtspTransport || "tcp",
       timeoutMs,
       responseType: "base64"
     }
-  }, "DEVICE_HTTP");
+  }, "CAMERA_SNAPSHOT");
   const outcome = await waitForGatewayCommand(command, { waitForCommands, timeoutMs: timeoutMs + 5000 });
   if (!outcome.ok) throw new Error(outcome.message);
   const bodyBase64 = outcome.result?.bodyBase64 || "";

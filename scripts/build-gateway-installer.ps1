@@ -6,7 +6,7 @@ $Stage = Join-Path $Root ".gateway-installer-stage"
 $Downloads = Join-Path $Root "apps\api\public\downloads"
 $Exe = Join-Path $Stage "CondoAccessGateway.exe"
 $Installer = Join-Path $Downloads "CondoAccessGateway-Setup.exe"
-$ZipPackage = Join-Path $Downloads "CondoAccessGateway-0.4.0.zip"
+$ZipPackage = Join-Path $Downloads "CondoAccessGateway-0.4.1.zip"
 $StagedInstaller = Join-Path $Stage "CondoAccessGateway-Setup.exe"
 $SeaBlob = Join-Path $Stage "gateway-sea.blob"
 $SeaConfig = Join-Path $Stage "sea-config.json"
@@ -43,6 +43,17 @@ npx.cmd --yes postject $Exe NODE_SEA_BLOB $SeaBlob --sentinel-fuse NODE_SEA_FUSE
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Exe)) { throw "Nao foi possivel injetar o Gateway no executavel." }
 
 Copy-Item -LiteralPath (Join-Path $Root "scripts\gateway-installer\install.ps1") -Destination (Join-Path $Stage "install.ps1") -Force
+
+$FfmpegCandidates = @(
+  (Join-Path $Root "node_modules\@ffmpeg-installer\win32-x64\ffmpeg.exe"),
+  (Join-Path $Root "apps\api\node_modules\@ffmpeg-installer\win32-x64\ffmpeg.exe"),
+  (Join-Path $Root "node_modules\@ffmpeg-installer\ffmpeg\ffmpeg.exe")
+)
+$Ffmpeg = $FfmpegCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $Ffmpeg) {
+  throw "ffmpeg.exe nao encontrado. Execute npm install antes de gerar o Gateway."
+}
+Copy-Item -LiteralPath $Ffmpeg -Destination (Join-Path $Stage "ffmpeg.exe") -Force
 
 $RunCmd = @'
 @echo off
@@ -82,10 +93,12 @@ SourceFiles0="$Stage\"
 %FILE0%=
 %FILE1%=
 %FILE2%=
+%FILE3%=
 [Strings]
 FILE0="CondoAccessGateway.exe"
 FILE1="install.ps1"
 FILE2="run-install.cmd"
+FILE3="ffmpeg.exe"
 "@
 $SedPath = Join-Path $Stage "installer.sed"
 Set-Content -Path $SedPath -Value $Sed -Encoding ASCII
@@ -99,7 +112,8 @@ if ($env:BUILD_GATEWAY_SFX -eq "true") {
 $PackageFiles = @(
   (Join-Path $Stage "CondoAccessGateway.exe"),
   (Join-Path $Stage "install.ps1"),
-  (Join-Path $Stage "run-install.cmd")
+  (Join-Path $Stage "run-install.cmd"),
+  (Join-Path $Stage "ffmpeg.exe")
 )
 Compress-Archive -LiteralPath $PackageFiles -DestinationPath $ZipPackage -Force
 Write-Host "Pacote ZIP gerado: $ZipPackage" -ForegroundColor Green

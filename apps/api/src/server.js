@@ -1528,7 +1528,7 @@ function gatewayWindowsInstallerPath() {
 }
 
 function gatewayWindowsZipPath() {
-  const filename = "CondoAccessGateway-0.4.0.zip";
+  const filename = "CondoAccessGateway-0.4.1.zip";
   return [
     path.join(process.cwd(), "apps", "api", "public", "downloads", filename),
     path.join(process.cwd(), "public", "downloads", filename)
@@ -6361,7 +6361,7 @@ async function handleRequest(request, response) {
     const stat = fs.statSync(packagePath);
     response.writeHead(200, {
       "Content-Type": "application/zip",
-      "Content-Disposition": 'attachment; filename="CondoAccessGateway-0.4.0.zip"',
+      "Content-Disposition": 'attachment; filename="CondoAccessGateway-0.4.1.zip"',
       "Content-Length": stat.size,
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
       "Pragma": "no-cache",

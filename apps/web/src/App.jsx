@@ -2931,7 +2931,7 @@ function App() {
                         : "Prepare a instalacao acima para liberar o download vinculado ao condominio."}</span>
                     </div>
                     {installCodeValid
-                      ? <a className="gateway-download-button" href={apiPath("/api/gateways/download/windows.zip?v=0.4.0")} download>Baixar Gateway Windows 0.4.0</a>
+                      ? <a className="gateway-download-button" href={apiPath("/api/gateways/download/windows.zip?v=0.4.1")} download>Baixar Gateway Windows 0.4.1</a>
                       : <button className="gateway-download-button disabled" type="button" disabled>Prepare para baixar</button>}
                   </article>
                   {installCodeValid && (

@@ -1,12 +1,12 @@
 {
   "name": "@condo-clean/gateway-win",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "commonjs",
   "bin": "src/gateway.cjs",
   "scripts": {
     "start": "node src/gateway.cjs",
-    "check": "node --check src/gateway.cjs && node --check src/lib/deviceHttp.cjs && node --check src/commands/openDoor.cjs && node --check src/commands/router.cjs"
+    "check": "node --check src/gateway.cjs && node --check src/lib/deviceHttp.cjs && node --check src/commands/openDoor.cjs && node --check src/commands/cameraSnapshot.cjs && node --check src/commands/router.cjs"
   },
   "pkg": {
     "scripts": [
