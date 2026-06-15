@@ -47,11 +47,9 @@ Copy-Item -LiteralPath (Join-Path $Root "scripts\gateway-installer\install.ps1")
 $RunCmd = @'
 @echo off
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
-if errorlevel 1 (
-  echo.
-  echo A instalacao falhou. Veja a mensagem acima.
-  pause
-)
+echo.
+echo Instalador finalizado. Se houve falha, veja a mensagem acima.
+pause
 '@
 Set-Content -Path (Join-Path $Stage "run-install.cmd") -Value $RunCmd -Encoding ASCII
 

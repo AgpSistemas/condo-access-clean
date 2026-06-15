@@ -18,7 +18,7 @@ trap {
 $CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal($CurrentIdentity)
 if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  $Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+  $Arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
   Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList $Arguments
   exit
 }
