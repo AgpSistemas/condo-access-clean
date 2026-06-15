@@ -21,7 +21,7 @@ test("monta snapshot Hikvision pelo IP privado da camera", async () => {
   const image = Buffer.from("jpeg-test");
   const result = await requestGatewayCameraSnapshot(
     { id: "camera-1", tenantId: "tenant-1", ipAddress: "192.168.1.20", channel: 2 },
-    { id: "device-1", tenantId: "tenant-1", username: "admin", password: "secret" },
+    { id: "device-1", tenantId: "tenant-1", ipAddress: "192.168.1.10", channelCount: 16, username: "admin", password: "secret" },
     {
       queueCommand: (device, relay, action, type) => {
         queuedCommand = { device, relay, action, type };
@@ -39,7 +39,7 @@ test("monta snapshot Hikvision pelo IP privado da camera", async () => {
   );
 
   assert.equal(queuedCommand.type, "DEVICE_HTTP");
-  assert.equal(queuedCommand.device.apiHost, "192.168.1.20");
+  assert.equal(queuedCommand.device.apiHost, "192.168.1.10");
   assert.equal(queuedCommand.action.request.path, "/ISAPI/Streaming/channels/201/picture");
   assert.equal(result.buffer.toString(), "jpeg-test");
 });
