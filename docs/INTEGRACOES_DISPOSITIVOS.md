@@ -142,6 +142,7 @@ Pendencias:
 - Buscar guias ISAPI especificos por modelo no TPP.
 - Implementar discovery de capacidades por `/ISAPI/System/deviceInfo` e endpoints de capabilities.
 - Separar cameras Hikvision, NVR Hikvision e controle de acesso Hikvision em adapters filhos.
+- Validar em bancada a autenticacao QR do `DS-K1T342MWX`; o suporte depende de modelo/firmware e da opcao de autenticacao QR habilitada. No Condo Access, o convite QR e enviado como credencial de cartao e o QR exibido carrega exatamente o mesmo valor.
 
 ### HiLook
 
@@ -216,6 +217,7 @@ Pendencias:
 - Separar Intelbras video antigo/novo por versao de HTTP API.
 - Identificar quais linhas Mibo/consumer nao possuem API publica.
 - Mapear controladores de acesso Intelbras por modelo antes de prometer sincronismo facial/RFID.
+- O convite QR pode ser lido pela camera dos faciais Bio-T que anunciam suporte a QR, mas o cadastro fisico pelo Condo Access continua pendente do contrato CACO/API autorizado. O sistema nao deve marcar esse envio como sincronizado.
 
 ### Control iD
 
@@ -305,6 +307,30 @@ Pendencias:
 - Executar gravacao e exclusao controladas de uma tag de teste no iDUHF antes da liberacao em producao.
 - Confirmar o grupo e as regras de acesso existentes no equipamento.
 - Verificar particularidades iDFace Lite/Pro, limite de faces e SIP.
+- Confirmar no iDFace o modo de QR Code. O convite usa valor numerico compativel com ambos os modos; a integracao consulta `qrcode_legacy_mode_enabled` e grava em `qrcodes` no modo alfanumerico ou em `cards` nos modos numericos.
+
+## Convite QR nos faciais
+
+Fluxo adotado:
+
+1. O convite gera uma credencial `QR_CODE` com validade igual a do convite.
+2. O QR mostrado ao visitante carrega exatamente o valor enviado ao equipamento, sem codificar uma URL diferente.
+3. A credencial e enviada ao equipamento vinculado a uma porta do mesmo condominio da unidade; referencias de porta de outro condominio sao ignoradas.
+4. Control iD consulta o modo QR e usa `qrcodes` no modo alfanumerico ou `cards` no modo numerico.
+5. Hikvision usa a credencial de cartao que serve de base para autenticacao QR, desde que a funcao esteja suportada e habilitada no modelo/firmware.
+6. Intelbras Bio-T fica com status de erro/pending ate o conector CACO/API de cadastro estar homologado.
+
+Para Hikvision, os horarios UTC recebidos do app sao convertidos para data/hora local sem sufixo de timezone antes do envio ISAPI. O timezone padrao e `America/Sao_Paulo` e pode ser alterado por `DEVICE_TIME_ZONE`.
+
+### Uso unico, localizacao e eventos
+
+- Novos convites sao de uso unico por padrao.
+- Enquanto houver convite de uso unico ativo, a API consulta eventos dos faciais a cada `INVITE_EVENT_POLL_MS` (padrao: 5 segundos).
+- Ao localizar um evento aprovado com o mesmo QR/cartao, o convite e marcado como usado e a credencial e removida do equipamento.
+- A pagina publica permite que o visitante compartilhe a localizacao somente por acao explicita e permissao do navegador.
+- Areas comuns ficam em `/api/common-areas`.
+- Festas, reservas e demais eventos ficam em `/api/community-events`.
+- A lista de convidados de um evento usa os convites vinculados por `eventId`, preservando o mesmo fluxo de QR e uso unico.
 
 ## Adapters recomendados
 

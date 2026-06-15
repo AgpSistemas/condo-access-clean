@@ -8,6 +8,10 @@ import path from "node:path";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import pg from "pg";
 import QRCode from "qrcode";
+import { matchingSingleUseInvite } from "./modules/invites/lifecycle.js";
+import { createCommunityArea, createCommunityEvent } from "./modules/community/records.js";
+import { waitForGatewayCommand, requestGatewayCameraSnapshot } from "./modules/gateway/commandResult.js";
+import { renderPublicInvitePage } from "./pages/publicInvitePage.js";
 import {
   publicRestAccessProfiles,
   resolveRestAccessProfile,
@@ -327,9 +331,9 @@ const vehicles = [];
 const devices = [];
 
 const cameras = [];
+
 const gatewayInstallations = [];
 const gatewayCommands = [];
-
 
 const niceLinearListeners = new Map();
 const niceLinearSessions = new Map();
@@ -588,6 +592,10 @@ const unitLogins = [];
 
 const unitInvites = [];
 
+const commonAreas = [];
+
+const communityEvents = [];
+
 const accessRoutes = [];
 
 const permissionProfiles = [];
@@ -608,6 +616,8 @@ const resources = [
   { id: "voicy", name: "Voicy", enabled: true, group: "Essenciais", configurable: true, description: "Telefonia em nuvem com autoatendimento integrado ao app." },
   { id: "clickApprove", name: "ClickAprova", enabled: true, group: "Controle de acesso", configurable: true, description: "Aprove acessos pelo app com visualizacao das cameras em tempo real." },
   { id: "invites", name: "Convites", enabled: true, group: "Controle de acesso", configurable: true, description: "Envie convites e QR Codes para visitantes autorizados." },
+  { id: "guestLists", name: "Listas de festas", enabled: false, group: "Controle de acesso", configurable: true, description: "Organize eventos e listas de convidados com convites vinculados." },
+  { id: "commonAreas", name: "Areas comuns", enabled: false, group: "Atendimento", configurable: true, description: "Cadastre areas comuns e vincule reservas e eventos." },
   { id: "notices", name: "Mural", enabled: true, group: "Comunicacao", configurable: true, description: "Publique avisos do condominio para os moradores." },
   { id: "maintenance", name: "Manutencao", enabled: true, group: "Atendimento", configurable: true, description: "Abra e acompanhe solicitacoes de manutencao pelo app." },
   { id: "personalData", name: "Dados pessoais", enabled: true, group: "Cadastro", configurable: true, description: "Permita que moradores atualizem seus dados cadastrais." },
@@ -876,13 +886,15 @@ function bootstrap() {
     residents: residents.map(publicPerson),
     vehicles,
     devices: devices.map(publicDevice),
-    gateways: gatewayInstallations.map(publicGatewayInstallation),
     cameras: cameras.map(publicCamera),
+    gateways: gatewayInstallations.map(publicGatewayInstallation),
     actions,
     credentials,
     credentialSyncJobs,
     unitLogins,
     unitInvites,
+    commonAreas,
+    communityEvents,
     manufacturerProfiles,
     cameraProfiles: publicCameraProfiles(),
     deviceCategories,
@@ -936,51 +948,155 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function publicInviteHtml(invite, origin) {
+function legacyPublicInviteHtml(invite, origin) {
   const mobileInvite = toMobileInvite(invite, origin);
-  const validFrom = mobileInvite.validFrom ? new Date(mobileInvite.validFrom).toLocaleString("pt-BR") : "";
-  const validUntil = mobileInvite.validUntil ? new Date(mobileInvite.validUntil).toLocaleString("pt-BR") : "";
+  const inviteUnit = unitForId(invite.unitId);
+  const dateOptions = { dateStyle: "short", timeStyle: "short", timeZone: process.env.DEVICE_TIME_ZONE || "America/Sao_Paulo" };
+  const validFrom = mobileInvite.validFrom ? new Date(mobileInvite.validFrom).toLocaleString("pt-BR", dateOptions) : "";
+  const validUntil = mobileInvite.validUntil ? new Date(mobileInvite.validUntil).toLocaleString("pt-BR", dateOptions) : "";
   const qrUrl = mobileInvite.qrCodeUrl || `${invitePublicUrl(origin, mobileInvite.code)}/qr.png`;
+  const unitLabel = inviteUnit
+    ? `${inviteUnit.blockName ? `${inviteUnit.blockName} - ` : ""}Unidade ${inviteUnit.unitNumber || inviteUnit.unitId}`
+    : mobileInvite.unit?.id || "-";
+  const statusClass = normalizeLookup(mobileInvite.status || "Ativo").includes("ativ") ? "active" : "inactive";
 
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b5f55">
   <title>Convite Condo Access</title>
   <style>
-    body { margin: 0; font-family: Arial, sans-serif; background: #f3f7f8; color: #12242b; }
-    main { max-width: 520px; margin: 0 auto; padding: 24px; }
-    .card { background: #fff; border: 1px solid #dbe5e8; border-radius: 8px; padding: 22px; box-shadow: 0 8px 24px rgba(10, 31, 38, .08); }
-    h1 { margin: 0 0 8px; font-size: 28px; }
-    .muted { color: #64757d; margin: 0 0 18px; }
-    .qr { width: 100%; max-width: 320px; display: block; margin: 18px auto; border: 1px solid #e5ecef; border-radius: 8px; }
-    dl { display: grid; grid-template-columns: 120px 1fr; gap: 10px; margin: 18px 0 0; }
-    dt { font-weight: 700; color: #395058; }
-    dd { margin: 0; }
-    .code { font-family: monospace; word-break: break-all; background: #eef5f6; padding: 10px; border-radius: 6px; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; font-family: Inter, Arial, sans-serif; background: radial-gradient(circle at top, #d8f1eb 0, #edf6f4 38%, #f7faf9 100%); color: #15342f; }
+    main { width: min(100%, 560px); margin: 0 auto; padding: 22px 14px 34px; }
+    .brand { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 5px 0 18px; color: #0b5f55; font-size: 15px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: #0b5f55; color: #fff; font-size: 18px; box-shadow: 0 8px 18px rgba(11, 95, 85, .22); }
+    .card { overflow: hidden; background: rgba(255, 255, 255, .96); border: 1px solid rgba(135, 178, 169, .35); border-radius: 24px; box-shadow: 0 22px 55px rgba(20, 73, 65, .14); }
+    .hero { padding: 26px 24px 20px; text-align: center; background: linear-gradient(145deg, #0b5f55, #168878); color: #fff; }
+    .eyebrow { margin: 0 0 8px; font-size: 12px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; opacity: .8; }
+    h1 { margin: 0; font-size: clamp(26px, 7vw, 34px); line-height: 1.1; }
+    .guest { margin: 10px 0 0; font-size: 18px; font-weight: 700; }
+    .status { display: inline-flex; align-items: center; gap: 7px; margin-top: 15px; padding: 7px 12px; border-radius: 999px; font-size: 13px; font-weight: 800; }
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(255, 255, 255, .16); }
+    .status.active { background: rgba(216, 255, 238, .18); color: #d8ffee; }
+    .status.inactive { background: rgba(255, 224, 224, .18); color: #ffe0e0; }
+    .content { padding: 22px; }
+    .instruction { margin: 0 auto 16px; max-width: 380px; color: #526c67; text-align: center; line-height: 1.5; }
+    .qr-shell { width: min(100%, 390px); margin: 0 auto; padding: 16px; border: 2px solid #b9ddd5; border-radius: 22px; background: #fff; box-shadow: inset 0 0 0 7px #f1f8f6, 0 12px 28px rgba(20, 73, 65, .1); }
+    .qr { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; }
+    .scan-label { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 15px 0 0; color: #0b5f55; font-size: 13px; font-weight: 800; }
+    .scan-label::before, .scan-label::after { content: ""; width: 30px; height: 1px; background: #b9d8d1; }
+    .details { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 22px; }
+    .detail { min-width: 0; padding: 13px 14px; border: 1px solid #dcebe7; border-radius: 14px; background: #f7fbfa; }
+    .detail.wide { grid-column: 1 / -1; }
+    .detail span { display: block; margin-bottom: 4px; color: #718984; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .detail strong { display: block; overflow-wrap: anywhere; color: #1d433c; font-size: 15px; line-height: 1.35; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
+    .button { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 12px 14px; border: 1px solid #0b5f55; border-radius: 14px; color: #0b5f55; font-weight: 800; text-decoration: none; }
+    .button.primary { background: #0b5f55; color: #fff; }
+    button.button { width: 100%; background: #fff; font: inherit; cursor: pointer; }
+    .location-result { min-height: 18px; margin: 10px 0 0; color: #607a75; font-size: 12px; text-align: center; }
+    .code { margin: 18px 0 0; color: #77908b; font-family: monospace; font-size: 12px; text-align: center; overflow-wrap: anywhere; }
+    .footer { margin: 16px 0 0; color: #79908c; font-size: 12px; line-height: 1.5; text-align: center; }
+    @media (max-width: 420px) {
+      main { padding: 12px 9px 24px; }
+      .brand { margin-bottom: 12px; }
+      .card { border-radius: 20px; }
+      .hero { padding: 23px 17px 18px; }
+      .content { padding: 17px 14px 20px; }
+      .qr-shell { padding: 12px; border-radius: 18px; }
+      .details, .actions { grid-template-columns: 1fr; }
+      .detail.wide { grid-column: auto; }
+    }
+    @media print {
+      body { background: #fff; }
+      main { padding: 0; }
+      .brand, .actions, .footer { display: none; }
+      .card { border: 0; box-shadow: none; }
+    }
   </style>
 </head>
 <body>
   <main>
+    <div class="brand"><span class="brand-mark">CA</span> Condo Access</div>
     <section class="card">
-      <h1>Convite de acesso</h1>
-      <p class="muted">Apresente este QR Code na portaria ou no leitor autorizado.</p>
-      <img class="qr" src="${escapeHtml(qrUrl)}" alt="QR Code do convite">
-      <dl>
-        <dt>Visitante</dt><dd>${escapeHtml(mobileInvite.guestName)}</dd>
-        <dt>Condominio</dt><dd>${escapeHtml(mobileInvite.unit?.tenant?.name || "Condominio")}</dd>
-        <dt>Unidade</dt><dd>${escapeHtml(mobileInvite.unit?.id || "-")}</dd>
-        <dt>Porta</dt><dd>${escapeHtml(mobileInvite.door?.name || "Entrada")}</dd>
-        <dt>Status</dt><dd>${escapeHtml(mobileInvite.status || "Ativo")}</dd>
-        ${validFrom ? `<dt>Inicio</dt><dd>${escapeHtml(validFrom)}</dd>` : ""}
-        ${validUntil ? `<dt>Valido ate</dt><dd>${escapeHtml(validUntil)}</dd>` : ""}
-        <dt>Codigo</dt><dd class="code">${escapeHtml(mobileInvite.code)}</dd>
-      </dl>
+      <header class="hero">
+        <p class="eyebrow">Convite de acesso</p>
+        <h1>${escapeHtml(mobileInvite.unit?.tenant?.name || "Condominio")}</h1>
+        <p class="guest">${escapeHtml(mobileInvite.guestName)}</p>
+        <span class="status ${statusClass}">${escapeHtml(mobileInvite.status || "Ativo")}</span>
+      </header>
+      <div class="content">
+        <p class="instruction">Aproxime este QR Code da camera do leitor facial para liberar o acesso.</p>
+        <div class="qr-shell"><img class="qr" src="${escapeHtml(qrUrl)}" alt="QR Code do convite"></div>
+        <p class="scan-label">Apresente no leitor</p>
+        <div class="details">
+          <div class="detail wide"><span>Destino</span><strong>${escapeHtml(unitLabel)}</strong></div>
+          <div class="detail"><span>Entrada</span><strong>${escapeHtml(mobileInvite.door?.name || "Entrada")}</strong></div>
+          ${validFrom ? `<div class="detail"><span>Inicio</span><strong>${escapeHtml(validFrom)}</strong></div>` : ""}
+          ${validUntil ? `<div class="detail wide"><span>Valido ate</span><strong>${escapeHtml(validUntil)}</strong></div>` : ""}
+        </div>
+        <div class="actions">
+          <a class="button primary" href="${escapeHtml(qrUrl)}" download="convite-condo-access.png">Salvar QR Code</a>
+          <a class="button" href="javascript:window.print()">Imprimir convite</a>
+          <button class="button" id="share-location" type="button">Compartilhar localizacao</button>
+        </div>
+        <p class="location-result" id="location-result">${invite.location?.capturedAt ? "Localizacao compartilhada com o condominio." : "Compartilhamento opcional e somente com sua autorizacao."}</p>
+        <p class="code">Codigo do convite: ${escapeHtml(mobileInvite.code)}</p>
+      </div>
     </section>
+    <p class="footer">Convite pessoal e intransferivel. Utilize somente dentro do periodo autorizado.</p>
   </main>
+  <script>
+    const locationButton = document.getElementById("share-location");
+    const locationResult = document.getElementById("location-result");
+    locationButton?.addEventListener("click", () => {
+      if (!navigator.geolocation) {
+        locationResult.textContent = "Localizacao nao suportada neste navegador.";
+        return;
+      }
+      locationButton.disabled = true;
+      locationResult.textContent = "Solicitando permissao de localizacao...";
+      navigator.geolocation.getCurrentPosition(async (position) => {
+        try {
+          const response = await fetch("${invitePublicPath(mobileInvite.code)}/location", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+              accuracy: position.coords.accuracy
+            })
+          });
+          if (!response.ok) throw new Error("Falha ao registrar");
+          locationResult.textContent = "Localizacao compartilhada com o condominio.";
+        } catch {
+          locationResult.textContent = "Nao foi possivel registrar a localizacao.";
+          locationButton.disabled = false;
+        }
+      }, () => {
+        locationResult.textContent = "Permissao de localizacao nao concedida.";
+        locationButton.disabled = false;
+      }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
+    });
+  </script>
 </body>
 </html>`;
+}
+
+function publicInviteHtml(invite, origin) {
+  return renderPublicInvitePage({
+    invite,
+    origin,
+    toMobileInvite,
+    unitForId,
+    invitePublicUrl,
+    invitePublicPath,
+    normalizeLookup,
+    timeZone: process.env.DEVICE_TIME_ZONE || "America/Sao_Paulo"
+  });
 }
 
 async function readBody(request) {
@@ -1330,12 +1446,13 @@ async function openDeviceDoor(device, relay = 1, action = {}) {
 
   throw new Error(`Adapter ${adapter} nao possui comando de abertura direta homologado`);
 }
+
 function publicGatewayInstallation(item) {
   const lastSeenAt = item.lastSeenAt || "";
   return {
     id: item.id,
-    label: item.label || "Portaria principal",
     tenantId: item.tenantId,
+    label: item.label || "Portaria principal",
     gatewayId: item.gatewayId || "",
     hostname: item.hostname || "",
     version: item.version || "",
@@ -1410,6 +1527,13 @@ function gatewayWindowsInstallerPath() {
   ].find((candidate) => fs.existsSync(candidate)) || "";
 }
 
+function gatewayWindowsZipPath() {
+  const filename = "CondoAccessGateway-0.4.0.zip";
+  return [
+    path.join(process.cwd(), "apps", "api", "public", "downloads", filename),
+    path.join(process.cwd(), "public", "downloads", filename)
+  ].find((candidate) => fs.existsSync(candidate)) || "";
+}
 
 function invitePublicPath(code) {
   return `/api/condominiums/invites/public/${encodeURIComponent(code)}`;
@@ -1424,9 +1548,19 @@ function toMobileInvite(invite, origin) {
   return {
     id: invite.id,
     code: invite.code || invite.id,
+    qrPayload: invite.qrPayload || invite.code || invite.id,
     guestName: invite.guest || invite.guestName,
     guestPhone: invite.guestPhone || "",
     status: invite.status,
+    credentialId: invite.credentialId || "",
+    deviceId: invite.deviceId || "",
+    syncStatus: invite.syncStatus || "PENDING",
+    syncMessage: invite.syncMessage || "",
+    singleUse: invite.singleUse !== false,
+    usedAt: invite.usedAt || "",
+    usageCount: Number(invite.usageCount || 0),
+    location: invite.location || null,
+    eventId: invite.eventId || "",
     validFrom: invite.validFrom,
     validUntil: invite.validUntil,
     door: invite.door || { id: invite.doorId || "action-entrada", name: invite.doorName || "Porta Entrada" },
@@ -1744,6 +1878,8 @@ function removeInactiveTenantData() {
     syncJobs: removeMatching(credentialSyncJobs, belongsToInactiveTenant),
     logins: removeMatching(unitLogins, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
     invites: removeMatching(unitInvites, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
+    commonAreas: removeMatching(commonAreas, belongsToInactiveTenant),
+    communityEvents: removeMatching(communityEvents, (item) => belongsToInactiveTenant(item) || belongsToInactiveUnit(item)),
     routes: removeMatching(accessRoutes, belongsToInactiveTenant),
     profiles: removeMatching(permissionProfiles, belongsToInactiveTenant),
     licenses: removeMatching(licenses, belongsToInactiveTenant),
@@ -1885,7 +2021,7 @@ function credentialDisplayValue(type, value, person = {}) {
 function generatedCredentialValue(type, person = {}) {
   const seed = normalizeLookup(person.cpf || person.email || person.phone || person.id || randomBytes(4).toString("hex")).slice(-8);
   if (type === "PIN") return String(Math.floor(100000 + Math.random() * 900000));
-  if (type === "QR_CODE") return `QR-${Date.now().toString(36).toUpperCase()}-${randomBytes(2).toString("hex").toUpperCase()}`;
+  if (type === "QR_CODE") return String(randomBytes(6).readUIntBE(0, 6));
   if (type === "FACE") return `FACE-${person.id || seed || randomBytes(3).toString("hex")}`;
   if (type === "APP") return `APP-${person.id || seed || randomBytes(3).toString("hex")}`;
   if (type === "PLATE") return normalizeLookup(person.vehiclePlate || "").toUpperCase();
@@ -2117,8 +2253,8 @@ async function readPagedHikvisionEvents(device, { limit = 200 } = {}) {
         major: 0,
         minor: 0,
         picEnable: true,
-        startTime: startTime.toISOString(),
-        endTime: endTime.toISOString()
+        startTime: hikvisionLocalDateTime(startTime.toISOString(), "2020-01-01T00:00:00"),
+        endTime: hikvisionLocalDateTime(endTime.toISOString(), "2037-12-31T23:59:59")
       }),
       contentType: "application/json",
       timeoutMs: 12000
@@ -2556,10 +2692,100 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [],
     const eventReport = persistDeviceEvents(device, readResult.events);
     report.eventsCreated = eventReport.created;
     report.eventsUpdated = eventReport.updated;
+    report.invitesConsumed = (await consumeSingleUseInvitesFromEvents(device, readResult.events)).length;
   }
 
   if (!dryRun) savePersistentState("device-credentials-imported");
   return report;
+}
+
+async function consumeSingleUseInviteFromEvent(device, event = {}) {
+  const normalizedEvent = {
+    ...event,
+    deviceId: event.deviceId || event.door?.deviceId || device?.id || ""
+  };
+  const invite = matchingSingleUseInvite(unitInvites, normalizedEvent);
+  if (!invite) return null;
+  const credential = credentials.find((item) => item.id === invite.credentialId)
+    || credentials.find((item) => item.type === "QR_CODE" && String(item.value) === String(invite.qrPayload || invite.code));
+  invite.usedAt = event.createdAt || now();
+  invite.usageCount = Number(invite.usageCount || 0) + 1;
+  invite.status = "Usado";
+  invite.consumedEventId = event.id || "";
+  invite.updatedAt = now();
+  if (!credential) {
+    invite.syncStatus = "ERROR";
+    invite.syncMessage = "Convite usado, mas a credencial vinculada nao foi encontrada para revogacao";
+    return invite;
+  }
+  const targetDevice = devices.find((item) => item.id === (invite.deviceId || credential.deviceId)) || device;
+  try {
+    const result = await deleteStoredCredentialFromDevice(targetDevice, credential);
+    credential.syncStatus = result.ok ? "REVOKED" : "ERROR";
+    credential.syncMessage = result.message || "";
+    credential.lastSyncedAt = result.ok ? now() : credential.lastSyncedAt;
+    invite.syncStatus = result.ok ? "REVOKED" : "ERROR";
+    invite.syncMessage = result.ok ? "Convite consumido e removido do equipamento" : result.message;
+  } catch (error) {
+    invite.syncStatus = "ERROR";
+    invite.syncMessage = error instanceof Error ? error.message : "Falha ao remover convite usado do equipamento";
+    credential.syncStatus = "ERROR";
+    credential.syncMessage = invite.syncMessage;
+  }
+  return invite;
+}
+
+async function consumeSingleUseInvitesFromEvents(device, events = []) {
+  const consumed = [];
+  for (const event of events) {
+    const invite = await consumeSingleUseInviteFromEvent(device, event);
+    if (invite) consumed.push(invite);
+  }
+  if (consumed.length) await savePersistentStateAndWait("single-use-invite-consumed");
+  return consumed;
+}
+
+const inviteEventPollState = { running: false, lastError: "" };
+
+async function pollSingleUseInviteEvents() {
+  if (inviteEventPollState.running) return;
+  const activeDeviceIds = new Set(unitInvites
+    .filter((invite) =>
+      invite.singleUse !== false &&
+      !invite.usedAt &&
+      invite.deviceId &&
+      invite.syncStatus === "SYNCED" &&
+      String(invite.status || "Ativo").toLowerCase() === "ativo" &&
+      (!invite.validFrom || Date.parse(invite.validFrom) <= Date.now()) &&
+      (!invite.validUntil || Date.parse(invite.validUntil) >= Date.now())
+    )
+    .map((invite) => invite.deviceId));
+  if (!activeDeviceIds.size) return;
+  inviteEventPollState.running = true;
+  try {
+    for (const device of devices.filter((item) => activeDeviceIds.has(item.id))) {
+      const adapter = deviceAdapter(device);
+      let events = [];
+      if (adapter === "HIKVISION_ISAPI") {
+        events = (await readPagedHikvisionEvents(device, { limit: 30 })).records;
+      } else if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
+        const session = await controlIdLogin(device);
+        const eventRows = await controlIdLoadObjects(device, session, "access_logs", {
+          limit: 80,
+          maxPages: 1,
+          order: ["id", "descending"]
+        });
+        events = controlIdDeviceEvents({ objects: { access_logs: eventRows, users: [] } }, device, 80);
+      }
+      if (events.length) await consumeSingleUseInvitesFromEvents(device, events);
+    }
+    inviteEventPollState.lastError = "";
+  } catch (error) {
+    inviteEventPollState.lastError = error instanceof Error ? error.message : "Falha ao verificar uso unico";
+    console.error(`[invite-consumption] ${inviteEventPollState.lastError}`);
+  } finally {
+    inviteEventPollState.running = false;
+  }
 }
 
 const equipmentIntegrationResources = new Set(["summary", "events", "credentials", "schedules", "faces", "vehicleTags", "users"]);
@@ -2971,6 +3197,7 @@ async function deviceIntegrationPayload(device, resource = "summary", { limit = 
     vehicleTags: directPayload?.vehicleTags || [],
     users: userRecords
   };
+  if (directPayload?.events?.length) await consumeSingleUseInvitesFromEvents(device, directPayload.events);
   const summary = Object.fromEntries(Object.entries(resourcesPayload).map(([key, records]) => [key, records.length]));
   const hasDeviceApi = [
     "HIKVISION_ISAPI",
@@ -3046,6 +3273,7 @@ function findUnitByNumber(tenantId, unitNumber, blockName = "") {
 
 async function directHikvisionIntegrationPayload(device, resource = "summary", { limit = 50 } = {}) {
   const snapshot = await readDeviceCredentialsFromDevice(device, { resource });
+  if (snapshot.events?.length) await consumeSingleUseInvitesFromEvents(device, snapshot.events);
   const credentialRecords = hikvisionDeviceCredentials(snapshot.records || [], device);
   const eventRecords = (snapshot.events || []).slice(0, limit);
   const resourcesPayload = {
@@ -3314,6 +3542,23 @@ function hikvisionUserNameForCredential(credential = {}, person = null) {
   return String(person?.name || credential.personName || credential.valueLabel || credential.value || "Usuario").trim().slice(0, 96);
 }
 
+function hikvisionLocalDateTime(value = "", fallback = "") {
+  const parsed = Date.parse(String(value || ""));
+  if (!Number.isFinite(parsed)) return fallback;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: process.env.DEVICE_TIME_ZONE || "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(new Date(parsed));
+  const valueFor = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${valueFor("year")}-${valueFor("month")}-${valueFor("day")}T${valueFor("hour")}:${valueFor("minute")}:${valueFor("second")}`;
+}
+
 function hikvisionUserPayload(credential = {}, person = null, employeeNo = "") {
   const payload = {
     employeeNo,
@@ -3322,8 +3567,8 @@ function hikvisionUserPayload(credential = {}, person = null, employeeNo = "") {
     userType: "normal",
     Valid: {
       enable: true,
-      beginTime: credential.validFrom || "2020-01-01T00:00:00",
-      endTime: credential.validUntil || "2037-12-31T23:59:59",
+      beginTime: hikvisionLocalDateTime(credential.validFrom, "2020-01-01T00:00:00"),
+      endTime: hikvisionLocalDateTime(credential.validUntil, "2037-12-31T23:59:59"),
       timeType: "local"
     },
     doorRight: "1",
@@ -3605,7 +3850,7 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
   }
 
   const type = normalizeCredentialType(credential.type);
-  if (["APP", "QR_CODE"].includes(type)) {
+  if (type === "APP") {
     return {
       ok: true,
       deviceId: device.id,
@@ -3625,7 +3870,7 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
     };
   }
 
-  if (type === "RFID") {
+  if (["RFID", "QR_CODE"].includes(type)) {
     const cardInfo = {
       employeeNo,
       employeeNoString: employeeNo,
@@ -3656,7 +3901,9 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
       ...cardResult,
       deviceId: device.id,
       adapter: "HIKVISION_ISAPI",
-      message: cardResult.ok ? `Cartao ${cardInfo.cardNo} enviado para ${employeeNo}` : cardResult.message,
+      message: cardResult.ok
+        ? `${type === "QR_CODE" ? "QR Code" : "Cartao"} ${cardInfo.cardNo} enviado para ${employeeNo}`
+        : cardResult.message,
       attempts: [...(userResult.attempts || []), ...(cardResult.attempts || [])]
     };
   }
@@ -3802,15 +4049,28 @@ async function ensureControlIdCredentialUser(device, session, credential = {}, p
   return { ...value, id };
 }
 
-function controlIdCredentialObject(type = "") {
+function controlIdCredentialObject(type = "", qrObject = "qrcodes") {
   if (type === "RFID") return "cards";
   if (type === "PIN") return "pins";
-  if (type === "QR_CODE") return "qrcodes";
+  if (type === "QR_CODE") return qrObject;
   return "";
 }
 
-function controlIdObjectValue(type = "", value = "") {
-  return type === "RFID" ? controlIdCardValue(value) : String(value || "").trim();
+function controlIdObjectValue(type = "", value = "", object = "") {
+  return type === "RFID" || object === "cards" ? controlIdCardValue(value) : String(value || "").trim();
+}
+
+async function controlIdQrCredentialObjects(device, session) {
+  const moduleName = String(device.model || "").toLowerCase().startsWith("idface") ? "face_id" : "barras";
+  try {
+    const result = await controlIdPost(device, session, "/get_configuration.fcgi", {
+      [moduleName]: ["qrcode_legacy_mode_enabled"]
+    });
+    const mode = result.payload?.[moduleName]?.qrcode_legacy_mode_enabled;
+    return String(mode) === "0" ? ["qrcodes", "cards"] : ["cards", "qrcodes"];
+  } catch {
+    return ["qrcodes", "cards"];
+  }
 }
 
 async function upsertControlIdCredentialObject(device, session, object, userId, value) {
@@ -3912,7 +4172,10 @@ async function sendControlIdStoredCredential(device, credential = {}) {
     };
   }
 
-  const object = controlIdCredentialObject(type);
+  const candidateObjects = type === "QR_CODE"
+    ? await controlIdQrCredentialObjects(device, session)
+    : [controlIdCredentialObject(type)];
+  const object = candidateObjects[0];
   if (!object) {
     return {
       ok: false,
@@ -3922,8 +4185,7 @@ async function sendControlIdStoredCredential(device, credential = {}) {
       attempts
     };
   }
-  const value = controlIdObjectValue(type, credential.value);
-  if (value === "") {
+  if (String(credential.value || "").trim() === "") {
     return {
       ok: false,
       deviceId: device.id,
@@ -3932,17 +4194,36 @@ async function sendControlIdStoredCredential(device, credential = {}) {
       attempts
     };
   }
-  await upsertControlIdCredentialObject(device, session, object, user.id, value);
-  attempts.push({
-    label: `Control iD ${object}`,
-    path: `/create_or_modify_objects.fcgi:${object}`,
-    ok: true
-  });
+  const acceptedObjects = [];
+  const objectErrors = [];
+  for (const candidateObject of candidateObjects.filter(Boolean)) {
+    try {
+      const value = controlIdObjectValue(type, credential.value, candidateObject);
+      await upsertControlIdCredentialObject(device, session, candidateObject, user.id, value);
+      acceptedObjects.push(candidateObject);
+      attempts.push({
+        label: `Control iD ${candidateObject}`,
+        path: `/create_or_modify_objects.fcgi:${candidateObject}`,
+        ok: true
+      });
+    } catch (error) {
+      objectErrors.push(`${candidateObject}: ${error instanceof Error ? error.message : "falha"}`);
+      attempts.push({
+        label: `Control iD ${candidateObject}`,
+        path: `/create_or_modify_objects.fcgi:${candidateObject}`,
+        ok: false,
+        error: error instanceof Error ? error.message : "Falha ao gravar credencial"
+      });
+    }
+  }
+  if (!acceptedObjects.length) {
+    throw new Error(`Control iD nao aceitou ${type}: ${objectErrors.join(" | ")}`);
+  }
   return {
     ok: true,
     deviceId: device.id,
     adapter: CONTROL_ID_ACCESS_ADAPTER,
-    message: `${type} enviado ao Control iD para ${user.name || user.registration || user.id}${groupId ? ` no grupo ${groupId}` : ""}`,
+    message: `${type} enviado ao Control iD em ${acceptedObjects.join(" + ")} para ${user.name || user.registration || user.id}${groupId ? ` no grupo ${groupId}` : ""}`,
     attempts
   };
 }
@@ -3970,23 +4251,40 @@ async function deleteControlIdStoredCredential(device, credential = {}) {
     };
   }
 
-  const object = controlIdCredentialObject(type);
-  if (object) {
-    const value = controlIdObjectValue(type, credential.value);
-    await controlIdPost(device, session, "/destroy_objects.fcgi", {
-      object,
-      where: {
-        [object]: object === "pins" && user?.id
-          ? { user_id: user.id }
-          : { value }
+  const candidateObjects = type === "QR_CODE"
+    ? await controlIdQrCredentialObjects(device, session)
+    : [controlIdCredentialObject(type)];
+  const objects = candidateObjects.filter(Boolean);
+  if (objects.length) {
+    const removedObjects = [];
+    for (const object of objects) {
+      try {
+        const value = controlIdObjectValue(type, credential.value, object);
+        await controlIdPost(device, session, "/destroy_objects.fcgi", {
+          object,
+          where: {
+            [object]: object === "pins" && user?.id
+              ? { user_id: user.id }
+              : { value }
+          }
+        });
+        removedObjects.push(object);
+      } catch {
+        // QR can exist in only one mode; deleting the alternate object is best-effort.
       }
-    });
+    }
     return {
       ok: true,
       deviceId: device.id,
       adapter: CONTROL_ID_ACCESS_ADAPTER,
-      message: `${type} excluido do Control iD`,
-      attempts: [{ label: `Control iD excluir ${object}`, path: `/destroy_objects.fcgi:${object}`, ok: true }]
+      message: removedObjects.length
+        ? `${type} excluido do Control iD em ${removedObjects.join(" + ")}`
+        : `${type} nao foi localizado nos modos de QR do Control iD`,
+      attempts: objects.map((object) => ({
+        label: `Control iD excluir ${object}`,
+        path: `/destroy_objects.fcgi:${object}`,
+        ok: removedObjects.includes(object)
+      }))
     };
   }
 
@@ -4017,6 +4315,15 @@ async function sendStoredCredentialToDevice(device, credential = {}) {
   const adapter = deviceAdapter(device);
   if (adapter === "HIKVISION_ISAPI") return sendHikvisionStoredCredential(device, credential);
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) return sendControlIdStoredCredential(device, credential);
+  if (adapter === INTELBRAS_SS_3532_MF_W_ADAPTER && normalizeCredentialType(credential.type) === "QR_CODE") {
+    return {
+      ok: false,
+      deviceId: device.id,
+      adapter,
+      message: "QR Code Intelbras Bio-T ainda depende do conector CACO/API autorizado para cadastro fisico",
+      attempts: []
+    };
+  }
   return {
     ok: true,
     deviceId: device.id,
@@ -4954,14 +5261,16 @@ function persistentState() {
     units: unitList(),
     residents,
     vehicles,
-    gatewayInstallations,
     devices,
+    gatewayInstallations,
     cameras,
     actions,
     credentials,
     credentialSyncJobs,
     unitLogins,
     unitInvites,
+    commonAreas,
+    communityEvents,
     accessRoutes,
     permissionProfiles,
     systemUsers,
@@ -4984,14 +5293,16 @@ function applyPersistentState(state = {}) {
   (state.units || []).forEach((unit) => units.set(unit.unitId || unit.id, unit));
   replaceCollection(residents, state.residents);
   replaceCollection(vehicles, state.vehicles);
-  replaceCollection(gatewayInstallations, state.gatewayInstallations);
   replaceCollection(devices, state.devices);
+  replaceCollection(gatewayInstallations, state.gatewayInstallations);
   replaceCollection(cameras, state.cameras);
   replaceCollection(actions, state.actions);
   replaceCollection(credentials, state.credentials);
   replaceCollection(credentialSyncJobs, state.credentialSyncJobs);
   replaceCollection(unitLogins, state.unitLogins);
   replaceCollection(unitInvites, state.unitInvites);
+  replaceCollection(commonAreas, state.commonAreas);
+  replaceCollection(communityEvents, state.communityEvents);
   replaceCollection(accessRoutes, state.accessRoutes);
   replaceCollection(permissionProfiles, state.permissionProfiles);
   replaceCollection(systemUsers, state.systemUsers);
@@ -5371,6 +5682,10 @@ setInterval(() => {
     if (Date.now() - session.lastAccessAt > maxIdleMs) stopStream(cameraId);
   }
 }, 60 * 1000).unref();
+
+setInterval(() => {
+  void pollSingleUseInviteEvents();
+}, Number(process.env.INVITE_EVENT_POLL_MS || 15000)).unref();
 
 function isRequestAbortError(error) {
   return error?.code === "ECONNRESET" || error?.code === "ECONNABORTED" || error?.message === "aborted";
@@ -6016,6 +6331,7 @@ async function handleRequest(request, response) {
       log
     });
   }
+
   if (request.method === "GET" && url.pathname === "/api/gateways") {
     const tenantId = url.searchParams.get("tenantId") || "";
     return json(response, 200, gatewayInstallations
@@ -6037,6 +6353,22 @@ async function handleRequest(request, response) {
       "Access-Control-Allow-Origin": "*"
     });
     return fs.createReadStream(installerPath).pipe(response);
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/gateways/download/windows.zip") {
+    const packagePath = gatewayWindowsZipPath();
+    if (!packagePath) return json(response, 404, { message: "Pacote ZIP do Gateway ainda nao foi publicado" });
+    const stat = fs.statSync(packagePath);
+    response.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": 'attachment; filename="CondoAccessGateway-0.4.0.zip"',
+      "Content-Length": stat.size,
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Access-Control-Allow-Origin": "*"
+    });
+    return fs.createReadStream(packagePath).pipe(response);
   }
 
   if (request.method === "POST" && url.pathname === "/api/gateways/activation") {
@@ -6190,8 +6522,14 @@ async function handleRequest(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/access/open-door") {
     const body = await readBody(request);
-    const action = actions.find((item) => item.id === body.doorId) || actions[0];
+    const requestTenantId = body.tenantId || units.get(body.unitId)?.tenantId || "";
+    const action = actions.find((item) =>
+      item.id === body.doorId &&
+      (!requestTenantId || item.tenantId === requestTenantId)
+    );
+    if (!action) return json(response, 404, { message: "Porta nao encontrada para este condominio" });
     const device = devices.find((item) => item.id === action?.deviceId);
+    if (!device) return json(response, 409, { message: "A porta selecionada nao possui equipamento vinculado" });
     let delivered = false;
     let queued = false;
     let gatewayMessage = "";
@@ -6199,10 +6537,10 @@ async function handleRequest(request, response) {
     const adapter = device ? deviceAdapter(device) : "GENERIC_TCP";
     if (device?.useLocalGateway && action?.status !== "DISABLED") {
       const command = queueGatewayCommand(device, action.relay || device.doorRelay || 1, action);
-      queued = Boolean(command);
-      gatewayMessage = command
-        ? "Comando enviado para a fila do Gateway local"
-        : "Gateway local ainda nao ativado para este condominio";
+      const outcome = await waitForGatewayCommand(command, { waitForCommands: waitForGatewayCommands });
+      delivered = outcome.delivered;
+      queued = outcome.queued;
+      gatewayMessage = outcome.message;
     } else if (device && action?.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, DAHUA_ACCESS_CGI_ADAPTER, AXIS_VAPIX_PACS_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
       try {
         const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1, action);
@@ -6231,7 +6569,13 @@ async function handleRequest(request, response) {
     };
     accessLogs.unshift(log);
     savePersistentState("access-open-door");
-    return json(response, 200, { delivered, queued, message: gatewayMessage, log });
+    return json(response, delivered ? 200 : queued ? 202 : 502, {
+      ok: delivered,
+      delivered,
+      queued,
+      message: gatewayMessage,
+      log
+    });
   }
 
   if (request.method === "GET" && url.pathname === "/api/condominiums/invites") {
@@ -6247,14 +6591,27 @@ async function handleRequest(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/condominiums/invites") {
     const body = await readBody(request);
-    const unit = units.get(body.unitId || "unit-101") || units.get("unit-101");
-    const action = actions.find((item) => item.id === body.doorId) || actions[0];
-    const code = `CA${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const unit = units.get(body.unitId || "");
+    if (!unit) return json(response, 404, { message: "Unidade nao encontrada para gerar o convite" });
+    const requestedAction = body.doorId
+      ? actions.find((item) => item.id === body.doorId && item.tenantId === unit.tenantId)
+      : null;
+    if (body.doorId && !requestedAction) {
+      return json(response, 400, { message: "A porta selecionada nao pertence ao condominio da unidade" });
+    }
+    const action = requestedAction
+      || actions.find((item) => item.tenantId === unit?.tenantId && item.status !== "DISABLED");
+    if (!action) return json(response, 409, { message: "Cadastre uma porta ativa antes de gerar convites" });
+    const targetDevice = devices.find((item) => item.id === action.deviceId && item.tenantId === unit.tenantId);
+    if (!targetDevice) {
+      return json(response, 409, { message: "A porta selecionada nao possui um leitor valido vinculado" });
+    }
+    const code = generatedCredentialValue("QR_CODE");
     const invite = {
       id: makeId("invite"),
       code,
-      tenantId: unit?.tenantId || tenant.id,
-      unitId: unit?.unitId || "unit-101",
+      tenantId: unit.tenantId,
+      unitId: unit.unitId,
       guest: body.guestName || "Convidado",
       guestName: body.guestName || "Convidado",
       guestPhone: body.guestPhone || "",
@@ -6262,12 +6619,53 @@ async function handleRequest(request, response) {
       status: "Ativo",
       type: "QR_CODE",
       identification: "QR Code",
-      doorId: action?.id || body.doorId || "",
-      doorName: action?.name || "Porta Entrada",
+      qrPayload: code,
+      singleUse: body.singleUse !== false,
+      eventId: body.eventId || "",
+      doorId: action.id,
+      doorName: action.name,
+      deviceId: targetDevice.id,
       validFrom: body.validFrom || now(),
       validUntil: body.validUntil || new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
       createdAt: now()
     };
+    const credentialResult = saveCredential({
+      tenantId: invite.tenantId,
+      unitId: invite.unitId,
+      personName: invite.guestName,
+      type: "QR_CODE",
+      value: invite.qrPayload,
+      valueLabel: `Convite QR - ${invite.guestName}`,
+      deviceId: invite.deviceId,
+      source: "INVITE",
+      validFrom: invite.validFrom,
+      validUntil: invite.validUntil
+    });
+    if (credentialResult.error) {
+      return json(response, credentialResult.duplicate ? 409 : 400, {
+        message: credentialResult.error,
+        duplicate: credentialResult.duplicate
+      });
+    }
+    invite.credentialId = credentialResult.credential.id;
+    try {
+      const event = await emitCredentialEvent("CREATE", credentialResult.credential);
+      Object.assign(credentialResult.credential, {
+        syncStatus: event.ok ? "SYNCED" : "ERROR",
+        syncMessage: event.message || "",
+        deviceId: event.deviceId || credentialResult.credential.deviceId || "",
+        lastSyncedAt: event.ok ? now() : credentialResult.credential.lastSyncedAt
+      });
+      invite.deviceId = credentialResult.credential.deviceId;
+      invite.syncStatus = credentialResult.credential.syncStatus;
+      invite.syncMessage = credentialResult.credential.syncMessage;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha ao enviar QR Code do convite ao equipamento";
+      credentialResult.credential.syncStatus = "ERROR";
+      credentialResult.credential.syncMessage = message;
+      invite.syncStatus = "ERROR";
+      invite.syncMessage = message;
+    }
     unitInvites.unshift(invite);
     savePersistentState("invite-created");
     return json(response, 201, toMobileInvite(invite, requestOrigin(request)));
@@ -6278,7 +6676,7 @@ async function handleRequest(request, response) {
     const code = decodeURIComponent(publicInviteQrMatch[1]);
     const invite = unitInvites.find((item) => (item.code || item.id) === code);
     if (!invite) return sendText(response, 404, "text/plain; charset=utf-8", "Convite nao encontrado");
-    const buffer = await QRCode.toBuffer(invitePublicUrl(requestOrigin(request), code), {
+    const buffer = await QRCode.toBuffer(invite.qrPayload || code, {
       type: "png",
       width: 512,
       margin: 1,
@@ -6300,6 +6698,65 @@ async function handleRequest(request, response) {
     return sendText(response, 200, "text/html; charset=utf-8", publicInviteHtml(invite, requestOrigin(request)), {
       "Cache-Control": "no-store"
     });
+  }
+
+  const publicInviteLocationMatch = url.pathname.match(/^\/api\/condominiums\/invites\/public\/([^/]+)\/location$/);
+  if (request.method === "POST" && publicInviteLocationMatch) {
+    const code = decodeURIComponent(publicInviteLocationMatch[1]);
+    const invite = unitInvites.find((item) => (item.code || item.id) === code);
+    if (!invite) return json(response, 404, { message: "Convite nao encontrado" });
+    const body = await readBody(request);
+    const latitude = Number(body.latitude);
+    const longitude = Number(body.longitude);
+    const accuracy = Number(body.accuracy || 0);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+      return json(response, 400, { message: "Localizacao invalida" });
+    }
+    invite.location = {
+      latitude,
+      longitude,
+      accuracy: Number.isFinite(accuracy) ? accuracy : 0,
+      capturedAt: now(),
+      consent: true
+    };
+    invite.updatedAt = now();
+    await savePersistentStateAndWait("invite-location-shared");
+    return json(response, 200, { ok: true, capturedAt: invite.location.capturedAt });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/common-areas") {
+    const tenantId = url.searchParams.get("tenantId") || "";
+    return json(response, 200, commonAreas.filter((item) => !tenantId || item.tenantId === tenantId));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/common-areas") {
+    const body = await readBody(request);
+    const area = createCommunityArea(body, { makeId, now });
+    commonAreas.unshift(area);
+    await savePersistentStateAndWait("common-area-created");
+    return json(response, 201, area);
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/community-events") {
+    const tenantId = url.searchParams.get("tenantId") || "";
+    const unitId = url.searchParams.get("unitId") || "";
+    return json(response, 200, communityEvents
+      .filter((item) => (!tenantId || item.tenantId === tenantId) && (!unitId || item.unitId === unitId))
+      .map((event) => ({
+        ...event,
+        area: commonAreas.find((area) => area.id === event.areaId) || null,
+        guests: unitInvites.filter((invite) => invite.eventId === event.id).map((invite) => toMobileInvite(invite, requestOrigin(request)))
+      })));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/community-events") {
+    const body = await readBody(request);
+    const area = body.areaId ? commonAreas.find((item) => item.id === body.areaId) : null;
+    if (body.areaId && !area) return json(response, 404, { message: "Area comum nao encontrada" });
+    const event = createCommunityEvent(body, { makeId, now });
+    communityEvents.unshift(event);
+    await savePersistentStateAndWait("community-event-created");
+    return json(response, 201, event);
   }
 
   if (request.method === "GET" && url.pathname === "/api/condominiums/notices") {
@@ -6551,6 +7008,21 @@ async function handleRequest(request, response) {
       : camera;
 
     try {
+      const linkedDevice = devices.find((item) => item.id === camera.deviceId);
+      if (linkedDevice?.useLocalGateway) {
+        const snapshot = await requestGatewayCameraSnapshot(streamCamera, linkedDevice, {
+          queueCommand: queueGatewayCommand,
+          waitForCommands: waitForGatewayCommands
+        });
+        response.writeHead(200, {
+          "Content-Type": snapshot.contentType,
+          "Content-Length": snapshot.buffer.length,
+          "Cache-Control": "private, max-age=3",
+          "Access-Control-Allow-Origin": "*",
+          "X-Condo-Access-Gateway": "local"
+        });
+        return response.end(snapshot.buffer);
+      }
       const filePath = await ensureSnapshot(streamCamera);
       response.writeHead(200, {
         "Content-Type": "image/jpeg",
@@ -6754,6 +7226,8 @@ async function handleRequest(request, response) {
       syncJobs: removeMatching(credentialSyncJobs, (item) => item.tenantId === tenantId),
       logins: removeMatching(unitLogins, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
       invites: removeMatching(unitInvites, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
+      commonAreas: removeMatching(commonAreas, (item) => item.tenantId === tenantId),
+      communityEvents: removeMatching(communityEvents, (item) => item.tenantId === tenantId || tenantUnitIds.has(item.unitId)),
       routes: removeMatching(accessRoutes, (item) => item.tenantId === tenantId),
       profiles: removeMatching(permissionProfiles, (item) => item.tenantId === tenantId),
       licenses: removeMatching(licenses, (item) => item.tenantId === tenantId),
@@ -7102,8 +7576,8 @@ async function handleRequest(request, response) {
       username: body.username || deviceProfile.username || existingDevice?.username || "admin",
       password: body.password || existingDevice?.password || "",
       passwordSet: Boolean(body.password || existingDevice?.password || body.passwordSet),
-      useLocalGateway: body.useLocalGateway === undefined ? Boolean(existingDevice?.useLocalGateway) : Boolean(body.useLocalGateway),
       authMode: body.authMode || existingDevice?.authMode || "DIGEST",
+      useLocalGateway: body.useLocalGateway === undefined ? Boolean(existingDevice?.useLocalGateway) : Boolean(body.useLocalGateway),
       integrationMode: deviceProfile.integrationMode || body.integrationMode || existingDevice?.integrationMode || "DIRECT_DEVICE",
       doorToken: deviceProfile.doorToken ?? body.doorToken ?? existingDevice?.doorToken ?? "",
       controlIdAction: deviceProfile.controlIdAction || body.controlIdAction || existingDevice?.controlIdAction || "door",
@@ -7306,24 +7780,24 @@ async function handleRequest(request, response) {
       };
       accessLogs.unshift(log);
       return log;
+    };
     if (device?.useLocalGateway && action.status !== "DISABLED") {
       const command = queueGatewayCommand(device, action.relay || device.doorRelay || 1, action);
-      const message = command ? "Comando enviado para a fila do Gateway local" : "Gateway local ainda nao ativado";
-      const log = actionLog("PENDING", message);
-      savePersistentState("action-trigger-queued-gateway");
-      return json(response, command ? 202 : 409, {
-        ok: Boolean(command),
-        delivered: false,
-        queued: Boolean(command),
+      const outcome = await waitForGatewayCommand(command, { waitForCommands: waitForGatewayCommands });
+      const log = actionLog(outcome.delivered ? "ALLOW" : outcome.queued ? "PENDING" : "DENY", outcome.message);
+      savePersistentState(outcome.delivered ? "action-triggered-gateway" : "action-trigger-failed-gateway");
+      return json(response, outcome.delivered ? 200 : outcome.queued ? 202 : 502, {
+        ok: outcome.ok,
+        delivered: outcome.delivered,
+        queued: outcome.queued,
         adapter: "CONDO_ACCESS_GATEWAY",
         actionId: action.id,
         actionName: action.name,
-        message,
+        message: outcome.message,
         at: now(),
         log
       });
     }
-    };
     if (device && action.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, DAHUA_ACCESS_CGI_ADAPTER, AXIS_VAPIX_PACS_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
       try {
         const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1, action);

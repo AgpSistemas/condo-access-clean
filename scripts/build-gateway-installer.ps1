@@ -6,8 +6,11 @@ $Stage = Join-Path $Root ".gateway-installer-stage"
 $Downloads = Join-Path $Root "apps\api\public\downloads"
 $Exe = Join-Path $Stage "CondoAccessGateway.exe"
 $Installer = Join-Path $Downloads "CondoAccessGateway-Setup.exe"
+$ZipPackage = Join-Path $Downloads "CondoAccessGateway-0.4.0.zip"
+$StagedInstaller = Join-Path $Stage "CondoAccessGateway-Setup.exe"
 $SeaBlob = Join-Path $Stage "gateway-sea.blob"
 $SeaConfig = Join-Path $Stage "sea-config.json"
+$GatewayBundle = Join-Path $Stage "gateway-bundle.cjs"
 
 if (-not $Stage.StartsWith("$Root\", [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "Diretorio temporario fora do projeto: $Stage"
@@ -15,9 +18,16 @@ if (-not $Stage.StartsWith("$Root\", [System.StringComparison]::OrdinalIgnoreCas
 if (Test-Path -LiteralPath $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Stage, $Downloads | Out-Null
 if (Test-Path -LiteralPath $Installer) { Remove-Item -LiteralPath $Installer -Force }
+if (Test-Path -LiteralPath $ZipPackage) { Remove-Item -LiteralPath $ZipPackage -Force }
+if (Test-Path -LiteralPath $StagedInstaller) { Remove-Item -LiteralPath $StagedInstaller -Force }
+
+npx.cmd --no-install esbuild (Join-Path $GatewayRoot "src\gateway.cjs") --bundle --platform=node --format=cjs --outfile=$GatewayBundle
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $GatewayBundle)) {
+  throw "Nao foi possivel empacotar os modulos do Gateway."
+}
 
 @{
-  main = (Join-Path $GatewayRoot "src\gateway.cjs")
+  main = $GatewayBundle
   output = $SeaBlob
   disableExperimentalSEAWarning = $true
   useSnapshot = $false
@@ -56,7 +66,7 @@ RebootMode=N
 InstallPrompt=
 DisplayLicense=
 FinishMessage=
-TargetName="$Installer"
+TargetName="$StagedInstaller"
 FriendlyName=Condo Access Gateway
 AppLaunched=run-install.cmd
 PostInstallCmd=<None>
@@ -76,11 +86,24 @@ FILE2="run-install.cmd"
 "@
 $SedPath = Join-Path $Stage "installer.sed"
 Set-Content -Path $SedPath -Value $Sed -Encoding ASCII
-& "$env:WINDIR\System32\iexpress.exe" /N $SedPath
-
-$Deadline = (Get-Date).AddMinutes(10)
-while (-not (Test-Path -LiteralPath $Installer) -and (Get-Date) -lt $Deadline) {
-  Start-Sleep -Seconds 3
+if ($env:BUILD_GATEWAY_SFX -eq "true") {
+  & "$env:WINDIR\System32\iexpress.exe" /N $SedPath
+  $Deadline = (Get-Date).AddSeconds(30)
+  while (-not (Test-Path -LiteralPath $StagedInstaller) -and (Get-Date) -lt $Deadline) {
+    Start-Sleep -Seconds 3
+  }
 }
-if (-not (Test-Path -LiteralPath $Installer)) { throw "O instalador nao foi gerado." }
-Write-Host "Instalador gerado: $Installer" -ForegroundColor Green
+$PackageFiles = @(
+  (Join-Path $Stage "CondoAccessGateway.exe"),
+  (Join-Path $Stage "install.ps1"),
+  (Join-Path $Stage "run-install.cmd")
+)
+Compress-Archive -LiteralPath $PackageFiles -DestinationPath $ZipPackage -Force
+Write-Host "Pacote ZIP gerado: $ZipPackage" -ForegroundColor Green
+
+if (Test-Path -LiteralPath $StagedInstaller) {
+  Copy-Item -LiteralPath $StagedInstaller -Destination $Installer -Force
+  Write-Host "Instalador gerado: $Installer" -ForegroundColor Green
+} else {
+  Write-Warning "Setup.exe nao gerado nesta execucao; use o ZIP publicado com run-install.cmd."
+}
