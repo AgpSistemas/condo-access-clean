@@ -327,6 +327,9 @@ const vehicles = [];
 const devices = [];
 
 const cameras = [];
+const gatewayInstallations = [];
+const gatewayCommands = [];
+
 
 const niceLinearListeners = new Map();
 const niceLinearSessions = new Map();
@@ -873,6 +876,7 @@ function bootstrap() {
     residents: residents.map(publicPerson),
     vehicles,
     devices: devices.map(publicDevice),
+    gateways: gatewayInstallations.map(publicGatewayInstallation),
     cameras: cameras.map(publicCamera),
     actions,
     credentials,
@@ -1291,6 +1295,57 @@ async function openDeviceDoor(device, relay = 1, action = {}) {
 
   throw new Error(`Adapter ${adapter} nao possui comando de abertura direta homologado`);
 }
+function publicGatewayInstallation(item) {
+  const lastSeenAt = item.lastSeenAt || "";
+  return {
+    id: item.id,
+    tenantId: item.tenantId,
+    gatewayId: item.gatewayId || "",
+    hostname: item.hostname || "",
+    version: item.version || "",
+    platform: item.platform || "",
+    createdAt: item.createdAt,
+    lastSeenAt,
+    online: Boolean(lastSeenAt && Date.now() - Date.parse(lastSeenAt) < 45000),
+    activationCode: item.activationCode || ""
+  };
+}
+
+function gatewayRequestInstallation(request) {
+  const tenantId = String(request.headers["x-tenant-id"] || "").trim();
+  const token = String(request.headers["x-gateway-token"] || "").trim();
+  return gatewayInstallations.find((item) => item.tenantId === tenantId && item.activationCode === token) || null;
+}
+
+function queueGatewayCommand(device, relay = 1, action = {}) {
+  const installation = gatewayInstallations.find((item) => item.tenantId === device.tenantId);
+  if (!installation) return null;
+  const command = {
+    id: makeId("gateway-command"),
+    tenantId: device.tenantId,
+    gatewayId: installation.gatewayId || "",
+    type: "OPEN_DOOR",
+    relay: Number(relay || 1),
+    actionId: action.id || "",
+    device: { ...device },
+    status: "PENDING",
+    createdAt: now(),
+    deliveredAt: "",
+    finishedAt: "",
+    result: null
+  };
+  gatewayCommands.push(command);
+  return command;
+}
+
+function gatewayWindowsInstallerPath() {
+  const filename = "CondoAccessGateway-Setup.exe";
+  return [
+    path.join(process.cwd(), "apps", "api", "public", "downloads", filename),
+    path.join(process.cwd(), "public", "downloads", filename)
+  ].find((candidate) => fs.existsSync(candidate)) || "";
+}
+
 
 function invitePublicPath(code) {
   return `/api/condominiums/invites/public/${encodeURIComponent(code)}`;
@@ -4790,6 +4845,7 @@ function persistentState() {
     units: unitList(),
     residents,
     vehicles,
+    gatewayInstallations,
     devices,
     cameras,
     actions,
@@ -4819,6 +4875,7 @@ function applyPersistentState(state = {}) {
   (state.units || []).forEach((unit) => units.set(unit.unitId || unit.id, unit));
   replaceCollection(residents, state.residents);
   replaceCollection(vehicles, state.vehicles);
+  replaceCollection(gatewayInstallations, state.gatewayInstallations);
   replaceCollection(devices, state.devices);
   replaceCollection(cameras, state.cameras);
   replaceCollection(actions, state.actions);
@@ -5827,6 +5884,127 @@ async function handleRequest(request, response) {
       log
     });
   }
+  if (request.method === "GET" && url.pathname === "/api/gateways") {
+    const tenantId = url.searchParams.get("tenantId") || "";
+    return json(response, 200, gatewayInstallations
+      .filter((item) => !tenantId || item.tenantId === tenantId)
+      .map(publicGatewayInstallation));
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/gateways/download/windows") {
+    const installerPath = gatewayWindowsInstallerPath();
+    if (!installerPath) return json(response, 404, { message: "Instalador do Gateway ainda nao foi publicado" });
+    const stat = fs.statSync(installerPath);
+    response.writeHead(200, {
+      "Content-Type": "application/vnd.microsoft.portable-executable",
+      "Content-Disposition": 'attachment; filename="CondoAccessGateway-Setup.exe"',
+      "Content-Length": stat.size,
+      "Cache-Control": "public, max-age=3600",
+      "Access-Control-Allow-Origin": "*"
+    });
+    return fs.createReadStream(installerPath).pipe(response);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/gateways/activation") {
+    const body = await readBody(request);
+    const tenantId = body.tenantId || tenant.id;
+    let installation = gatewayInstallations.find((item) => item.tenantId === tenantId);
+    if (!installation) {
+      installation = {
+        id: makeId("gateway"),
+        tenantId,
+        activationCode: randomBytes(18).toString("hex"),
+        gatewayId: "",
+        hostname: "",
+        version: "",
+        platform: "",
+        createdAt: now(),
+        lastSeenAt: ""
+      };
+      gatewayInstallations.push(installation);
+    } else if (body.rotate === true) {
+      installation.activationCode = randomBytes(18).toString("hex");
+      installation.gatewayId = "";
+      installation.lastSeenAt = "";
+    }
+    savePersistentState("gateway-activation-created");
+    return json(response, 200, publicGatewayInstallation(installation));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/gateways/heartbeat") {
+    const installation = gatewayRequestInstallation(request);
+    if (!installation) return json(response, 401, { message: "Codigo de ativacao do Gateway invalido" });
+    const body = await readBody(request);
+    const previousIdentity = JSON.stringify([
+      installation.gatewayId,
+      installation.hostname,
+      installation.version,
+      installation.platform
+    ]);
+    Object.assign(installation, {
+      gatewayId: String(request.headers["x-gateway-id"] || body.gatewayId || installation.gatewayId || ""),
+      hostname: body.hostname || installation.hostname || "",
+      version: body.version || installation.version || "",
+      platform: body.platform || installation.platform || "",
+      lastSeenAt: now()
+    });
+    const currentIdentity = JSON.stringify([
+      installation.gatewayId,
+      installation.hostname,
+      installation.version,
+      installation.platform
+    ]);
+    if (previousIdentity !== currentIdentity) savePersistentState("gateway-heartbeat-identity");
+    return json(response, 200, { ok: true, gateway: publicGatewayInstallation(installation) });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/gateways/commands") {
+    const installation = gatewayRequestInstallation(request);
+    if (!installation) return json(response, 401, { message: "Codigo de ativacao do Gateway invalido" });
+    const retryBefore = Date.now() - 30000;
+    gatewayCommands
+      .filter((item) =>
+        item.tenantId === installation.tenantId &&
+        item.status === "DELIVERED" &&
+        Date.parse(item.deliveredAt || 0) < retryBefore
+      )
+      .forEach((item) => {
+        item.status = "PENDING";
+        item.deliveredAt = "";
+      });
+    const cleanupBefore = Date.now() - 24 * 60 * 60 * 1000;
+    for (let index = gatewayCommands.length - 1; index >= 0; index -= 1) {
+      const item = gatewayCommands[index];
+      if (["DONE", "ERROR"].includes(item.status) && Date.parse(item.finishedAt || 0) < cleanupBefore) {
+        gatewayCommands.splice(index, 1);
+      }
+    }
+    const items = gatewayCommands.filter((item) =>
+      item.tenantId === installation.tenantId &&
+      item.status === "PENDING" &&
+      (!item.gatewayId || !installation.gatewayId || item.gatewayId === installation.gatewayId)
+    ).slice(0, 10);
+    items.forEach((item) => {
+      item.status = "DELIVERED";
+      item.deliveredAt = now();
+    });
+    return json(response, 200, { items });
+  }
+
+  const gatewayCommandResultMatch = url.pathname.match(/^\/api\/gateways\/commands\/([^/]+)\/result$/);
+  if (request.method === "POST" && gatewayCommandResultMatch) {
+    const installation = gatewayRequestInstallation(request);
+    if (!installation) return json(response, 401, { message: "Codigo de ativacao do Gateway invalido" });
+    const command = gatewayCommands.find((item) => item.id === gatewayCommandResultMatch[1] && item.tenantId === installation.tenantId);
+    if (!command) return json(response, 404, { message: "Comando do Gateway nao encontrado" });
+    const body = await readBody(request);
+    command.status = body.ok === false ? "ERROR" : "DONE";
+    command.finishedAt = now();
+    command.result = body;
+    savePersistentState("gateway-command-result");
+    return json(response, 200, { ok: true });
+  }
+
 
   if (request.method === "POST" && url.pathname === "/api/access/open-door") {
     const body = await readBody(request);
@@ -5837,7 +6015,13 @@ async function handleRequest(request, response) {
     let gatewayMessage = "";
 
     const adapter = device ? deviceAdapter(device) : "GENERIC_TCP";
-    if (device && action?.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, DAHUA_ACCESS_CGI_ADAPTER, AXIS_VAPIX_PACS_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
+    if (device?.useLocalGateway && action?.status !== "DISABLED") {
+      const command = queueGatewayCommand(device, action.relay || device.doorRelay || 1, action);
+      queued = Boolean(command);
+      gatewayMessage = command
+        ? "Comando enviado para a fila do Gateway local"
+        : "Gateway local ainda nao ativado para este condominio";
+    } else if (device && action?.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, DAHUA_ACCESS_CGI_ADAPTER, AXIS_VAPIX_PACS_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
       try {
         const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1, action);
         delivered = true;
@@ -6736,6 +6920,7 @@ async function handleRequest(request, response) {
       username: body.username || deviceProfile.username || existingDevice?.username || "admin",
       password: body.password || existingDevice?.password || "",
       passwordSet: Boolean(body.password || existingDevice?.password || body.passwordSet),
+      useLocalGateway: body.useLocalGateway === undefined ? Boolean(existingDevice?.useLocalGateway) : Boolean(body.useLocalGateway),
       authMode: body.authMode || existingDevice?.authMode || "DIGEST",
       integrationMode: deviceProfile.integrationMode || body.integrationMode || existingDevice?.integrationMode || "DIRECT_DEVICE",
       doorToken: deviceProfile.doorToken ?? body.doorToken ?? existingDevice?.doorToken ?? "",
@@ -6939,6 +7124,23 @@ async function handleRequest(request, response) {
       };
       accessLogs.unshift(log);
       return log;
+    if (device?.useLocalGateway && action.status !== "DISABLED") {
+      const command = queueGatewayCommand(device, action.relay || device.doorRelay || 1, action);
+      const message = command ? "Comando enviado para a fila do Gateway local" : "Gateway local ainda nao ativado";
+      const log = actionLog("PENDING", message);
+      savePersistentState("action-trigger-queued-gateway");
+      return json(response, command ? 202 : 409, {
+        ok: Boolean(command),
+        delivered: false,
+        queued: Boolean(command),
+        adapter: "CONDO_ACCESS_GATEWAY",
+        actionId: action.id,
+        actionName: action.name,
+        message,
+        at: now(),
+        log
+      });
+    }
     };
     if (device && action.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, DAHUA_ACCESS_CGI_ADAPTER, AXIS_VAPIX_PACS_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
       try {

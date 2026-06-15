@@ -883,6 +883,80 @@ nav button:hover {
   color: #155e4b;
 }
 
+.gateway-download-layout,
+.gateway-activation-card {
+  display: grid;
+  gap: 16px;
+}
+
+.gateway-download-card {
+  min-height: 110px;
+  padding: 20px;
+  border-radius: 8px;
+  background: #10232b;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.gateway-download-card div {
+  display: grid;
+  gap: 6px;
+}
+
+.gateway-download-card span {
+  color: #c8d8dd;
+  font-size: 13px;
+}
+
+.gateway-download-button {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: #1f7a5a;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.gateway-activation-card {
+  padding: 20px;
+  border: 1px solid #d9e2e4;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.gateway-setup-guide,
+.gateway-setup-steps {
+  display: grid;
+  gap: 14px;
+}
+
+.gateway-setup-steps {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.gateway-setup-steps span {
+  padding: 16px;
+  border: 1px solid #d9e2e4;
+  border-radius: 8px;
+  background: #f7faf9;
+  color: #53666c;
+  font-size: 13px;
+}
+
+.gateway-setup-steps strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #10232b;
+}
+
 .breadcrumb-bar {
   min-height: 54px;
   border-bottom: 1px solid #d9e2e4;
@@ -2723,6 +2797,19 @@ button.simple-row.selected {
 }
 
 @media (max-width: 640px) {
+  .gateway-download-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .gateway-download-button {
+    width: 100%;
+  }
+
+  .gateway-setup-steps {
+    grid-template-columns: 1fr;
+  }
+
   .shell {
     grid-template-columns: 1fr;
   }

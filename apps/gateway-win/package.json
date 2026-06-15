@@ -1,0 +1,16 @@
+{
+  "name": "@condo-clean/gateway-win",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "bin": "src/gateway.cjs",
+  "scripts": {
+    "start": "node src/gateway.cjs"
+  },
+  "pkg": {
+    "scripts": [
+      "src/gateway.cjs"
+    ],
+    "outputPath": "dist"
+  }
+}

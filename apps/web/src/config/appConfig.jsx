@@ -172,7 +172,8 @@ const emptyDeviceForm = {
   doorToken: "",
   intercomExtension: "",
   intercomType: "FACIAL",
-  intercomEnabled: true
+  intercomEnabled: true,
+  useLocalGateway: false
 };
 
 const controlIdProfiles = {

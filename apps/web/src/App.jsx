@@ -100,7 +100,7 @@ import * as cameraController from "./controllers/cameraController.js";
 import * as actionController from "./controllers/actionController.js";
 import * as telephonyController from "./controllers/telephonyController.js";
 import * as vehicleController from "./controllers/vehicleController.js";
-import { apiFetch } from "./services/api.js";
+import { apiFetch, apiPath } from "./services/api.js";
 
 function App() {
   const { session, persistSession, logout } = useSession();
@@ -1535,6 +1535,23 @@ function App() {
     void refreshApiCache();
   }
 
+  async function generateGatewayActivation(rotate = false) {
+    if (!selectedTenant?.id) return;
+    const response = await apiFetch("/api/gateways/activation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenantId: selectedTenant.id, rotate })
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      setMessage(result?.message || "Falha ao gerar codigo do Gateway.");
+      return;
+    }
+    setMessage(rotate ? "Novo codigo de ativacao gerado." : "Codigo de ativacao do Gateway gerado.");
+    const payload = await refreshApiCache();
+    if (payload) setData(payload);
+  }
+
   async function deleteDevice(device) {
     if (!device) return;
     const linkedCameras = data.cameras.filter((camera) => camera.deviceId === device.id).length;
@@ -2577,6 +2594,7 @@ function App() {
             {[
               ["inicio", "Cadastro"],
               ["integration", "Integracao"],
+              ["gateway", "Gateway local"],
               ["cameras", "Cameras"],
               ["actions", "Acionamentos"],
               ["painel", "Painel de controle"],
@@ -2611,6 +2629,8 @@ function App() {
                   <Field label={isNiceLinearManufacturer(deviceForm.manufacturer) && deviceForm.niceConnectionMode !== "HTTP_GATEWAY" ? "Porta de escuta TCP" : "Porta API"}><input required={isNiceLinearManufacturer(deviceForm.manufacturer)} value={deviceForm.apiPort} onChange={(event) => setDeviceForm((current) => ({ ...current, apiPort: event.target.value.replace(/\D/g, "") }))} /></Field>
                   <Field label="Porta RTSP"><input value={deviceForm.rtspPort} onChange={(event) => setDeviceForm((current) => ({ ...current, rtspPort: event.target.value }))} /></Field>
                   <Field label="Canais esperados"><input value={deviceForm.channelCount} onChange={(event) => setDeviceForm((current) => ({ ...current, channelCount: event.target.value }))} placeholder="Ex.: 4, 8, 16" /></Field>
+                  <Field label="Conexao com o equipamento"><select value={deviceForm.useLocalGateway ? "gateway" : "direct"} onChange={(event) => setDeviceForm((current) => ({ ...current, useLocalGateway: event.target.value === "gateway" }))}><option value="direct">API conecta diretamente</option><option value="gateway">Gateway local no condominio</option></select></Field>
+                  {deviceForm.useLocalGateway && <div className="form-hint">Use o IP local do equipamento, por exemplo 192.168.1.50. Nenhuma porta precisa ser liberada no roteador.</div>}
                   {!isNiceLinearManufacturer(deviceForm.manufacturer) && <Field label="Usuario"><input value={deviceForm.username} onChange={(event) => setDeviceForm((current) => ({ ...current, username: event.target.value }))} /></Field>}
                   {(!isNiceLinearManufacturer(deviceForm.manufacturer) || deviceForm.niceConnectionMode === "HTTP_GATEWAY") && <Field label={isNiceLinearManufacturer(deviceForm.manufacturer) ? "Token do gateway" : "Senha"}><input type="password" autoComplete="new-password" value={deviceForm.password} onChange={(event) => setDeviceForm((current) => ({ ...current, password: event.target.value }))} placeholder={deviceForm.id ? "Preencha para alterar" : ""} /></Field>}
                   {deviceForm.manufacturer === "Control iD" && <Field label="Acionamento Control iD"><select value={deviceForm.controlIdAction || "door"} onChange={(event) => setDeviceForm((current) => ({ ...current, controlIdAction: event.target.value, controlIdSecBoxId: event.target.value === "sec_box" ? current.controlIdSecBoxId : "" }))}>{controlIdActionOptions(deviceForm.model).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>}
@@ -2671,7 +2691,8 @@ function App() {
                         niceDeviceId: device.niceDeviceId || "",
                         intercomExtension: device.intercomExtension || "",
                         intercomType: device.intercomType || "FACIAL",
-                        intercomEnabled: Boolean(device.intercomEnabled)
+                        intercomEnabled: Boolean(device.intercomEnabled),
+                        useLocalGateway: Boolean(device.useLocalGateway)
                       })}>Editar</button>
                       <button className="secondary-button" onClick={() => void testDeviceIntegration(device)}>Testar API</button>
                       <button className="danger-button" type="button" onClick={() => void deleteDevice(device)}><Trash2 size={16} /> Excluir</button>
@@ -2814,6 +2835,42 @@ function App() {
 
                 </article>
               )}
+            </section>
+          )}
+          {deviceTab === "gateway" && (
+            <section className="gateway-download-layout">
+              <article className="gateway-download-card">
+                <div>
+                  <strong>Condo Access Gateway para Windows</strong>
+                  <span>Instale no computador da portaria. O Gateway conecta com a nuvem pela porta 443 e acessa os equipamentos pelos IPs da rede local.</span>
+                </div>
+                <a className="gateway-download-button" href={apiPath("/api/gateways/download/windows")} download>Baixar instalador Windows</a>
+              </article>
+              {(() => {
+                const gateway = (data.gateways || []).find((item) => item.tenantId === selectedTenant?.id);
+                return <article className="gateway-activation-card">
+                  <div className="panel-heading"><h2>Ativacao do Gateway</h2><span className={`status ${gateway?.online ? "" : "offline"}`}>{gateway?.online ? "Online" : "Offline"}</span></div>
+                  <div className="summary-list">
+                    <span><strong>Condominio</strong>{selectedTenant?.name || "-"}</span>
+                    <span><strong>ID para instalacao</strong>{selectedTenant?.id || "-"}</span>
+                    <span><strong>Codigo de ativacao</strong>{gateway?.activationCode || "Ainda nao gerado"}</span>
+                    <span><strong>Computador</strong>{gateway?.hostname || "Ainda nao conectado"}</span>
+                  </div>
+                  <div className="toolbar-actions">
+                    <button type="button" onClick={() => void generateGatewayActivation(false)}>Gerar codigo</button>
+                    <button className="secondary-button" type="button" onClick={() => void generateGatewayActivation(true)}>Trocar codigo</button>
+                  </div>
+                </article>;
+              })()}
+              <article className="panel gateway-setup-guide">
+                <div className="panel-heading"><h2>Como conectar equipamentos da rede local</h2><RadioTower size={20} /></div>
+                <div className="gateway-setup-steps">
+                  <span><strong>1. Instale e ative</strong>Baixe o instalador e informe o ID do condominio e o codigo de ativacao.</span>
+                  <span><strong>2. Cadastre o IP local</strong>Em Cadastro, informe o IP do equipamento, por exemplo 192.168.1.50, e selecione Gateway local.</span>
+                  <span><strong>3. Teste o acionamento</strong>Cadastre um acionamento para o equipamento e execute a abertura pelo painel.</span>
+                </div>
+                <div className="form-hint">O computador da portaria e os equipamentos precisam estar na mesma rede. Nenhuma porta de entrada precisa ser liberada no roteador.</div>
+              </article>
             </section>
           )}
           {deviceTab === "cameras" && (
@@ -3113,7 +3170,7 @@ function App() {
             <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
           </div>
           <div className="subtabs resource-tabs">
-            {["modulos", "portaria", "convites", "auditoria", "gateway"].map((tab) => <button key={tab} className={resourceTab === tab ? "active" : ""} onClick={() => setResourceTab(tab)}>{tab}</button>)}
+            {["modulos", "portaria", "convites", "auditoria"].map((tab) => <button key={tab} className={resourceTab === tab ? "active" : ""} onClick={() => setResourceTab(tab)}>{tab}</button>)}
           </div>
           {resourceTab === "portaria" ? (
             <div className="resource-operational-grid">
@@ -3238,7 +3295,7 @@ function App() {
             </article>
           ) : (
             <article className="panel">
-              <div className="panel-heading"><h2>{resourceTab === "convites" ? "Convites" : resourceTab === "auditoria" ? "Auditoria" : "Gateway"}</h2><ClipboardList size={18} /></div>
+              <div className="panel-heading"><h2>{resourceTab === "convites" ? "Convites" : "Auditoria"}</h2><ClipboardList size={18} /></div>
               {resourceTab === "convites" && (
                 <div className="resource-module-list">
                   {["QR Code", "Chave virtual", "QR Scanner", "Convite recorrente", "Convite por prestador"].map((item) => <div className="resource-module-row" key={item}><input type="checkbox" defaultChecked /><span><strong>{item}</strong><small>Funcao liberada por condominio e perfil de usuario.</small></span><em>Ativo</em></div>)}
@@ -3248,11 +3305,6 @@ function App() {
                 <div className="unit-table header"><span>Evento</span><span>Origem</span><span>Usuario</span><span>Status</span></div>
               )}
               {resourceTab === "auditoria" && ["Abertura remota", "Credencial sincronizada", "Login mobile", "Camera visualizada"].map((eventName) => <div className="unit-table row" key={eventName}><span><strong>{eventName}</strong><small>{formatDateTime(new Date())}</small></span><span>API/Gateway</span><span>{session?.name || "Sistema"}</span><span className="status">Registrado</span></div>)}
-              {resourceTab === "gateway" && (
-                <div className="manufacturer-grid">
-                  {data.manufacturerProfiles.map((profile) => <article className="manufacturer-card" key={profile.id}><strong>{profile.name}</strong><span>{profile.protocols.join(" / ")}</span><small>Status: pronto para conector</small><button className="secondary-button" onClick={() => setActiveSection("sdk")}>Ver SDK</button></article>)}
-                </div>
-              )}
             </article>
           )}
         </section>

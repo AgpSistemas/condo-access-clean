@@ -21,3 +21,4 @@ apps/web/App_pronto.jsx
 
 # Local Netlify folder
 .netlify
+.gateway-installer-stage/
