@@ -5911,15 +5911,15 @@ async function handleRequest(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/gateways/activation") {
     const body = await readBody(request);
+    const tenantId = body.tenantId || tenant.id;
     const selectedTenant = allTenants().find((item) => item.id === tenantId);
     if (!selectedTenant) return json(response, 404, { message: "Condominio nao encontrado" });
-    const tenantId = body.tenantId || tenant.id;
     let installation = gatewayInstallations.find((item) => item.tenantId === tenantId);
     if (!installation) {
       installation = {
         id: makeId("gateway"),
-        label: String(body.label || "Portaria principal").trim(),
         tenantId,
+        label: String(body.label || "Portaria principal").trim(),
         activationCode: randomBytes(18).toString("hex"),
         gatewayId: "",
         hostname: "",
@@ -5936,13 +5936,14 @@ async function handleRequest(request, response) {
         installation.gatewayId = "";
         installation.lastSeenAt = "";
       }
+    }
     installation.installCode = randomBytes(6).toString("hex").toUpperCase();
     installation.installCodeExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     installation.claimedAt = "";
-    }
     savePersistentState("gateway-activation-created");
     return json(response, 200, publicGatewayInstallation(installation));
   }
+
   if (request.method === "POST" && url.pathname === "/api/gateways/setup/claim") {
     const body = await readBody(request);
     const installCode = String(body.installCode || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
