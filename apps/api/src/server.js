@@ -1353,7 +1353,12 @@ function publicGatewayInstallation(item) {
 function gatewayRequestInstallation(request) {
   const tenantId = String(request.headers["x-tenant-id"] || "").trim();
   const token = String(request.headers["x-gateway-token"] || "").trim();
-  return gatewayInstallations.find((item) => item.tenantId === tenantId && item.activationCode === token) || null;
+  const gatewayId = String(request.headers["x-gateway-id"] || "").trim();
+  return gatewayInstallations.find((item) =>
+    item.tenantId === tenantId &&
+    item.activationCode === token &&
+    (!item.gatewayId || item.gatewayId === gatewayId)
+  ) || null;
 }
 
 function queueGatewayCommand(device, relay = 1, action = {}, type = "OPEN_DOOR") {
@@ -6079,8 +6084,15 @@ async function handleRequest(request, response) {
     if (!installation.installCodeExpiresAt || Date.parse(installation.installCodeExpiresAt) < Date.now()) {
       return json(response, 410, { message: "Codigo expirado. Gere um novo codigo no painel" });
     }
+    const claimedGatewayId = String(body.hostname || "").trim();
+    if (!claimedGatewayId) return json(response, 400, { message: "Identificacao do computador nao informada" });
+    installation.activationCode = randomBytes(18).toString("hex");
     installation.claimedAt = now();
-    installation.hostname = String(body.hostname || installation.hostname || "").trim();
+    installation.gatewayId = claimedGatewayId;
+    installation.hostname = claimedGatewayId;
+    installation.version = "";
+    installation.platform = "";
+    installation.lastSeenAt = "";
     savePersistentState("gateway-installation-claimed");
     return json(response, 200, {
       tenantId: installation.tenantId,
@@ -6091,7 +6103,6 @@ async function handleRequest(request, response) {
       localPort: 4040
     });
   }
-
 
   if (request.method === "POST" && url.pathname === "/api/gateways/heartbeat") {
     const installation = gatewayRequestInstallation(request);
