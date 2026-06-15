@@ -4,6 +4,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const VERSION = "0.3.1";
 
 const home = process.env.PROGRAMDATA
   ? path.join(process.env.PROGRAMDATA, "CondoAccessGateway")
@@ -216,7 +217,7 @@ async function execute(command) {
 async function cycle() {
   await cloud("/gateways/heartbeat", {
     method: "POST",
-    body: JSON.stringify({ hostname: os.hostname(), platform: os.platform(), version: "0.3.0" })
+    body: JSON.stringify({ hostname: os.hostname(), platform: os.platform(), version: VERSION })
   });
   const commands = await cloud("/gateways/commands");
   for (const command of commands.items || []) {
@@ -251,7 +252,12 @@ async function guardedCycle() {
 http.createServer((request, response) => {
   if (request.url === "/health") {
     response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({ ok: true, tenantId: config.tenantId, gatewayId: config.gatewayId }));
+    response.end(JSON.stringify({
+      ok: true,
+      tenantId: config.tenantId,
+      gatewayId: config.gatewayId,
+      version: VERSION
+    }));
     return;
   }
   response.writeHead(404);

@@ -16,6 +16,7 @@ if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 $InstallDir = Join-Path $env:ProgramFiles "Condo Access Gateway"
 $DataDir = Join-Path $env:ProgramData "CondoAccessGateway"
 $TaskName = "CondoAccessGateway"
+$InstalledExe = Join-Path $InstallDir "CondoAccessGateway.exe"
 
 if (-not $InstallCode) { $InstallCode = Read-Host "Codigo de instalacao exibido no painel" }
 $InstallCode = ($InstallCode -replace "[^a-zA-Z0-9]", "").ToUpper()
@@ -41,12 +42,29 @@ try {
 
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 2
+  for ($Attempt = 0; $Attempt -lt 10; $Attempt += 1) {
+    $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $Task -or $Task.State -ne "Running") { break }
+    Start-Sleep -Seconds 1
+  }
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
+Get-CimInstance Win32_Process |
+  Where-Object {
+    $_.ExecutablePath -and
+    [System.String]::Equals($_.ExecutablePath, $InstalledExe, [System.StringComparison]::OrdinalIgnoreCase)
+  } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "CondoAccessGateway.exe") -Destination (Join-Path $InstallDir "CondoAccessGateway.exe") -Force
+$SourceExe = Join-Path $PSScriptRoot "CondoAccessGateway.exe"
+Copy-Item -LiteralPath $SourceExe -Destination $InstalledExe -Force
+$SourceHash = (Get-FileHash -LiteralPath $SourceExe -Algorithm SHA256).Hash
+$InstalledHash = (Get-FileHash -LiteralPath $InstalledExe -Algorithm SHA256).Hash
+if ($SourceHash -ne $InstalledHash) {
+  throw "O executavel instalado nao corresponde a nova versao."
+}
 
 @{
   apiUrl = $ApiUrl
@@ -58,7 +76,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "CondoAccessGateway.exe") -Desti
   localPort = $Setup.localPort
 } | ConvertTo-Json | Set-Content -Path (Join-Path $DataDir "config.json") -Encoding UTF8
 
-$Action = New-ScheduledTaskAction -Execute (Join-Path $InstallDir "CondoAccessGateway.exe")
+$Action = New-ScheduledTaskAction -Execute $InstalledExe
 $Trigger = New-ScheduledTaskTrigger -AtStartup
 $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $Settings = New-ScheduledTaskSettingsSet -RestartCount 20 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 3650)

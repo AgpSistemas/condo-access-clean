@@ -6026,7 +6026,9 @@ async function handleRequest(request, response) {
       "Content-Type": "application/vnd.microsoft.portable-executable",
       "Content-Disposition": 'attachment; filename="CondoAccessGateway-Setup.exe"',
       "Content-Length": stat.size,
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      "Pragma": "no-cache",
+      "Expires": "0",
       "Access-Control-Allow-Origin": "*"
     });
     return fs.createReadStream(installerPath).pipe(response);
