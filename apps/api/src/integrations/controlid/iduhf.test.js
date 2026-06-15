@@ -58,7 +58,7 @@ test("nao oferece acao de catraca ao iDUHF", () => {
   const result = validateControlIdIduhfConfiguration(profile);
 
   assert.equal(result.ok, false);
-  assert.match(result.errors[0], /somente rele interno/);
+  assert.match(result.errors[0], /aceita somente/);
 });
 
 test("permite limpar um grupo salvo anteriormente", () => {

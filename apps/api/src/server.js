@@ -24,11 +24,14 @@ import {
   testSs3532Mfw
 } from "./integrations/intelbras/ss3532Mfw.js";
 import { createHikvisionParsers } from "./integrations/hikvision/parsers.js";
+import { createControlIdClient } from "./integrations/controlid/client.js";
 import {
-  controlIdIduhfDefaults,
-  matchesControlIdIduhf,
-  validateControlIdIduhfConfiguration
-} from "./integrations/controlid/iduhf.js";
+  CONTROL_ID_ACCESS_ADAPTER,
+  controlIdDeviceDefaults,
+  matchesControlIdDevice,
+  publicControlIdProfiles,
+  validateControlIdConfiguration
+} from "./integrations/controlid/profiles.js";
 import { controlIdVehicleTagRecords, normalizeControlIdUhfMode } from "./integrations/controlid/vehicleTags.js";
 import { removeVehicleTag, syncVehicleTag } from "./modules/vehicles/vehicleTagController.js";
 import {
@@ -94,7 +97,16 @@ const postgresPool = databaseUrl
     ssl: postgresSslMode === "require" ? { rejectUnauthorized: false } : undefined
   })
   : null;
-const CONTROL_ID_ACCESS_ADAPTER = "CONTROL_ID_ACCESS";
+const controlIdClient = createControlIdClient();
+const {
+  binaryRequest: controlIdBinaryRequest,
+  loadObjects: controlIdLoadObjects,
+  login: controlIdLogin,
+  openDoor: openControlIdDoor,
+  post: controlIdPost,
+  readSnapshot: readControlIdSnapshot,
+  testConnection: testControlIdConnection
+} = controlIdClient;
 let postgresStateReady = false;
 let postgresSaveQueue = Promise.resolve();
 let lastPostgresSaveError = "";
@@ -474,7 +486,8 @@ const manufacturerProfiles = [
     defaultPorts: ["80", "443"],
     credentialTypes: ["FACE", "RFID", "UHF_TAG", "PIN", "BIOMETRIA"],
     syncModes: ["Pessoas", "Templates faciais", "Tags veiculares", "Eventos", "Portas"],
-    notes: "iDUHF homologado com API HTTP na porta 80, sem RTSP. Use door no rele interno, sec_box somente para MAE/SecBox e grupo de acesso no modo standalone."
+    models: publicControlIdProfiles(),
+    notes: "API REST .fcgi centralizada por modelo. O acionamento varia entre door, sec_box e catra; iDUHF tambem suporta tags UHF estendidas."
   },
   {
     id: "linear-hcs",
@@ -1036,141 +1049,6 @@ async function authenticatedDeviceRequest(device, targetPath, { method = "GET", 
   }
 }
 
-async function controlIdLogin(device, { timeoutMs = 9000 } = {}) {
-  if (!device.password) {
-    throw new Error("Senha Control iD nao cadastrada para este equipamento");
-  }
-
-  const request = withTimeout(timeoutMs);
-  try {
-    const response = await fetch(`${deviceBaseUrl(device)}/login.fcgi`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({
-        login: device.username || "admin",
-        password: device.password
-      }),
-      signal: request.signal
-    });
-    const text = await response.text();
-    const payload = tryParseJson(text) || {};
-    if (!response.ok || !payload.session) {
-      throw new Error(`Control iD login respondeu ${response.status}: ${text.slice(0, 240)}`);
-    }
-    return payload.session;
-  } finally {
-    request.done();
-  }
-}
-
-async function controlIdPost(device, session, pathName, body = {}, { timeoutMs = 9000 } = {}) {
-  const separator = pathName.includes("?") ? "&" : "?";
-  const request = withTimeout(timeoutMs);
-  try {
-    const response = await fetch(`${deviceBaseUrl(device)}${pathName}${separator}session=${encodeURIComponent(session)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify(body),
-      signal: request.signal
-    });
-    const text = await response.text();
-    const payload = tryParseJson(text);
-    if (!response.ok || payload?.success === false || payload?.error) {
-      throw new Error(`Control iD ${pathName} respondeu ${response.status}: ${text.slice(0, 240)}`);
-    }
-    return { ok: true, status: response.status, body: text, payload: payload || {} };
-  } finally {
-    request.done();
-  }
-}
-
-async function controlIdBinaryRequest(device, session, pathName, {
-  method = "POST",
-  body,
-  contentType = "application/octet-stream",
-  timeoutMs = 15000
-} = {}) {
-  const separator = pathName.includes("?") ? "&" : "?";
-  const request = withTimeout(timeoutMs);
-  try {
-    const response = await fetch(`${deviceBaseUrl(device)}${pathName}${separator}session=${encodeURIComponent(session)}`, {
-      method,
-      headers: { "Content-Type": contentType },
-      body,
-      signal: request.signal
-    });
-    const text = await response.text();
-    const payload = tryParseJson(text);
-    if (!response.ok || payload?.success === false || payload?.error) {
-      throw new Error(`Control iD ${pathName} respondeu ${response.status}: ${text.slice(0, 240)}`);
-    }
-    return { ok: true, status: response.status, body: text, payload: payload || {} };
-  } finally {
-    request.done();
-  }
-}
-
-async function controlIdLoadObjects(device, session, object, { limit = 500, timeoutMs = 9000 } = {}) {
-  const records = [];
-  const seen = new Set();
-  let offset = 0;
-
-  for (let page = 0; page < 50; page += 1) {
-    const result = await controlIdPost(device, session, "/load_objects.fcgi", { object, limit, offset }, { timeoutMs });
-    const pageRecords = Array.isArray(result.payload?.[object]) ? result.payload[object] : [];
-    const firstKey = pageRecords[0] ? JSON.stringify([pageRecords[0].id, pageRecords[0].user_id, pageRecords[0].registration]) : "";
-    if (firstKey && seen.has(firstKey)) break;
-    if (firstKey) seen.add(firstKey);
-    records.push(...pageRecords);
-    if (pageRecords.length < limit) break;
-    offset += pageRecords.length;
-  }
-
-  return records;
-}
-
-async function readControlIdSnapshot(device, { includeOptional = true } = {}) {
-  const session = await controlIdLogin(device);
-  const specs = [
-    { object: "users", label: "Control iD usuarios", required: true },
-    { object: "cards", label: "Control iD cards/tags", required: false },
-    { object: "uhf_tags", label: "Control iD UHF tags", required: false },
-    { object: "qrcodes", label: "Control iD QR Codes", required: false },
-    { object: "pins", label: "Control iD PINs", required: false },
-    { object: "time_zones", label: "Control iD horarios", required: false },
-    { object: "time_spans", label: "Control iD intervalos", required: false },
-    { object: "access_logs", label: "Control iD eventos", required: false, limit: 80 },
-    { object: "face_templates", label: "Control iD faces", required: false, optional: true }
-  ].filter((spec) => includeOptional || !spec.optional);
-  const objects = {};
-  const attempts = [];
-
-  for (const spec of specs) {
-    try {
-      const records = await controlIdLoadObjects(device, session, spec.object, { limit: spec.limit || 1000 });
-      objects[spec.object] = records;
-      attempts.push({
-        label: spec.label,
-        path: `/load_objects.fcgi:${spec.object}`,
-        ok: true,
-        records: records.length
-      });
-    } catch (error) {
-      attempts.push({
-        label: spec.label,
-        path: `/load_objects.fcgi:${spec.object}`,
-        ok: false,
-        optional: !spec.required,
-        error: error instanceof Error ? error.message : "Falha ao ler objeto Control iD"
-      });
-      if (spec.required) throw error;
-      objects[spec.object] = [];
-    }
-  }
-
-  return { session, objects, attempts };
-}
-
 function controlIdUserMap(users = []) {
   return new Map(users.map((user) => [String(user.id), user]));
 }
@@ -1285,22 +1163,6 @@ async function openHikvisionDoor(device, relay = 1) {
   return hikvisionRequest(device, `/ISAPI/AccessControl/RemoteControl/door/${relay}`, {
     method: "PUT",
     body
-  });
-}
-
-async function openControlIdDoor(device, relay = 1) {
-  const session = await controlIdLogin(device);
-  const action = String(device.controlIdAction || "door").trim() || "door";
-  if (action === "sec_box" && !/^[1-9]\d*$/.test(String(device.controlIdSecBoxId || "").trim())) {
-    throw new Error("ID do SecBox/MAE nao configurado para este equipamento Control iD");
-  }
-  const parameters = action === "sec_box"
-    ? `id=${String(device.controlIdSecBoxId).trim()}, reason=3`
-    : action === "catra"
-      ? `relay=${Math.max(1, Math.min(2, Number(relay) || 1))}`
-      : `door=${Math.max(1, Number(relay) || 1)}`;
-  return controlIdPost(device, session, "/execute_actions.fcgi", {
-    actions: [{ action, parameters }]
   });
 }
 
@@ -4314,15 +4176,15 @@ async function testDeviceIntegration(device) {
   }
 
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
-    const session = await controlIdLogin(device);
-    const users = await controlIdLoadObjects(device, session, "users", { limit: 1 });
+    const result = await testControlIdConnection(device);
     return {
       ...base,
       ok: true,
-      status: 200,
+      status: result.status,
       message: "Conexao Control iD OK",
-      matchedEndpoint: "/login.fcgi + /load_objects.fcgi:users",
-      usersSample: users.length
+      matchedEndpoint: result.matchedEndpoint,
+      usersSample: result.usersSample,
+      systemInformation: result.system
     };
   }
 
@@ -6397,8 +6259,8 @@ async function handleRequest(request, response) {
     const existingDevice = body.id ? devices.find((item) => item.id === body.id) : null;
     const manufacturer = body.manufacturer || existingDevice?.manufacturer || "Generico";
     const model = body.model || existingDevice?.model || "";
-    const deviceProfile = matchesControlIdIduhf({ ...body, manufacturer, model })
-      ? controlIdIduhfDefaults({ ...body, manufacturer, model }, existingDevice)
+    const deviceProfile = matchesControlIdDevice({ ...body, manufacturer, model })
+      ? controlIdDeviceDefaults({ ...body, manufacturer, model }, existingDevice)
       : matchesNiceLinear({ ...body, manufacturer, model })
         ? niceLinearDefaults({ ...body, manufacturer, model }, existingDevice)
       : matchesSs3532Mfw({ ...body, manufacturer, model })
@@ -6406,8 +6268,8 @@ async function handleRequest(request, response) {
         : matchesMhdx3116c({ ...body, manufacturer, model })
           ? mhdx3116cDefaults({ ...body, manufacturer, model }, existingDevice)
           : {};
-    if (matchesControlIdIduhf({ ...body, manufacturer, model })) {
-      const validation = validateControlIdIduhfConfiguration(deviceProfile);
+    if (matchesControlIdDevice({ ...body, manufacturer, model })) {
+      const validation = validateControlIdConfiguration(deviceProfile);
       if (!validation.ok) {
         return json(response, 400, {
           message: validation.errors[0],
