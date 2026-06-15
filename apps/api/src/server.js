@@ -1299,6 +1299,7 @@ function publicGatewayInstallation(item) {
   const lastSeenAt = item.lastSeenAt || "";
   return {
     id: item.id,
+    label: item.label || "Portaria principal",
     tenantId: item.tenantId,
     gatewayId: item.gatewayId || "",
     hostname: item.hostname || "",
@@ -1307,7 +1308,10 @@ function publicGatewayInstallation(item) {
     createdAt: item.createdAt,
     lastSeenAt,
     online: Boolean(lastSeenAt && Date.now() - Date.parse(lastSeenAt) < 45000),
-    activationCode: item.activationCode || ""
+    activationCode: item.activationCode || "",
+    installCode: item.installCode || "",
+    installCodeExpiresAt: item.installCodeExpiresAt || "",
+    claimedAt: item.claimedAt || ""
   };
 }
 
@@ -5907,11 +5911,14 @@ async function handleRequest(request, response) {
 
   if (request.method === "POST" && url.pathname === "/api/gateways/activation") {
     const body = await readBody(request);
+    const selectedTenant = allTenants().find((item) => item.id === tenantId);
+    if (!selectedTenant) return json(response, 404, { message: "Condominio nao encontrado" });
     const tenantId = body.tenantId || tenant.id;
     let installation = gatewayInstallations.find((item) => item.tenantId === tenantId);
     if (!installation) {
       installation = {
         id: makeId("gateway"),
+        label: String(body.label || "Portaria principal").trim(),
         tenantId,
         activationCode: randomBytes(18).toString("hex"),
         gatewayId: "",
@@ -5922,14 +5929,43 @@ async function handleRequest(request, response) {
         lastSeenAt: ""
       };
       gatewayInstallations.push(installation);
-    } else if (body.rotate === true) {
-      installation.activationCode = randomBytes(18).toString("hex");
-      installation.gatewayId = "";
-      installation.lastSeenAt = "";
+    } else {
+      installation.label = String(body.label || installation.label || "Portaria principal").trim();
+      if (body.rotate === true) {
+        installation.activationCode = randomBytes(18).toString("hex");
+        installation.gatewayId = "";
+        installation.lastSeenAt = "";
+      }
+    installation.installCode = randomBytes(6).toString("hex").toUpperCase();
+    installation.installCodeExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    installation.claimedAt = "";
     }
     savePersistentState("gateway-activation-created");
     return json(response, 200, publicGatewayInstallation(installation));
   }
+  if (request.method === "POST" && url.pathname === "/api/gateways/setup/claim") {
+    const body = await readBody(request);
+    const installCode = String(body.installCode || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+    const installation = gatewayInstallations.find((item) => item.installCode === installCode);
+    if (!installation || !installCode) {
+      return json(response, 401, { message: "Codigo de instalacao invalido" });
+    }
+    if (!installation.installCodeExpiresAt || Date.parse(installation.installCodeExpiresAt) < Date.now()) {
+      return json(response, 410, { message: "Codigo expirado. Gere um novo codigo no painel" });
+    }
+    installation.claimedAt = now();
+    installation.hostname = String(body.hostname || installation.hostname || "").trim();
+    savePersistentState("gateway-installation-claimed");
+    return json(response, 200, {
+      tenantId: installation.tenantId,
+      tenantName: findTenant(installation.tenantId).name,
+      activationCode: installation.activationCode,
+      label: installation.label || "Portaria principal",
+      pollMs: 3000,
+      localPort: 4040
+    });
+  }
+
 
   if (request.method === "POST" && url.pathname === "/api/gateways/heartbeat") {
     const installation = gatewayRequestInstallation(request);

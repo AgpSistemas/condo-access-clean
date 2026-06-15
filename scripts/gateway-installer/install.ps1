@@ -1,10 +1,9 @@
 param(
-  [string]$ApiUrl = "https://api-production-441f.up.railway.app/api",
-  [string]$TenantId = "",
-  [string]$ActivationCode = ""
+  [string]$InstallCode = ""
 )
 
 $ErrorActionPreference = "Stop"
+$ApiUrl = "https://api-production-441f.up.railway.app/api"
 
 $CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal($CurrentIdentity)
@@ -18,9 +17,27 @@ $InstallDir = Join-Path $env:ProgramFiles "Condo Access Gateway"
 $DataDir = Join-Path $env:ProgramData "CondoAccessGateway"
 $TaskName = "CondoAccessGateway"
 
-if (-not $TenantId) { $TenantId = Read-Host "ID do condominio" }
-if (-not $ActivationCode) { $ActivationCode = Read-Host "Codigo de ativacao" }
-if (-not $TenantId -or -not $ActivationCode) { throw "ID do condominio e codigo de ativacao sao obrigatorios." }
+if (-not $InstallCode) { $InstallCode = Read-Host "Codigo de instalacao exibido no painel" }
+$InstallCode = ($InstallCode -replace "[^a-zA-Z0-9]", "").ToUpper()
+if (-not $InstallCode) { throw "O codigo de instalacao e obrigatorio." }
+
+Write-Host "Buscando configuracao do condominio..." -ForegroundColor Cyan
+$SetupBody = @{
+  installCode = $InstallCode
+  hostname = $env:COMPUTERNAME
+} | ConvertTo-Json
+
+try {
+  $Setup = Invoke-RestMethod `
+    -Uri "$ApiUrl/gateways/setup/claim" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $SetupBody
+} catch {
+  $Message = $_.ErrorDetails.Message
+  if (-not $Message) { $Message = $_.Exception.Message }
+  throw "Nao foi possivel validar o codigo de instalacao. $Message"
+}
 
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -32,12 +49,13 @@ New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "CondoAccessGateway.exe") -Destination (Join-Path $InstallDir "CondoAccessGateway.exe") -Force
 
 @{
-  apiUrl = $ApiUrl.TrimEnd("/")
-  tenantId = $TenantId.Trim()
-  activationCode = $ActivationCode.Trim()
+  apiUrl = $ApiUrl
+  tenantId = $Setup.tenantId
+  activationCode = $Setup.activationCode
   gatewayId = $env:COMPUTERNAME
-  pollMs = 3000
-  localPort = 4040
+  label = $Setup.label
+  pollMs = $Setup.pollMs
+  localPort = $Setup.localPort
 } | ConvertTo-Json | Set-Content -Path (Join-Path $DataDir "config.json") -Encoding UTF8
 
 $Action = New-ScheduledTaskAction -Execute (Join-Path $InstallDir "CondoAccessGateway.exe")
@@ -49,6 +67,8 @@ Start-ScheduledTask -TaskName $TaskName
 
 Write-Host ""
 Write-Host "Condo Access Gateway instalado e iniciado." -ForegroundColor Green
+Write-Host "Condominio: $($Setup.tenantName)"
+Write-Host "Instalacao: $($Setup.label)"
 Write-Host "Configuracao: $DataDir\config.json"
-Write-Host "Saude local: http://127.0.0.1:4040/health"
+Write-Host "Saude local: http://127.0.0.1:$($Setup.localPort)/health"
 Read-Host "Pressione ENTER para fechar"

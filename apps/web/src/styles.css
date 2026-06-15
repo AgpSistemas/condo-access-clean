@@ -925,11 +925,66 @@ nav button:hover {
   white-space: nowrap;
 }
 
+.gateway-download-button.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .gateway-activation-card {
   padding: 20px;
   border: 1px solid #d9e2e4;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.gateway-config-form {
+  grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr);
+}
+
+.gateway-install-action,
+.gateway-download-actions,
+.gateway-install-code-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.gateway-install-action {
+  justify-content: space-between;
+}
+
+.gateway-install-action span {
+  color: #66777c;
+  font-size: 13px;
+}
+
+.gateway-download-actions {
+  flex-shrink: 0;
+}
+
+.gateway-install-code-card {
+  justify-content: space-between;
+  padding: 20px;
+  border: 1px solid #b8d7cd;
+  border-radius: 8px;
+  background: #eef8f4;
+}
+
+.gateway-install-code-card div {
+  display: grid;
+  gap: 6px;
+}
+
+.gateway-install-code-card span {
+  color: #53666c;
+  font-size: 13px;
+}
+
+.gateway-install-code {
+  color: #155e4b;
+  font-family: Consolas, monospace;
+  font-size: 28px;
+  letter-spacing: 0.16em;
 }
 
 .gateway-setup-guide,
@@ -2798,6 +2853,17 @@ button.simple-row.selected {
 
 @media (max-width: 640px) {
   .gateway-download-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .gateway-config-form {
+    grid-template-columns: 1fr;
+  }
+
+  .gateway-install-action,
+  .gateway-download-actions,
+  .gateway-install-code-card {
     align-items: stretch;
     flex-direction: column;
   }

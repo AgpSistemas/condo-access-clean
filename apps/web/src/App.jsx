@@ -134,6 +134,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [supportAlert, setSupportAlert] = useState("");
   const [actionFeedback, setActionFeedback] = useState(null);
+  const [gatewayForm, setGatewayForm] = useState({ label: "Portaria principal" });
   const [deviceForm, setDeviceForm] = useState(emptyDeviceForm);
   const [companyForm, setCompanyForm] = useState(emptyCompanyForm);
   const [cameraForm, setCameraForm] = useState(emptyCameraForm);
@@ -210,6 +211,11 @@ function App() {
       longitude: condoFormTenant?.longitude || ""
     });
   }, [condoFormTenant?.id, condoFormTenant?.latitude, condoFormTenant?.longitude]);
+
+  useEffect(() => {
+    const gateway = (data.gateways || []).find((item) => item.tenantId === selectedTenant?.id);
+    setGatewayForm({ label: gateway?.label || "Portaria principal" });
+  }, [data.gateways, selectedTenant?.id]);
 
   const resolveSipIncomingContext = useCallback((sourceExtension, targetExtension, fallbackTenant) => {
     const cleanSource = String(sourceExtension || "").trim();
@@ -1535,21 +1541,41 @@ function App() {
     void refreshApiCache();
   }
 
-  async function generateGatewayActivation(rotate = false) {
+  async function prepareGatewayInstallation(event, rotate = false) {
+    event?.preventDefault();
     if (!selectedTenant?.id) return;
     const response = await apiFetch("/api/gateways/activation", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenantId: selectedTenant.id, rotate })
+      body: JSON.stringify({
+        tenantId: selectedTenant.id,
+        label: gatewayForm.label,
+        rotate
+      })
     });
     const result = await response.json().catch(() => null);
     if (!response.ok) {
-      setMessage(result?.message || "Falha ao gerar codigo do Gateway.");
+      setMessage(result?.message || "Falha ao preparar a instalacao do Gateway.");
       return;
     }
-    setMessage(rotate ? "Novo codigo de ativacao gerado." : "Codigo de ativacao do Gateway gerado.");
-    const payload = await refreshApiCache();
-    if (payload) setData(payload);
+    setData((current) => ({
+      ...current,
+      gateways: [
+        result,
+        ...(current.gateways || []).filter((item) => item.tenantId !== result.tenantId)
+      ]
+    }));
+    setMessage(rotate ? "Novo codigo de instalacao gerado." : "Instalacao preparada. Baixe o Gateway e informe o codigo exibido.");
+  }
+
+  async function copyGatewayInstallCode(code) {
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setMessage("Codigo de instalacao copiado.");
+    } catch {
+      window.prompt("Copie o codigo de instalacao:", code);
+    }
   }
 
   async function deleteDevice(device) {
@@ -2839,33 +2865,68 @@ function App() {
           )}
           {deviceTab === "gateway" && (
             <section className="gateway-download-layout">
-              <article className="gateway-download-card">
-                <div>
-                  <strong>Condo Access Gateway para Windows</strong>
-                  <span>Instale no computador da portaria. O Gateway conecta com a nuvem pela porta 443 e acessa os equipamentos pelos IPs da rede local.</span>
-                </div>
-                <a className="gateway-download-button" href={apiPath("/api/gateways/download/windows")} download>Baixar instalador Windows</a>
-              </article>
               {(() => {
                 const gateway = (data.gateways || []).find((item) => item.tenantId === selectedTenant?.id);
-                return <article className="gateway-activation-card">
-                  <div className="panel-heading"><h2>Ativacao do Gateway</h2><span className={`status ${gateway?.online ? "" : "offline"}`}>{gateway?.online ? "Online" : "Offline"}</span></div>
-                  <div className="summary-list">
-                    <span><strong>Condominio</strong>{selectedTenant?.name || "-"}</span>
-                    <span><strong>ID para instalacao</strong>{selectedTenant?.id || "-"}</span>
-                    <span><strong>Codigo de ativacao</strong>{gateway?.activationCode || "Ainda nao gerado"}</span>
-                    <span><strong>Computador</strong>{gateway?.hostname || "Ainda nao conectado"}</span>
-                  </div>
-                  <div className="toolbar-actions">
-                    <button type="button" onClick={() => void generateGatewayActivation(false)}>Gerar codigo</button>
-                    <button className="secondary-button" type="button" onClick={() => void generateGatewayActivation(true)}>Trocar codigo</button>
-                  </div>
-                </article>;
+                const installCodeValid = gateway?.installCode && Date.parse(gateway.installCodeExpiresAt || "") > Date.now();
+                return <>
+                  <form className="gateway-activation-card" onSubmit={prepareGatewayInstallation}>
+                    <div className="panel-heading">
+                      <div><h2>Configurar Gateway local</h2><small>Escolha o condominio e prepare a instalacao. A URL da API ja vem configurada.</small></div>
+                      <span className={`status ${gateway?.online ? "" : "offline"}`}>{gateway?.online ? "Online" : "Offline"}</span>
+                    </div>
+                    <div className="form-grid gateway-config-form">
+                      <Field label="Condominio">
+                        <select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>
+                          {visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                        </select>
+                      </Field>
+                      <Field label="Nome da instalacao">
+                        <input required value={gatewayForm.label} onChange={(event) => setGatewayForm({ label: event.target.value })} placeholder="Ex.: Portaria principal" />
+                      </Field>
+                    </div>
+                    <div className="gateway-install-action">
+                      <button type="submit">Preparar instalacao</button>
+                      <span>O instalador pedira somente o codigo abaixo.</span>
+                    </div>
+                  </form>
+                  <article className="gateway-download-card">
+                    <div>
+                      <strong>Condo Access Gateway para Windows</strong>
+                      <span>{installCodeValid
+                        ? `Instalacao preparada para ${selectedTenant?.name}. Baixe e informe o codigo exibido abaixo.`
+                        : "Prepare a instalacao acima para liberar o download vinculado ao condominio."}</span>
+                    </div>
+                    {installCodeValid
+                      ? <a className="gateway-download-button" href={apiPath("/api/gateways/download/windows")} download>Baixar Gateway Windows</a>
+                      : <button className="gateway-download-button disabled" type="button" disabled>Prepare para baixar</button>}
+                  </article>
+                  {installCodeValid && (
+                    <article className="gateway-install-code-card">
+                      <div>
+                        <strong>Codigo de instalacao</strong>
+                        <b className="gateway-install-code">{gateway.installCode}</b>
+                        <span>Valido por 24 horas para {selectedTenant?.name}. Nao e necessario informar URL nem ID do condominio.</span>
+                      </div>
+                      <button className="secondary-button" type="button" onClick={() => void copyGatewayInstallCode(gateway.installCode)}>Copiar codigo</button>
+                    </article>
+                  )}
+                  <article className="gateway-activation-card">
+                    <div className="panel-heading"><h2>Status da instalacao</h2><span className={`status ${gateway?.online ? "" : "offline"}`}>{gateway?.online ? "Online" : "Offline"}</span></div>
+                    <div className="summary-list">
+                      <span><strong>Condominio</strong>{selectedTenant?.name || "-"}</span>
+                      <span><strong>Instalacao</strong>{gateway?.label || "Ainda nao preparada"}</span>
+                      <span><strong>Computador</strong>{gateway?.hostname || "Ainda nao conectado"}</span>
+                      <span><strong>Ultima conexao</strong>{gateway?.lastSeenAt ? formatDateTime(gateway.lastSeenAt) : "Aguardando instalacao"}</span>
+                    </div>
+                    {gateway?.installCode && !installCodeValid && <div className="form-hint">O ultimo codigo expirou. Clique abaixo para preparar outro.</div>}
+                    {gateway?.installCode && <button className="secondary-button" type="button" onClick={(event) => void prepareGatewayInstallation(event, true)}>Gerar novo codigo</button>}
+                  </article>
+                </>;
               })()}
               <article className="panel gateway-setup-guide">
                 <div className="panel-heading"><h2>Como conectar equipamentos da rede local</h2><RadioTower size={20} /></div>
                 <div className="gateway-setup-steps">
-                  <span><strong>1. Instale e ative</strong>Baixe o instalador e informe o ID do condominio e o codigo de ativacao.</span>
+                  <span><strong>1. Prepare e instale</strong>Selecione o condominio, prepare a instalacao, baixe e informe apenas o codigo exibido.</span>
                   <span><strong>2. Cadastre o IP local</strong>Em Cadastro, informe o IP do equipamento, por exemplo 192.168.1.50, e selecione Gateway local.</span>
                   <span><strong>3. Teste o acionamento</strong>Cadastre um acionamento para o equipamento e execute a abertura pelo painel.</span>
                 </div>
