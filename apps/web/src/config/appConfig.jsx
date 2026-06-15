@@ -169,6 +169,7 @@ const emptyDeviceForm = {
   niceGatewayHealthPath: "/health",
   niceGatewayOpenPath: "/api/nice-linear/open",
   niceDeviceId: "",
+  doorToken: "",
   intercomExtension: "",
   intercomType: "FACIAL",
   intercomEnabled: true
@@ -475,6 +476,41 @@ function intelbrasDeviceDefaults(category, manufacturer) {
     }
   }
 
+  if (manufacturer === "Axis" && category === "access-control") {
+    return {
+      model: "A1601",
+      apiProtocol: "http",
+      apiPort: "80",
+      rtspPort: "554",
+      channelCount: "0",
+      doorToken: "",
+      intercomEnabled: false
+    };
+  }
+
+  if (manufacturer === "Dahua" && category === "access-control") {
+    return {
+      model: "ASI Series",
+      apiProtocol: "http",
+      apiPort: "80",
+      rtspPort: "554",
+      channelCount: "0",
+      intercomType: "FACIAL",
+      intercomEnabled: true
+    };
+  }
+
+  if (manufacturer === "Suprema" && category === "access-control") {
+    return {
+      model: "BioStar 2",
+      apiProtocol: "https",
+      apiPort: "443",
+      rtspPort: "0",
+      channelCount: "0",
+      intercomEnabled: false
+    };
+  }
+
   if (manufacturer !== "Intelbras") return {};
   if (category === "cameras") {
     return {
@@ -566,6 +602,47 @@ function intelbrasModelDefaults(model) {
     };
   }
 
+  if (["A1001", "A1601", "A1610", "A1710", "I8016-LVE"].includes(model)) {
+    return {
+      category: "access-control",
+      manufacturer: "Axis",
+      model,
+      apiProtocol: "http",
+      apiPort: "80",
+      rtspPort: "554",
+      channelCount: "0",
+      doorToken: "",
+      intercomEnabled: false
+    };
+  }
+
+  if (["ASI Series", "ASC Series"].includes(model)) {
+    return {
+      category: "access-control",
+      manufacturer: "Dahua",
+      model,
+      apiProtocol: "http",
+      apiPort: "80",
+      rtspPort: "554",
+      channelCount: "0",
+      intercomType: "FACIAL",
+      intercomEnabled: true
+    };
+  }
+
+  if (["BioStar 2", "BioStar X"].includes(model)) {
+    return {
+      category: "access-control",
+      manufacturer: "Suprema",
+      model,
+      apiProtocol: "https",
+      apiPort: "443",
+      rtspPort: "0",
+      channelCount: "0",
+      intercomEnabled: false
+    };
+  }
+
   if (model === "MHDX 3116-C") {
     return {
       category: "cameras",
@@ -600,15 +677,19 @@ function homologatedModelOptions(manufacturer, categoryOrType) {
   const key = String(categoryOrType || "").toLowerCase();
   if (manufacturer === "Hikvision") {
     if (key.includes("camera") || key === "dvr" || key === "nvr") return ["DS-7616NI-E2 / 16P"];
-    if (key.includes("access") || key.includes("facial")) return ["DS-K1T342MWX"];
-    return ["DS-K1T342MWX", "DS-7616NI-E2 / 16P"];
+    if (key.includes("access") || key.includes("facial")) return ["DS-K1T342MWX", "DS-K1T Series", "DS-K1A Series", "DS-K260 Series", "DS-K280 Series", "DS-K1H Series", "DS-KV/DS-KD Intercom"];
+    return ["DS-K1T342MWX", "DS-K1T Series", "DS-K1A Series", "DS-K260 Series", "DS-K280 Series", "DS-K1H Series", "DS-KV/DS-KD Intercom", "DS-7616NI-E2 / 16P"];
   }
 
   if (manufacturer === "Intelbras") {
     if (key.includes("camera") || key === "dvr" || key === "nvr") return ["MHDX 3116-C"];
-    if (key.includes("access") || key.includes("facial")) return ["SS 3532 MF W"];
-    return ["SS 3532 MF W", "MHDX 3116-C"];
+    if (key.includes("access") || key.includes("facial")) return ["SS 3532 MF W", "SS 3530 MF FACE W", "SS 3540 MF FACE EX", "SS 3542 MF FACE BIO EX", "SS 3430 MF BIO", "CT 500"];
+    return ["SS 3532 MF W", "SS 3530 MF FACE W", "SS 3540 MF FACE EX", "SS 3542 MF FACE BIO EX", "SS 3430 MF BIO", "CT 500", "MHDX 3116-C"];
   }
+
+  if (manufacturer === "Axis") return ["A1001", "A1601", "A1610", "A1710", "I8016-LVE"];
+  if (manufacturer === "Dahua") return ["ASI Series", "ASC Series"];
+  if (manufacturer === "Suprema") return ["BioStar 2", "BioStar X"];
 
   if (manufacturer === "Control iD") {
     if (key.includes("uhf") || key.includes("vehicle")) return ["iDUHF"];

@@ -9,6 +9,35 @@ import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import pg from "pg";
 import QRCode from "qrcode";
 import {
+  publicRestAccessProfiles,
+  resolveRestAccessProfile,
+  restAccessDefaults
+} from "./integrations/access-control/restProfiles.js";
+import {
+  AXIS_VAPIX_PACS_ADAPTER,
+  matchesAxisVapix,
+  openAxisVapixDoor,
+  testAxisVapix
+} from "./integrations/axis/vapixPacs.js";
+import {
+  DAHUA_ACCESS_CGI_ADAPTER,
+  matchesDahuaAccess,
+  openDahuaAccessDoor,
+  testDahuaAccess
+} from "./integrations/dahua/accessCgi.js";
+import {
+  SUPREMA_BIOSTAR_REST_ADAPTER,
+  matchesSupremaBiostar,
+  testSupremaBiostar
+} from "./integrations/suprema/biostar.js";
+import {
+  HIKVISION_ISAPI_ADAPTER,
+  hikvisionIsapiDefaults,
+  matchesHikvisionIsapi,
+  openHikvisionIsapiDoor,
+  testHikvisionIsapi
+} from "./integrations/hikvision/isapi.js";
+import {
   INTELBRAS_MHDX_3116C_ADAPTER,
   matchesMhdx3116c,
   mhdx3116cDefaults,
@@ -446,7 +475,7 @@ const deviceCategories = [
   {
     id: "access-control",
     name: "Controle de Acesso",
-    manufacturers: ["Control iD", "Nice/Linear", "Linear HCS", "Nice Guarita", "Bravas", "Hikvision", "Intelbras"],
+    manufacturers: ["Control iD", "Nice/Linear", "Linear HCS", "Nice Guarita", "Bravas", "Hikvision", "Intelbras", "Dahua", "Axis", "Suprema"],
     deviceTypes: ["Facial", "Controladora", "Leitora", "Video porteiro", "ATA VoIP", "Telefone IP"]
   },
   {
@@ -530,7 +559,19 @@ const manufacturerProfiles = [
     credentialTypes: ["APP", "QR"],
     syncModes: ["Acionamentos", "Historico", "Eventos"],
     notes: "Usado como perfil generico para botoes de abertura remota."
-  }
+  },
+  ...publicRestAccessProfiles()
+    .filter((profile) => ["Axis", "Dahua", "Suprema"].includes(profile.manufacturer))
+    .map((profile) => ({
+      id: profile.id,
+      name: profile.manufacturer,
+      families: profile.models,
+      protocols: profile.protocols,
+      defaultPorts: [String(profile.defaultPort)],
+      credentialTypes: profile.capabilities.filter((item) => ["users", "credentials", "cards", "faces"].includes(item)).map((item) => item.toUpperCase()),
+      syncModes: profile.capabilities,
+      notes: profile.notes
+    }))
 ];
 
 
@@ -1023,7 +1064,10 @@ function deviceAdapter(device) {
   if (manufacturer.includes("control") || manufacturer.includes("control id") || manufacturer.includes("controlid")) {
     return CONTROL_ID_ACCESS_ADAPTER;
   }
-  if (manufacturer.includes("hikvision")) return "HIKVISION_ISAPI";
+  if (matchesHikvisionIsapi(device)) return HIKVISION_ISAPI_ADAPTER;
+  if (matchesAxisVapix(device)) return AXIS_VAPIX_PACS_ADAPTER;
+  if (matchesDahuaAccess(device)) return DAHUA_ACCESS_CGI_ADAPTER;
+  if (matchesSupremaBiostar(device)) return SUPREMA_BIOSTAR_REST_ADAPTER;
   if (manufacturer.includes("intelbras")) {
     if (matchesSs3532Mfw(device)) return INTELBRAS_SS_3532_MF_W_ADAPTER;
     if (matchesMhdx3116c(device)) return INTELBRAS_MHDX_3116C_ADAPTER;
@@ -1159,7 +1203,7 @@ async function hikvisionRequest(device, targetPath, options = {}) {
 }
 
 async function testHikvisionDevice(device) {
-  return hikvisionRequest(device, "/ISAPI/System/deviceInfo", { method: "GET" });
+  return testHikvisionIsapi(device, { requestDevice: hikvisionRequest });
 }
 
 async function tryDeviceHttpCandidates(device, candidates, timeoutMs = 7000) {
@@ -1194,11 +1238,7 @@ async function tryDeviceHttpCandidates(device, candidates, timeoutMs = 7000) {
 }
 
 async function openHikvisionDoor(device, relay = 1) {
-  const body = "<RemoteControlDoor><cmd>open</cmd></RemoteControlDoor>";
-  return hikvisionRequest(device, `/ISAPI/AccessControl/RemoteControl/door/${relay}`, {
-    method: "PUT",
-    body
-  });
+  return openHikvisionIsapiDoor(device, relay, { requestDevice: hikvisionRequest });
 }
 
 async function openDeviceDoor(device, relay = 1, action = {}) {
@@ -1219,6 +1259,16 @@ async function openDeviceDoor(device, relay = 1, action = {}) {
       status: result.status,
       message: `Intelbras Bio-T respondeu ${result.status}`
     };
+  }
+
+  if (adapter === DAHUA_ACCESS_CGI_ADAPTER) {
+    const result = await openDahuaAccessDoor(device, relay, { requestDevice: authenticatedDeviceRequest });
+    return { adapter, status: result.status, message: `Dahua respondeu ${result.status}` };
+  }
+
+  if (adapter === AXIS_VAPIX_PACS_ADAPTER) {
+    const result = await openAxisVapixDoor(device, action, { requestDevice: authenticatedDeviceRequest });
+    return { adapter, status: result.status, message: `Axis VAPIX respondeu ${result.status}` };
   }
 
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
@@ -2759,6 +2809,22 @@ async function deviceIntegrationPayload(device, resource = "summary", { limit = 
     };
   }
 
+  if (adapter === INTELBRAS_SS_3532_MF_W_ADAPTER) {
+    const snapshot = await readDeviceCredentialsFromDevice(device);
+    directAttempts = snapshot.attempts;
+    const credentialRecords = hikvisionDeviceCredentials(snapshot.records || [], device)
+      .map((record) => ({ ...record, source: INTELBRAS_SS_3532_MF_W_ADAPTER }));
+    directPayload = {
+      source: INTELBRAS_SS_3532_MF_W_ADAPTER,
+      credentials: credentialRecords,
+      schedules: integrationScheduleRecords(device),
+      faces: credentialRecords.filter((credential) => credential.type === "FACE"),
+      users: hikvisionDeviceUsers(snapshot.records || [], device)
+        .map((record) => ({ ...record, source: INTELBRAS_SS_3532_MF_W_ADAPTER })),
+      events: (snapshot.events || []).slice(0, limit)
+    };
+  }
+
   const credentialRecords = directPayload?.credentials || tenantCredentialsForDevice(device).map(integrationCredentialRecord);
   const faceRecords = credentialRecords.filter((credential) => credential.type === "FACE");
   const userRecords = directPayload?.users || residents
@@ -2775,7 +2841,14 @@ async function deviceIntegrationPayload(device, resource = "summary", { limit = 
     users: userRecords
   };
   const summary = Object.fromEntries(Object.entries(resourcesPayload).map(([key, records]) => [key, records.length]));
-  const hasDeviceApi = ["HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, CONTROL_ID_ACCESS_ADAPTER].includes(adapter);
+  const hasDeviceApi = [
+    "HIKVISION_ISAPI",
+    INTELBRAS_SS_3532_MF_W_ADAPTER,
+    CONTROL_ID_ACCESS_ADAPTER,
+    AXIS_VAPIX_PACS_ADAPTER,
+    DAHUA_ACCESS_CGI_ADAPTER,
+    SUPREMA_BIOSTAR_REST_ADAPTER
+  ].includes(adapter);
 
   return {
     ok: true,
@@ -4370,9 +4443,32 @@ async function testDeviceIntegration(device) {
     checkedAt: now()
   };
 
-  if (adapter === "HIKVISION_ISAPI") {
+  if (adapter === HIKVISION_ISAPI_ADAPTER) {
     const result = await testHikvisionDevice(device);
     return { ...base, ok: true, status: result.status, message: "Conexao Hikvision ISAPI OK" };
+  }
+
+  if (adapter === AXIS_VAPIX_PACS_ADAPTER) {
+    const result = await testAxisVapix(device, { requestDevice: authenticatedDeviceRequest });
+    return { ...base, ok: true, status: result.status, message: "Conexao Axis VAPIX PACS OK", matchedEndpoint: result.matchedEndpoint };
+  }
+
+  if (adapter === DAHUA_ACCESS_CGI_ADAPTER) {
+    const result = await testDahuaAccess(device, { tryHttpCandidates: tryDeviceHttpCandidates, checkTcpDevice });
+    return {
+      ...base,
+      ok: true,
+      status: result.status,
+      message: result.partial ? "Dahua respondeu TCP, mas CGI precisa ser habilitado ou autenticado" : "Conexao Dahua Access CGI OK",
+      matchedEndpoint: result.matched?.path || "",
+      attempts: result.attempts || [],
+      bodyPreview: result.body.slice(0, 240)
+    };
+  }
+
+  if (adapter === SUPREMA_BIOSTAR_REST_ADAPTER) {
+    const result = await testSupremaBiostar(device, { baseUrl: deviceBaseUrl, timeout: withTimeout });
+    return { ...base, ok: true, status: result.status, message: "Conexao Suprema BioStar REST OK", matchedEndpoint: result.matchedEndpoint };
   }
 
   if (adapter === INTELBRAS_MHDX_3116C_ADAPTER) {
@@ -5741,7 +5837,7 @@ async function handleRequest(request, response) {
     let gatewayMessage = "";
 
     const adapter = device ? deviceAdapter(device) : "GENERIC_TCP";
-    if (device && action?.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
+    if (device && action?.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, DAHUA_ACCESS_CGI_ADAPTER, AXIS_VAPIX_PACS_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
       try {
         const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1, action);
         delivered = true;
@@ -6590,11 +6686,15 @@ async function handleRequest(request, response) {
       ? controlIdDeviceDefaults({ ...body, manufacturer, model }, existingDevice)
       : matchesNiceLinear({ ...body, manufacturer, model })
         ? niceLinearDefaults({ ...body, manufacturer, model }, existingDevice)
+      : matchesHikvisionIsapi({ ...body, manufacturer, model })
+        ? hikvisionIsapiDefaults({ ...body, manufacturer, model }, existingDevice)
       : matchesSs3532Mfw({ ...body, manufacturer, model })
         ? ss3532MfwDefaults({ ...body, manufacturer, model }, existingDevice)
         : matchesMhdx3116c({ ...body, manufacturer, model })
           ? mhdx3116cDefaults({ ...body, manufacturer, model }, existingDevice)
-          : {};
+          : resolveRestAccessProfile({ ...body, manufacturer, model })
+            ? restAccessDefaults({ ...body, manufacturer, model }, existingDevice)
+            : {};
     if (matchesControlIdDevice({ ...body, manufacturer, model })) {
       const validation = validateControlIdConfiguration(deviceProfile);
       if (!validation.ok) {
@@ -6637,6 +6737,8 @@ async function handleRequest(request, response) {
       password: body.password || existingDevice?.password || "",
       passwordSet: Boolean(body.password || existingDevice?.password || body.passwordSet),
       authMode: body.authMode || existingDevice?.authMode || "DIGEST",
+      integrationMode: deviceProfile.integrationMode || body.integrationMode || existingDevice?.integrationMode || "DIRECT_DEVICE",
+      doorToken: deviceProfile.doorToken ?? body.doorToken ?? existingDevice?.doorToken ?? "",
       controlIdAction: deviceProfile.controlIdAction || body.controlIdAction || existingDevice?.controlIdAction || "door",
       controlIdSecBoxId: deviceProfile.controlIdSecBoxId ?? body.controlIdSecBoxId ?? existingDevice?.controlIdSecBoxId ?? "",
       controlIdGroupId: deviceProfile.controlIdGroupId ?? body.controlIdGroupId ?? existingDevice?.controlIdGroupId ?? "",
@@ -6838,7 +6940,7 @@ async function handleRequest(request, response) {
       accessLogs.unshift(log);
       return log;
     };
-    if (device && action.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
+    if (device && action.status !== "DISABLED" && [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI", INTELBRAS_SS_3532_MF_W_ADAPTER, DAHUA_ACCESS_CGI_ADAPTER, AXIS_VAPIX_PACS_ADAPTER, NICE_LINEAR_ADAPTER].includes(adapter)) {
       try {
         const result = await openDeviceDoor(device, action.relay || device.doorRelay || 1, action);
         const log = actionLog("ALLOW", result.message || `Acionamento ${action.name} enviado via ${adapter}`);
