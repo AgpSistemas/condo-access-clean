@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { condoSections, sections, settingsSections } from "../config/routes.js";
 
-function useTenantSelection({ data, session, activeSection, selectedTenantId, selectedUnitId, unitSearch, licenseCompanyId, condoFormMode }) {
+function useTenantSelection({ data, session, activeSection, selectedTenantId, selectedUnitId, unitSearch, condoFormMode }) {
   const roleSections = session?.role === "PORTER"
     ? sections.filter((section) => ["dashboard", "remotePorter", "telephony"].includes(section.id))
     : session?.role === "RESIDENT"
@@ -9,10 +9,12 @@ function useTenantSelection({ data, session, activeSection, selectedTenantId, se
       : sections;
   const allowedSettingsSections = session?.role === "SUPER_ADMIN" ? settingsSections : [];
   const active = [...roleSections, ...condoSections, ...allowedSettingsSections].find((section) => section.id === activeSection) || sections[0];
-  const visibleCondominiums = data.condominiums.filter((item) => !session?.companyId || item.companyId === session.companyId);
+  const visibleCondominiums = data.condominiums.filter((item) =>
+    (!session?.companyId || item.companyId === session.companyId) &&
+    (!session?.tenantId || item.id === session.tenantId)
+  );
   const selectedTenant = visibleCondominiums.find((item) => item.id === selectedTenantId) || visibleCondominiums[0];
   const sessionCompany = data.companies.find((company) => company.id === session?.companyId) || null;
-  const selectedLicenseCompany = data.companies.find((item) => item.id === licenseCompanyId) || null;
   const condoFormTenant = condoFormMode === "new" ? null : selectedTenant;
   const units = useMemo(() => data.units.filter((unit) => unit.tenantId === selectedTenant?.id), [data.units, selectedTenant?.id]);
   const filteredUnits = useMemo(() => {
@@ -22,7 +24,7 @@ function useTenantSelection({ data, session, activeSection, selectedTenantId, se
   }, [unitSearch, units]);
   const selectedUnit = units.find((unit) => unit.unitId === selectedUnitId) || null;
 
-  return { roleSections, allowedSettingsSections, active, visibleCondominiums, selectedTenant, sessionCompany, selectedLicenseCompany, condoFormTenant, units, filteredUnits, selectedUnit };
+  return { roleSections, allowedSettingsSections, active, visibleCondominiums, selectedTenant, sessionCompany, condoFormTenant, units, filteredUnits, selectedUnit };
 }
 
 export default useTenantSelection;

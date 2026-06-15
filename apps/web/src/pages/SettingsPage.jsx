@@ -12,7 +12,7 @@ function money(value) {
   return currencyFormatter.format(Number(value || 0));
 }
 
-function SettingsPage({ companies, condominiums, licenses, gateway, onSaveBillingProfile }) {
+function SettingsPage({ companies, condominiums, licenses, invoices = [], gateway, onSaveBillingProfile, onGenerateCharge }) {
   const portfolio = useMemo(
     () => calculateBillingPortfolio(companies, condominiums, licenses),
     [companies, condominiums, licenses]
@@ -25,6 +25,7 @@ function SettingsPage({ companies, condominiums, licenses, gateway, onSaveBillin
     billingStatus: "ACTIVE"
   });
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     if (!companies.some((company) => company.id === selectedCompanyId)) {
@@ -51,6 +52,16 @@ function SettingsPage({ companies, condominiums, licenses, gateway, onSaveBillin
       // A mensagem de erro e exibida pelo fluxo principal da aplicacao.
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function generateCharge() {
+    if (!selectedCompany || !onGenerateCharge) return;
+    setGenerating(true);
+    try {
+      await onGenerateCharge(selectedCompany.id, profile.defaultPaymentMethod);
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -92,8 +103,8 @@ function SettingsPage({ companies, condominiums, licenses, gateway, onSaveBillin
           {!companies.length && <div className="empty-state">Nenhuma empresa cadastrada para faturamento.</div>}
         </div>
         <div className="form-hint">
-          Em cobranca por uso, a quantidade vem dos condominios ativos e dos ramais liberados nas licencas.
-          Em pacote, a quantidade vem do limite contratado.
+          Condominios sao cobrados somente quando estiverem ativos para a empresa. O limite contratado controla novos cadastros, mas nao entra no valor.
+          Ramais continuam sendo calculados conforme o modelo contratado.
         </div>
       </article>
 
@@ -142,6 +153,9 @@ function SettingsPage({ companies, condominiums, licenses, gateway, onSaveBillin
             </select>
           </Field>
           <button type="submit" disabled={!selectedCompany || saving}><Save size={16} /> {saving ? "Salvando..." : "Salvar configuracao"}</button>
+          <button type="button" disabled={!selectedCompany || !gateway?.configured || generating} onClick={generateCharge}>
+            <CreditCard size={16} /> {generating ? "Gerando cobranca..." : "Gerar cobranca no Asaas"}
+          </button>
         </div>
         <div className={`gateway-status ${gateway?.configured ? "configured" : ""}`}>
           <Landmark size={18} />
@@ -151,12 +165,28 @@ function SettingsPage({ companies, condominiums, licenses, gateway, onSaveBillin
               {gateway?.configured
                 ? gateway.webhookConfigured
                   ? "Chave da API e autenticacao do webhook estao configuradas no servidor."
-                  : "A chave da API existe, mas ainda falta configurar a autenticacao do webhook."
-                : "Conecte uma conta Asaas no servidor para gerar PIX, boleto e cartao e receber confirmacoes por webhook."}
+                  : "Configure ASAAS_WEBHOOK_TOKEN no Railway e cadastre o endpoint /api/webhooks/asaas no painel Asaas."
+                : "Configure ASAAS_API_KEY e ASAAS_WEBHOOK_TOKEN no Railway para gerar cobrancas e receber confirmacoes."}
             </span>
           </div>
         </div>
       </form>
+
+      <article className="panel">
+        <div className="panel-heading"><h2>Cobrancas geradas</h2><CreditCard size={20} /></div>
+        <div className="billing-company-list">
+          {invoices.map((invoice) => (
+            <article className="billing-company-card" key={invoice.id}>
+              <header>
+                <div><strong>{companies.find((company) => company.id === invoice.companyId)?.name || invoice.companyId}</strong><span>{invoice.status || "PENDING"} - vencimento {invoice.dueDate || "-"}</span></div>
+                <strong>{money(invoice.value)}</strong>
+              </header>
+              {invoice.invoiceUrl && <a href={invoice.invoiceUrl} target="_blank" rel="noreferrer">Abrir cobranca no Asaas</a>}
+            </article>
+          ))}
+          {!invoices.length && <div className="empty-state">Nenhuma cobranca gerada ainda.</div>}
+        </div>
+      </article>
     </section>
   );
 }

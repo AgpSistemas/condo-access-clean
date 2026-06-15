@@ -1096,6 +1096,59 @@ nav button:hover {
   grid-template-columns: minmax(300px, 0.55fr) minmax(0, 1.45fr);
 }
 
+.porter-actions-strip {
+  display: grid;
+  gap: 10px;
+}
+
+.porter-action-grid-horizontal {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.porter-quick-search {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #d9e2e4;
+}
+
+.porter-quick-results {
+  display: grid;
+  gap: 7px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.porter-quick-results button {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+  min-height: 52px;
+  padding: 9px 10px;
+  border: 1px solid #d9e2e4;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #10232b;
+  text-align: left;
+}
+
+.porter-quick-results small {
+  color: #58706b;
+  font-size: 12px;
+}
+
+.staff-page {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.staff-list-panel {
+  grid-column: 1 / -1;
+}
+
 .porter-attendance-panel,
 .porter-camera-panel {
   align-self: start;
@@ -2649,7 +2702,8 @@ button.simple-row.selected {
   .crud-grid,
   .resource-operational-grid,
   .people-layout,
-  .unit-directory-grid {
+  .unit-directory-grid,
+  .staff-page {
     grid-template-columns: 1fr;
   }
 

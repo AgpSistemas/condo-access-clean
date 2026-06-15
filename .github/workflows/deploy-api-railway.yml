@@ -17,9 +17,35 @@ concurrency:
   group: railway-api-production
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  validate:
+    name: Validate API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test API
+        run: npm --workspace @condo-clean/api test
+
+      - name: Check API build
+        run: npm --workspace @condo-clean/api run build
+
   deploy:
     name: Deploy API
+    needs: validate
     runs-on: ubuntu-latest
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -28,25 +54,33 @@ jobs:
       RAILWAY_SERVICE: api
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-
-      - name: Deploy API to Railway
+      - name: Check Railway credentials
+        id: railway
         shell: bash
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "GitHub secret RAILWAY_TOKEN is missing."
-            echo "Create it in https://github.com/AgpSistemas/condo-access-clean/settings/secrets/actions to enable automatic deploys."
-            exit 1
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Railway deploy skipped::GitHub secret RAILWAY_TOKEN is missing. API validation passed, but no deployment was attempted."
+            exit 0
           fi
 
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install Railway CLI
+        if: steps.railway.outputs.enabled == 'true'
+        run: npm install -g @railway/cli
+
+      - name: Deploy API to Railway
+        if: steps.railway.outputs.enabled == 'true'
+        shell: bash
+        run: |
           set +e
           railway up \
             --project "$RAILWAY_PROJECT_ID" \

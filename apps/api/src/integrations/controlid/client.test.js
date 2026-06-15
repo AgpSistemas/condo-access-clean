@@ -57,3 +57,20 @@ test("abre iDBlock com o parametro de rele documentado", async () => {
     actions: [{ action: "catra", parameters: "relay=1" }]
   });
 });
+
+test("inclui a lista oficial de fotos faciais no snapshot", async () => {
+  const client = createControlIdClient({
+    fetchImpl: async (url, options) => {
+      if (url.endsWith("/login.fcgi")) return response({ session: "abc" });
+      if (url.includes("user_list_images")) return response({ image_info: [{ user_id: 17, timestamp: 123 }] });
+      const body = options.body ? JSON.parse(options.body) : {};
+      return response({ [body.object]: [] });
+    },
+    createTimeout: () => ({ signal: undefined, done() {} })
+  });
+
+  const snapshot = await client.readSnapshot({ ipAddress: "192.0.2.12", password: "secret" });
+
+  assert.deepEqual(snapshot.objects.user_images, [{ user_id: 17, timestamp: 123 }]);
+  assert.equal(snapshot.attempts.some((attempt) => attempt.label === "Control iD lista de fotos faciais" && attempt.ok), true);
+});

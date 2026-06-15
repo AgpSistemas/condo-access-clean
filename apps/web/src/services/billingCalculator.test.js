@@ -31,7 +31,7 @@ test("calcula condominios ativos e ramais liberados por licenca", () => {
   assert.equal(result.total, 288.98);
 });
 
-test("pacote usa os limites contratados como quantidade", () => {
+test("pacote cobra apenas condominios ativos e mantem o limite para ramais", () => {
   const result = calculateCompanyBilling({
     id: "company-1",
     billingModel: "PACKAGE",
@@ -43,8 +43,8 @@ test("pacote usa os limites contratados como quantidade", () => {
     extensionUnitPrice: 3
   });
 
-  assert.equal(result.condominiumSubtotal, 200);
+  assert.equal(result.condominiumSubtotal, 0);
   assert.equal(result.billableExtensions, 90);
   assert.equal(result.extensionSubtotal, 270);
-  assert.equal(result.total, 470);
+  assert.equal(result.total, 270);
 });

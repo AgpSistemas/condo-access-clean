@@ -17,6 +17,7 @@ apps/web/dist/
 apps/api/back.js
 apps/web/back.jsx
 apps/web/App_pronto.jsx
+/mobile-*.png
 
 # Local Netlify folder
 .netlify

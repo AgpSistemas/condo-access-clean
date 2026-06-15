@@ -179,6 +179,34 @@ function createControlIdClient({
       }
     }
 
+    objects.user_images = [];
+    for (const pathName of ["/user_list_images.fcgi?get_timestamp=1", "/user_list_images?get_timestamp=1"]) {
+      try {
+        const result = await request(device, pathName, { session, method: "GET" });
+        const imageInfo = Array.isArray(result.payload?.image_info)
+          ? result.payload.image_info
+          : Array.isArray(result.payload?.user_ids)
+            ? result.payload.user_ids.map((userId) => ({ user_id: userId }))
+            : [];
+        objects.user_images = imageInfo;
+        attempts.push({
+          label: "Control iD lista de fotos faciais",
+          path: pathName.split("?")[0],
+          ok: true,
+          records: imageInfo.length
+        });
+        break;
+      } catch (error) {
+        attempts.push({
+          label: "Control iD lista de fotos faciais",
+          path: pathName.split("?")[0],
+          ok: false,
+          optional: true,
+          error: error instanceof Error ? error.message : "Falha ao listar fotos Control iD"
+        });
+      }
+    }
+
     return { session, objects, attempts };
   }
 

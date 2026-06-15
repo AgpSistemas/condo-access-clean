@@ -127,7 +127,9 @@ const asaasApiKey = String(process.env.ASAAS_API_KEY || "").trim();
 const asaasEnvironment = String(process.env.ASAAS_ENVIRONMENT || "sandbox").trim().toLowerCase() === "production"
   ? "production"
   : "sandbox";
-const asaasWebhookTokenConfigured = Boolean(String(process.env.ASAAS_WEBHOOK_TOKEN || "").trim());
+const asaasWebhookToken = String(process.env.ASAAS_WEBHOOK_TOKEN || "").trim();
+const asaasWebhookTokenConfigured = Boolean(asaasWebhookToken);
+const asaasApiBaseUrl = asaasEnvironment === "production" ? "https://api.asaas.com/v3" : "https://api-sandbox.asaas.com/v3";
 const defaultCompanyPassword = "123456";
 const masterAdminEmail = String(process.env.MASTER_ADMIN_EMAIL || "agpsistemascorp@gmail.com").trim().toLowerCase();
 
@@ -552,6 +554,10 @@ const companies = [];
 
 const licenses = [];
 
+const billingInvoices = [];
+
+const paymentEvents = [];
+
 const resources = [
   { id: "actions", name: "Acionamentos", enabled: false, group: "Essenciais", configurable: true, description: "Envie acionamentos remotos via App ou Web e cadastre leitoras para eventos de acesso." },
   { id: "cameras", name: "Cameras", enabled: true, group: "Essenciais", configurable: true, description: "Visualize as cameras do local em tempo real via aplicativo." },
@@ -839,11 +845,13 @@ function bootstrap() {
     accessRoutes,
     companies: companies.map(publicCompany),
     licenses,
+    billingInvoices,
     billingGateway: {
       provider: "ASAAS",
       environment: asaasEnvironment,
       configured: Boolean(asaasApiKey),
-      webhookConfigured: asaasWebhookTokenConfigured
+      webhookConfigured: asaasWebhookTokenConfigured,
+      webhookPath: "/api/webhooks/asaas"
     },
     resources,
     resourceConfigurations,
@@ -1043,10 +1051,33 @@ async function authenticatedDeviceRequest(device, targetPath, { method = "GET", 
     if (!response.ok) {
       throw new Error(`Equipamento respondeu ${response.status}: ${text.slice(0, 240)}`);
     }
+    const responseError = deviceAdapter(device) === "HIKVISION_ISAPI" ? hikvisionResponseError(text) : "";
+    if (responseError) throw new Error(responseError);
     return { ok: true, status: response.status, body: text };
   } finally {
     request.done();
   }
+}
+
+function hikvisionResponseError(text = "") {
+  const clean = String(text || "").trim();
+  if (!clean) return "";
+  let statusCode;
+  let statusString = "";
+  let subStatusCode = "";
+  try {
+    const parsed = JSON.parse(clean);
+    const status = parsed.ResponseStatus || parsed.responseStatus || parsed;
+    statusCode = Number(status.statusCode);
+    statusString = String(status.statusString || "");
+    subStatusCode = String(status.subStatusCode || "");
+  } catch {
+    statusCode = Number(clean.match(/<statusCode>\s*(\d+)\s*<\/statusCode>/i)?.[1]);
+    statusString = clean.match(/<statusString>\s*([^<]+)\s*<\/statusString>/i)?.[1] || "";
+    subStatusCode = clean.match(/<subStatusCode>\s*([^<]+)\s*<\/subStatusCode>/i)?.[1] || "";
+  }
+  if (!Number.isFinite(statusCode) || statusCode === 1) return "";
+  return `Hikvision recusou a operacao (${statusCode}${subStatusCode ? `/${subStatusCode}` : ""}${statusString ? `: ${statusString}` : ""})`;
 }
 
 function controlIdUserMap(users = []) {
@@ -1058,6 +1089,10 @@ function controlIdCredentialRecords(snapshot = {}) {
   const users = objects.users || [];
   const userMap = controlIdUserMap(users);
   const userFaceIds = new Set((objects.face_templates || []).map((face) => String(face.user_id || face.userId || "")));
+  (objects.user_images || []).forEach((image) => {
+    const userId = typeof image === "object" ? image.user_id || image.userId || image.id : image;
+    if (userId !== undefined && userId !== null && String(userId)) userFaceIds.add(String(userId));
+  });
   users
     .filter((user) => Number(user.image_timestamp || 0) > 0)
     .forEach((user) => userFaceIds.add(String(user.id)));
@@ -1258,6 +1293,95 @@ function defaultLicensedResourceIds() {
 
 function findCompany(companyId = "") {
   return companies.find((company) => company.id === companyId) || null;
+}
+
+function billingNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function billingRecordActive(record = {}) {
+  return !["INACTIVE", "BLOCKED", "CANCELLED"].includes(String(record.status || "").toUpperCase()) && record.active !== false;
+}
+
+function companyBillingSnapshot(company = {}) {
+  const activeTenants = allTenants().filter((item) => item.companyId === company.id && billingRecordActive(item));
+  const activeTenantIds = new Set(activeTenants.map((item) => item.id));
+  const activeLicenses = licenses.filter((license) =>
+    billingRecordActive(license) &&
+    (activeTenantIds.has(license.tenantId) || (!license.tenantId && license.companyId === company.id))
+  );
+  const allocatedExtensions = activeLicenses.reduce((total, license) => total + billingNumber(license.extensionLimit), 0);
+  const extensionQuantity = company.voipBillingModel === "PACKAGE"
+    ? billingNumber(company.maxExtensions)
+    : allocatedExtensions;
+  const billableExtensions = company.voipBillingModel === "DISABLED"
+    ? 0
+    : Math.max(0, extensionQuantity - billingNumber(company.includedExtensions));
+  const baseSubtotal = billingNumber(company.baseMonthlyPrice);
+  const condominiumSubtotal = activeTenants.length * billingNumber(company.condominiumUnitPrice);
+  const extensionSubtotal = billableExtensions * billingNumber(company.extensionUnitPrice);
+  return {
+    activeCondominiums: activeTenants.length,
+    allocatedExtensions,
+    billableExtensions,
+    baseSubtotal,
+    condominiumSubtotal,
+    extensionSubtotal,
+    total: Number((baseSubtotal + condominiumSubtotal + extensionSubtotal).toFixed(2))
+  };
+}
+
+function billingDueDate(company = {}) {
+  const date = new Date();
+  const dueDay = Math.min(28, Math.max(1, Number(company.billingDueDay || 10)));
+  if (date.getDate() > dueDay) date.setMonth(date.getMonth() + 1);
+  date.setDate(dueDay);
+  return date.toISOString().slice(0, 10);
+}
+
+async function asaasRequest(pathName, { method = "GET", body } = {}) {
+  if (!asaasApiKey) throw new Error("Integracao Asaas nao configurada no servidor");
+  const request = withTimeout(15000);
+  try {
+    const response = await fetch(`${asaasApiBaseUrl}${pathName}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "Condo Access",
+        access_token: asaasApiKey
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: request.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const description = payload?.errors?.map((error) => error.description).filter(Boolean).join("; ");
+      throw new Error(description || `Asaas respondeu ${response.status}`);
+    }
+    return payload;
+  } finally {
+    request.done();
+  }
+}
+
+async function ensureAsaasCustomer(company = {}) {
+  if (company.asaasCustomerId) return company.asaasCustomerId;
+  const document = String(company.document || "").replace(/\D/g, "");
+  if (!document) throw new Error("Informe o CNPJ/Documento da empresa antes de gerar a cobranca");
+  const customer = await asaasRequest("/customers", {
+    method: "POST",
+    body: {
+      name: company.name,
+      cpfCnpj: document,
+      email: company.contactEmail || undefined,
+      mobilePhone: String(company.contactPhone || "").replace(/\D/g, "") || undefined,
+      externalReference: company.id
+    }
+  });
+  company.asaasCustomerId = customer.id;
+  company.updatedAt = now();
+  return customer.id;
 }
 
 function companyResourceIds(company) {
@@ -1873,7 +1997,9 @@ async function readDeviceCredentialsFromDevice(device, { resource = "credentials
   const events = [];
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
     const snapshot = await readControlIdSnapshot(device);
-    const allRecords = controlIdCredentialRecords(snapshot);
+    const allRecords = resource === "vehicleTags"
+      ? controlIdVehicleTagRecords(snapshot, device)
+      : controlIdCredentialRecords(snapshot);
     const uniqueRecords = faceOnly ? allRecords.filter((record) => record.type === "FACE") : allRecords;
     logControlIdImportDebug(device, snapshot, uniqueRecords, "read-device-credentials");
     return {
@@ -1885,7 +2011,9 @@ async function readDeviceCredentialsFromDevice(device, { resource = "credentials
       attempts: snapshot.attempts,
       message: uniqueRecords.length
         ? `${uniqueRecords.length} credencial(is) lida(s) do Control iD`
-        : "Control iD respondeu, mas nao retornou cards, tags, QR, PIN ou faces"
+        : resource === "vehicleTags"
+          ? "Control iD respondeu, mas nao retornou tags veiculares"
+          : "Control iD respondeu, mas nao retornou cards, tags, QR, PIN ou faces"
     };
   }
 
@@ -2062,6 +2190,8 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [],
     unitsCreated: 0,
     credentialsCreated: 0,
     credentialsUpdated: 0,
+    vehiclesCreated: 0,
+    vehiclesUpdated: 0,
     eventsRead: readResult.events?.length || 0,
     eventsCreated: 0,
     eventsUpdated: 0,
@@ -2084,6 +2214,72 @@ async function importDeviceCredentials(device, { dryRun = true, selections = [],
     if (!record.value || !record.type) {
       report.invalid += 1;
       report.items.push({ row: rowNumber, status: "INVALID", payload: record, errors: ["Credencial sem tipo ou valor"] });
+      return;
+    }
+
+    if (resource === "vehicleTags" && record.type === "VEHICLE_TAG") {
+      const existingVehicle = vehicles.find((vehicle) =>
+        vehicle.tenantId === device.tenantId &&
+        normalizeLookup(vehicle.tagValue) === normalizeLookup(record.value)
+      );
+      let vehicle = existingVehicle;
+      if (!dryRun) {
+        if (existingVehicle) {
+          Object.assign(existingVehicle, {
+            tagValue: record.value,
+            tagMode: record.mode || normalizeControlIdUhfMode(device.controlIdUhfMode),
+            tagDeviceId: device.id,
+            tagExternalId: record.externalId || existingVehicle.tagExternalId || "",
+            tagUserId: record.raw?.user_id || existingVehicle.tagUserId || "",
+            tagStatus: "SYNCED",
+            tagSyncedAt: now(),
+            updatedAt: now()
+          });
+        } else {
+          const suffix = normalizeLookup(record.value).slice(-10).toUpperCase() || String(index + 1);
+          vehicle = {
+            id: makeId("vehicle"),
+            tenantId: device.tenantId,
+            unitId: "",
+            personId: "",
+            plate: `TAG-${suffix}`,
+            brand: "",
+            model: "",
+            color: "",
+            type: "NAO_INFORMADO",
+            notes: "Importado do Control iD. Informe a placa e vincule a unidade.",
+            tagValue: record.value,
+            tagMode: record.mode || normalizeControlIdUhfMode(device.controlIdUhfMode),
+            tagDeviceId: device.id,
+            tagExternalId: record.externalId || "",
+            tagUserId: record.raw?.user_id || "",
+            tagStatus: "SYNCED",
+            tagSyncedAt: now(),
+            createdAt: now(),
+            updatedAt: now()
+          };
+          vehicles.unshift(vehicle);
+        }
+      }
+      report.valid += 1;
+      if (existingVehicle) report.vehiclesUpdated += dryRun ? 0 : 1;
+      else report.vehiclesCreated += dryRun ? 0 : 1;
+      report.items.push({
+        row: rowNumber,
+        status: existingVehicle ? "DUPLICATE_OR_UPDATE" : "NEW",
+        vehicleId: vehicle?.id || "",
+        payload: {
+          recordId: record.id,
+          type: record.type,
+          value: record.value,
+          valueLabel: record.valueLabel,
+          personName: record.personName,
+          personExternalId: record.personExternalId,
+          mode: record.mode,
+          object: record.object,
+          deviceId: device.id
+        }
+      });
       return;
     }
 
@@ -3105,53 +3301,75 @@ function devicePhotoReferenceAllowed(device, photoUrl = "") {
   }
 }
 
-async function hikvisionTryMultipartFaceWrite(device, faceInfo = {}, photoUrl = "") {
+async function hikvisionMultipartFaceWrite(device, faceInfo = {}, photo = {}, imageField = "FaceImage") {
   const pathName = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
   const targetUrl = `${deviceBaseUrl(device)}${pathName}`;
+  const label = `Hikvision FDLib multipart (${imageField})`;
+  const headers = await hikvisionAuthHeaders(device, targetUrl, "POST");
+  const form = new FormData();
+  form.append("FaceDataRecord", new Blob([JSON.stringify({
+    faceLibType: faceInfo.faceLibType || "blackFD",
+    FDID: faceInfo.FDID || "1",
+    FPID: faceInfo.FPID,
+    name: faceInfo.name
+  })], { type: "application/json" }), "FaceDataRecord.json");
+  form.append(imageField, new Blob([photo.buffer], { type: photo.mimeType || "image/jpeg" }), "face.jpg");
+  const request = withTimeout(15000);
+  try {
+    const response = await fetch(targetUrl, {
+      method: "POST",
+      headers,
+      body: form,
+      signal: request.signal
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`Equipamento respondeu ${response.status}: ${text.slice(0, 240)}`);
+    const responseError = hikvisionResponseError(text);
+    if (responseError) throw new Error(responseError);
+    return {
+      ok: true,
+      status: response.status,
+      message: `Upload facial multipart respondeu ${response.status}`,
+      attempts: [{ label, path: pathName, ok: true, status: response.status }]
+    };
+  } finally {
+    request.done();
+  }
+}
+
+async function hikvisionTryMultipartFaceWrite(device, faceInfo = {}, photoUrl = "") {
+  const pathName = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
+  const attempts = [];
   try {
     const photo = await fetchCredentialPhotoBytes(device, photoUrl);
     const maxBytes = Number(process.env.HIKVISION_FACE_UPLOAD_MAX_BYTES || 900000);
     if (photo.buffer.length > maxBytes) throw new Error(`Foto facial maior que ${maxBytes} bytes`);
-    const headers = await hikvisionAuthHeaders(device, targetUrl, "POST");
-    const form = new FormData();
-    form.append("FaceDataRecord", new Blob([JSON.stringify({
-      faceLibType: faceInfo.faceLibType || "blackFD",
-      FDID: faceInfo.FDID || "1",
-      FPID: faceInfo.FPID,
-      name: faceInfo.name
-    })], { type: "application/json" }), "FaceDataRecord.json");
-    form.append("img", new Blob([photo.buffer], { type: photo.mimeType || "image/jpeg" }), "face.jpg");
-    const request = withTimeout(15000);
-    try {
-      const response = await fetch(targetUrl, {
-        method: "POST",
-        headers,
-        body: form,
-        signal: request.signal
-      });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`Equipamento respondeu ${response.status}: ${text.slice(0, 240)}`);
-      return {
-        ok: true,
-        status: response.status,
-        message: `Upload facial multipart respondeu ${response.status}`,
-        attempts: [{ label: "Hikvision FDLib multipart", path: pathName, ok: true, status: response.status }]
-      };
-    } finally {
-      request.done();
+    for (const imageField of ["FaceImage", "img"]) {
+      try {
+        const result = await hikvisionMultipartFaceWrite(device, faceInfo, photo, imageField);
+        return { ...result, attempts: [...attempts, ...(result.attempts || [])] };
+      } catch (error) {
+        attempts.push({
+          label: `Hikvision FDLib multipart (${imageField})`,
+          path: pathName,
+          ok: false,
+          error: error instanceof Error ? error.message : "Falha no upload facial multipart"
+        });
+      }
     }
   } catch (error) {
-    return {
+    attempts.push({
+      label: "Hikvision carregar foto para multipart",
+      path: pathName,
       ok: false,
-      message: error instanceof Error ? error.message : "Falha no upload facial multipart",
-      attempts: [{
-        label: "Hikvision FDLib multipart",
-        path: pathName,
-        ok: false,
-        error: error instanceof Error ? error.message : "Falha no upload facial multipart"
-      }]
-    };
+      error: error instanceof Error ? error.message : "Falha no upload facial multipart"
+    });
   }
+  return {
+    ok: false,
+    message: attempts.at(-1)?.error || "Falha no upload facial multipart",
+    attempts
+  };
 }
 
 async function sendHikvisionStoredCredential(device, credential = {}) {
@@ -3245,6 +3463,26 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
       faceURL: photoUrl,
       URL: photoUrl
     };
+    const multipartResult = await hikvisionTryMultipartFaceWrite(device, faceInfo, photoUrl);
+    if (multipartResult.ok) {
+      return {
+        ...multipartResult,
+        deviceId: device.id,
+        adapter: "HIKVISION_ISAPI",
+        message: `Face de ${employeeNo} enviada`,
+        attempts: [...(userResult.attempts || []), ...(multipartResult.attempts || [])]
+      };
+    }
+    const requiresBinaryUpload = Boolean(storedFacePhotoId(photoUrl) || dataUrlImageBuffer(photoUrl));
+    if (requiresBinaryUpload) {
+      return {
+        ...multipartResult,
+        deviceId: device.id,
+        adapter: "HIKVISION_ISAPI",
+        message: `Usuario ${employeeNo} cadastrado, mas a foto nao foi aceita pela Hikvision: ${multipartResult.message}`,
+        attempts: [...(userResult.attempts || []), ...(multipartResult.attempts || [])]
+      };
+    }
     const faceResult = await hikvisionTryJsonWrites(device, [
       {
         label: "Hikvision face Record",
@@ -3259,22 +3497,12 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
         body: { FaceDataRecord: faceInfo }
       }
     ]);
-    if (!faceResult.ok) {
-      const multipartResult = await hikvisionTryMultipartFaceWrite(device, faceInfo, photoUrl);
-      return {
-        ...multipartResult,
-        deviceId: device.id,
-        adapter: "HIKVISION_ISAPI",
-        message: multipartResult.ok ? `Face de ${employeeNo} enviada` : multipartResult.message,
-        attempts: [...(userResult.attempts || []), ...(faceResult.attempts || []), ...(multipartResult.attempts || [])]
-      };
-    }
     return {
       ...faceResult,
       deviceId: device.id,
       adapter: "HIKVISION_ISAPI",
       message: faceResult.ok ? `Face de ${employeeNo} enviada` : faceResult.message,
-      attempts: [...(userResult.attempts || []), ...(faceResult.attempts || [])]
+      attempts: [...(userResult.attempts || []), ...(multipartResult.attempts || []), ...(faceResult.attempts || [])]
     };
   }
 
@@ -3441,7 +3669,7 @@ async function sendControlIdStoredCredential(device, credential = {}) {
       };
     }
     const photo = await fetchCredentialPhotoBytes(device, photoUrl);
-    const maxBytes = Number(process.env.CONTROL_ID_FACE_UPLOAD_MAX_BYTES || 1900000);
+    const maxBytes = Number(process.env.CONTROL_ID_FACE_UPLOAD_MAX_BYTES || 999000);
     if (photo.buffer.length > maxBytes) {
       throw new Error(`Foto facial maior que ${maxBytes} bytes para o Control iD`);
     }
@@ -3900,15 +4128,17 @@ function mobileResidentList({ tenantId = "", userId = "", email = "", origin = "
       }
       return tenantId ? true : isMobileTenantUnit(unit);
     });
-  const scopedResidents = normalizedUser || candidates.length
+  const scopedResidents = normalizedUser
     ? candidates
-    : residents.filter((person) => {
+    : candidates.length
+      ? candidates
+      : residents.filter((person) => {
       const unit = units.get(person.unitId);
       return (person.kind || "RESIDENT") === "RESIDENT" &&
         Boolean(unit) &&
         activeTenantIds.has(unit.tenantId) &&
         (!tenantId || unit?.tenantId === tenantId);
-    });
+      });
   const byUnit = new Map();
 
   scopedResidents.forEach((person) => {
@@ -4476,6 +4706,8 @@ function persistentState() {
     systemUsers,
     companies,
     licenses,
+    billingInvoices,
+    paymentEvents,
     resources,
     resourceConfigurations,
     accessLogs,
@@ -4503,6 +4735,8 @@ function applyPersistentState(state = {}) {
   replaceCollection(systemUsers, state.systemUsers);
   replaceCollection(companies, state.companies);
   replaceCollection(licenses, state.licenses);
+  replaceCollection(billingInvoices, state.billingInvoices);
+  replaceCollection(paymentEvents, state.paymentEvents);
   replaceCollection(resources, mergeResourceState(state.resources));
   replaceCollection(resourceConfigurations, state.resourceConfigurations);
   replaceCollection(accessLogs, state.accessLogs);
@@ -4911,6 +5145,98 @@ async function handleRequest(request, response) {
     return json(response, 200, bootstrap());
   }
 
+  if (request.method === "POST" && url.pathname === "/api/webhooks/asaas") {
+    if (!asaasWebhookTokenConfigured) return json(response, 503, { message: "Webhook Asaas nao configurado" });
+    if (String(request.headers["asaas-access-token"] || "") !== asaasWebhookToken) {
+      return json(response, 401, { message: "Token do webhook Asaas invalido" });
+    }
+    const body = await readBody(request);
+    const eventId = String(body.id || "").trim();
+    if (!eventId) return json(response, 400, { message: "Evento Asaas sem identificador" });
+    if (paymentEvents.some((event) => event.id === eventId)) return json(response, 200, { received: true, duplicate: true });
+    const payment = body.payment || {};
+    const invoice = billingInvoices.find((item) =>
+      item.asaasPaymentId === payment.id || item.id === payment.externalReference
+    );
+    if (invoice) {
+      invoice.status = payment.status || String(body.event || "").replace(/^PAYMENT_/, "") || invoice.status;
+      invoice.paymentDate = payment.paymentDate || payment.confirmedDate || invoice.paymentDate || "";
+      invoice.updatedAt = now();
+    }
+    paymentEvents.unshift({
+      id: eventId,
+      event: body.event || "",
+      paymentId: payment.id || "",
+      invoiceId: invoice?.id || payment.externalReference || "",
+      receivedAt: now()
+    });
+    await savePersistentStateAndWait("asaas-webhook");
+    return json(response, 200, { received: true });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/billing/invoices") {
+    return json(response, 200, billingInvoices);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/billing/charges") {
+    const body = await readBody(request);
+    const company = findCompany(body.companyId);
+    if (!company) return json(response, 404, { message: "Empresa nao encontrada" });
+    if (company.billingStatus === "BLOCKED") return json(response, 409, { message: "Cobranca bloqueada para esta empresa" });
+    const billingType = ["PIX", "BOLETO", "CREDIT_CARD", "UNDEFINED"].includes(body.billingType)
+      ? body.billingType
+      : company.defaultPaymentMethod === "TRANSFER" ? "UNDEFINED" : company.defaultPaymentMethod || "PIX";
+    try {
+      const snapshot = companyBillingSnapshot(company);
+      if (snapshot.total <= 0) return json(response, 409, { message: "A empresa nao possui valor faturavel no periodo" });
+      const dueDate = billingDueDate(company);
+      const existingInvoice = billingInvoices.find((item) =>
+        item.companyId === company.id &&
+        item.dueDate === dueDate &&
+        !["RECEIVED", "CONFIRMED", "REFUNDED", "DELETED", "CANCELLED"].includes(item.status)
+      );
+      if (existingInvoice) {
+        return json(response, 409, { message: "Ja existe uma cobranca aberta para esta empresa e vencimento", invoice: existingInvoice });
+      }
+      const customerId = await ensureAsaasCustomer(company);
+      const invoice = {
+        id: makeId("invoice"),
+        companyId: company.id,
+        customerId,
+        billingType,
+        dueDate,
+        value: snapshot.total,
+        snapshot,
+        status: "PENDING",
+        createdAt: now(),
+        updatedAt: now()
+      };
+      const payment = await asaasRequest("/payments", {
+        method: "POST",
+        body: {
+          customer: customerId,
+          billingType,
+          value: invoice.value,
+          dueDate: invoice.dueDate,
+          description: `Mensalidade Condo Access - ${company.name}`,
+          externalReference: invoice.id
+        }
+      });
+      Object.assign(invoice, {
+        asaasPaymentId: payment.id,
+        status: payment.status || invoice.status,
+        invoiceUrl: payment.invoiceUrl || payment.bankSlipUrl || "",
+        bankSlipUrl: payment.bankSlipUrl || "",
+        transactionReceiptUrl: payment.transactionReceiptUrl || ""
+      });
+      billingInvoices.unshift(invoice);
+      await savePersistentStateAndWait("asaas-charge-created");
+      return json(response, 201, invoice);
+    } catch (error) {
+      return json(response, 502, { message: error instanceof Error ? error.message : "Falha ao gerar cobranca no Asaas" });
+    }
+  }
+
   if (request.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readBody(request);
     const loginId = String(body.email || body.login || "").trim() || "agpsistemascorp@gmail.com";
@@ -5023,6 +5349,7 @@ async function handleRequest(request, response) {
       contactEmail: body.contactEmail ?? existingCompany?.contactEmail ?? "",
       contactPhone: body.contactPhone ?? existingCompany?.contactPhone ?? "",
       logoUrl: body.logoUrl ?? existingCompany?.logoUrl ?? "",
+      asaasCustomerId: existingCompany?.asaasCustomerId || "",
       login,
       ...initialPassword,
       mustChangePassword: existingCompany?.mustChangePassword ?? true,
@@ -5115,7 +5442,7 @@ async function handleRequest(request, response) {
       rg: body.rg ?? person.rg,
       birthDate: body.birthDate ?? person.birthDate,
       photoUrl: body.photoUrl ?? person.photoUrl,
-      relation: body.relation || person.relation,
+      relation: body.source === "MOBILE" ? person.relation : body.relation || person.relation,
       kind: body.personType === "MORADOR" ? "RESIDENT" : person.kind || "RESIDENT",
       updatedAt: now()
     });
@@ -5336,7 +5663,7 @@ async function handleRequest(request, response) {
       const report = await importDeviceCredentials(device, {
         dryRun: body.dryRun !== false,
         selections: Array.isArray(body.selections) ? body.selections : [],
-        resource: body.resource === "faces" ? "faces" : "credentials"
+        resource: ["faces", "vehicleTags"].includes(body.resource) ? body.resource : "credentials"
       });
       return json(response, body.dryRun === false ? 201 : 200, report);
     } catch (error) {
@@ -6727,7 +7054,19 @@ async function handleRequest(request, response) {
     const body = await readBody(request);
     const id = body.id || makeId("person");
     const existing = residents.find((person) => person.id === id);
-    const unit = units.get(body.unitId) || units.get("unit-101");
+    const unit = units.get(body.unitId) || (body.kind === "STAFF" ? null : units.get("unit-101"));
+    if (body.source === "MOBILE") {
+      const requester = residents.find((person) =>
+        person.id === body.requesterId ||
+        (body.requesterEmail && normalizeLookup(person.email) === normalizeLookup(body.requesterEmail))
+      );
+      if (!requester || requester.unitId !== body.unitId || !["Responsavel", "Proprietario"].includes(requester.relation)) {
+        return json(response, 403, { message: "Somente o responsavel da unidade pode cadastrar outros moradores." });
+      }
+      if (body.kind !== "RESIDENT" || body.role !== "RESIDENT") {
+        return json(response, 403, { message: "O responsavel pode cadastrar apenas moradores da propria unidade." });
+      }
+    }
     const passwordRecord = body.newPassword
       ? createPasswordRecord(String(body.newPassword))
       : existing?.passwordHash
@@ -6736,7 +7075,7 @@ async function handleRequest(request, response) {
     const person = {
       id,
       tenantId: body.tenantId || unit?.tenantId || tenant.id,
-      unitId: body.unitId || unit?.unitId || "unit-101",
+      unitId: body.unitId || unit?.unitId || "",
       name: body.name || "Nova pessoa",
       email: body.email ?? existing?.email ?? "",
       cpf: body.cpf || "",
@@ -6812,6 +7151,55 @@ async function handleRequest(request, response) {
     });
     savePersistentState("syndic-saved");
     return json(response, 200, publicPerson(person));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/condominium-staff") {
+    const body = await readBody(request);
+    const tenantId = String(body.tenantId || "").trim();
+    if (!allTenants().some((item) => item.id === tenantId)) {
+      return json(response, 404, { message: "Condominio nao encontrado." });
+    }
+    const role = body.role === "CONDO_ADMIN" ? "CONDO_ADMIN" : "PORTER";
+    const existing = body.id ? residents.find((person) => person.id === body.id && person.tenantId === tenantId) : null;
+    const email = String(body.email || existing?.email || "").trim().toLowerCase();
+    if (!email) return json(response, 400, { message: "Informe o e-mail/login." });
+    const duplicate = residents.find((person) => person.id !== existing?.id && normalizeLookup(person.email) === normalizeLookup(email));
+    if (duplicate) return json(response, 409, { message: "Este e-mail/login ja esta cadastrado." });
+    const passwordRecord = body.newPassword
+      ? createPasswordRecord(String(body.newPassword))
+      : existing?.passwordHash
+        ? { passwordHash: existing.passwordHash, passwordSalt: existing.passwordSalt }
+        : createPasswordRecord();
+    const person = {
+      id: existing?.id || makeId("staff"),
+      tenantId,
+      unitId: "",
+      name: body.name || existing?.name || (role === "PORTER" ? "Novo porteiro" : "Novo sindico"),
+      email,
+      cpf: body.cpf || existing?.cpf || "",
+      rg: body.rg || existing?.rg || "",
+      phone: body.phone || existing?.phone || "",
+      role,
+      relation: role === "PORTER" ? "Porteiro" : "Sindico",
+      kind: "STAFF",
+      isSyndic: role === "CONDO_ADMIN",
+      syndicRole: role === "CONDO_ADMIN" ? body.syndicRole || existing?.syndicRole || "SINDICO" : "",
+      mandateStart: role === "CONDO_ADMIN" ? body.mandateStart || existing?.mandateStart || "" : "",
+      mandateEnd: role === "CONDO_ADMIN" ? body.mandateEnd || existing?.mandateEnd || "" : "",
+      ...passwordRecord,
+      mustChangePassword: body.newPassword ? false : existing?.mustChangePassword ?? true,
+      createdAt: existing?.createdAt || now(),
+      updatedAt: now()
+    };
+    if (role === "CONDO_ADMIN" && body.primary !== false) {
+      residents.forEach((item) => {
+        if (item.tenantId === tenantId && item.id !== person.id) item.isSyndic = false;
+      });
+    }
+    const updated = existing ? updateById(residents, person.id, person) : null;
+    if (!updated) residents.unshift(person);
+    savePersistentState("condominium-staff-saved");
+    return json(response, existing ? 200 : 201, publicPerson(updated || person));
   }
 
   if (request.method === "GET" && url.pathname === "/api/vehicles") {

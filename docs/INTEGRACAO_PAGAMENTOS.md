@@ -98,6 +98,22 @@ ASAAS_API_KEY=segredo armazenado somente no servidor
 ASAAS_WEBHOOK_TOKEN=token forte e exclusivo do webhook
 ```
 
+Endpoint publico para cadastrar no webhook do Asaas:
+
+```txt
+https://api-production-441f.up.railway.app/api/webhooks/asaas
+```
+
+O `authToken` configurado no painel Asaas deve ser exatamente o valor de
+`ASAAS_WEBHOOK_TOKEN`. O servidor valida o header `asaas-access-token`, salva
+eventos de forma idempotente e atualiza o status da cobranca.
+
+Rotas implementadas:
+
+- `POST /api/billing/charges`: cria cliente e cobranca no Asaas.
+- `GET /api/billing/invoices`: lista cobrancas persistidas.
+- `POST /api/webhooks/asaas`: recebe confirmacoes do Asaas.
+
 A chave nunca deve ser enviada para a Web/Netlify. O bootstrap informa somente se a integracao esta configurada.
 
 Antes de producao:

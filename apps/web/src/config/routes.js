@@ -5,7 +5,6 @@ import {
   Car,
   ClipboardList,
   CreditCard,
-  FileKey2,
   Home,
   KeySquare,
   PhoneCall,
@@ -24,7 +23,7 @@ const sections = [
 ];
 
 const condoSections = [
-  { id: "syndic", label: "Sindico", icon: ShieldCheck },
+  { id: "syndic", label: "Sindico e Porteiros", icon: ShieldCheck },
   { id: "units", label: "Unidades", icon: Home },
   { id: "residents", label: "Pessoas", icon: UserRound },
   { id: "devices", label: "Equipamentos", icon: RadioTower },
@@ -36,7 +35,6 @@ const condoSections = [
 
 const settingsSections = [
   { id: "companies", label: "Empresas e planos", icon: Building2 },
-  { id: "licenses", label: "Licencas", icon: FileKey2 },
   { id: "payments", label: "Pagamentos", icon: CreditCard }
 ];
 

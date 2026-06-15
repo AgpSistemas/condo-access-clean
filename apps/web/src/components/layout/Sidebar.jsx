@@ -6,7 +6,7 @@ function Sidebar({ session, sessionCompany, primarySections, allowedSettingsSect
     <aside className="sidebar">
       <div className="brand">
         <img src={sessionCompany?.logoUrl || Logo} alt={sessionCompany?.name || "Condo Access"} />
-        <div><strong>{sessionCompany?.name || "Condo Access"}</strong><span>{session?.role === "SUPER_ADMIN" ? "Gestao geral do sistema" : session?.role === "COMPANY_ADMIN" ? "Gestao da empresa" : session?.role === "PORTER" ? "Painel da portaria" : "Area do morador"}</span></div>
+        <div><strong>{sessionCompany?.name || "Condo Access"}</strong><span>{session?.role === "SUPER_ADMIN" ? "Gestao geral do sistema" : session?.role === "COMPANY_ADMIN" ? "Gestao da empresa" : session?.role === "CONDO_ADMIN" ? "Gestao do condominio" : session?.role === "PORTER" ? "Painel da portaria" : "Area do morador"}</span></div>
       </div>
       <nav>
         {primarySections.map((section) => {

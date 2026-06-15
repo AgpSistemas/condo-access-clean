@@ -23,9 +23,7 @@ function calculateCompanyBilling(company = {}, condominiums = [], licenses = [])
     (total, license) => total + safeNumber(license.extensionLimit),
     0
   );
-  const condominiumQuantity = company.billingModel === "PACKAGE"
-    ? safeNumber(company.maxCondominiums)
-    : activeCondominiums;
+  const condominiumQuantity = activeCondominiums;
   const extensionQuantity = company.voipBillingModel === "PACKAGE"
     ? safeNumber(company.maxExtensions)
     : allocatedExtensions;

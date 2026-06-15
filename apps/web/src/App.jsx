@@ -7,7 +7,6 @@ import {
   Camera,
   Car,
   ClipboardList,
-  FileKey2,
   Grid3X3,
   Home,
   KeySquare,
@@ -42,7 +41,6 @@ import {
   unitExtension,
   resolveCallUnit,
   emptyDeviceForm,
-  emptyLicenseForm,
   emptyCompanyForm,
   emptyCameraForm,
   emptyActionForm,
@@ -138,7 +136,6 @@ function App() {
   const [actionFeedback, setActionFeedback] = useState(null);
   const [deviceForm, setDeviceForm] = useState(emptyDeviceForm);
   const [companyForm, setCompanyForm] = useState(emptyCompanyForm);
-  const [licenseForm, setLicenseForm] = useState(emptyLicenseForm);
   const [cameraForm, setCameraForm] = useState(emptyCameraForm);
   const [showCameraForm, setShowCameraForm] = useState(false);
   const [actionForm, setActionForm] = useState(emptyActionForm);
@@ -193,7 +190,6 @@ function App() {
     visibleCondominiums,
     selectedTenant,
     sessionCompany,
-    selectedLicenseCompany,
     condoFormTenant,
     units,
     filteredUnits,
@@ -205,7 +201,6 @@ function App() {
     selectedTenantId,
     selectedUnitId,
     unitSearch,
-    licenseCompanyId: licenseForm.companyId,
     condoFormMode
   });
 
@@ -341,6 +336,9 @@ function App() {
         delegate: {
           onInvite(invitation) {
             webPhoneSessionRef.current = invitation;
+            webPhoneUserAgentRef.current = userAgent;
+            webPhoneRegistererRef.current = registerer;
+            webPhoneTenantRef.current = tenantForPhone.id;
             const remoteExtension = invitation.remoteIdentity?.uri?.user || "";
             const targetExtension = invitation.request?.message?.to?.uri?.user || invitation.localIdentity?.uri?.user || porterExtension;
             const { tenant: callTenant, unit: callUnit } = resolveSipIncomingContext(remoteExtension, targetExtension, tenantForPhone);
@@ -727,11 +725,14 @@ function App() {
     if (porterSearchType === "Credencial") {
       return data.credentials.filter(inTenant).filter((credential) => `${credential.type} ${credential.valueLabel} ${credential.personId} ${credential.unitId}`.toLowerCase().includes(term)).slice(0, 8);
     }
+    if (porterSearchType === "Placa") {
+      return data.vehicles.filter(inTenant).filter((vehicle) => `${vehicle.plate} ${vehicle.tagValue} ${vehicle.brand} ${vehicle.model}`.toLowerCase().includes(term)).slice(0, 8);
+    }
     return data.residents.filter(inTenant).filter((person) => {
-      const source = porterSearchType === "CPF" ? person.cpf : porterSearchType === "RG" ? person.rg : porterSearchType === "Placa" ? person.vehiclePlate : `${person.name} ${person.email} ${person.phone} ${person.cpf} ${person.rg}`;
+      const source = porterSearchType === "CPF" ? person.cpf : porterSearchType === "RG" ? person.rg : `${person.name} ${person.email} ${person.phone} ${person.cpf} ${person.rg}`;
       return String(source || "").toLowerCase().includes(term);
     }).slice(0, 8);
-  }, [data.credentials, data.residents, data.units, porterSearchTerm, porterSearchType, selectedTenant?.id]);
+  }, [data.credentials, data.residents, data.units, data.vehicles, porterSearchTerm, porterSearchType, selectedTenant?.id]);
 
   function selectPorterUnit(unit) {
     if (!unit) return;
@@ -1272,6 +1273,44 @@ function App() {
     void refreshApiCache();
   }
 
+  async function saveCondoStaff(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const response = await apiFetch("/api/condominium-staff", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: selectedTenant?.id,
+        name: form.get("name"),
+        email: form.get("email"),
+        phone: form.get("phone"),
+        cpf: form.get("cpf"),
+        rg: form.get("rg"),
+        role: form.get("role"),
+        syndicRole: form.get("syndicRole"),
+        mandateStart: form.get("mandateStart"),
+        mandateEnd: form.get("mandateEnd"),
+        newPassword: form.get("newPassword")
+      })
+    });
+    const saved = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage(saved.message || "Falha ao salvar colaborador do condominio.");
+      return;
+    }
+    setData((current) => ({
+      ...current,
+      residents: [saved, ...current.residents.filter((person) => person.id !== saved.id)].map((person) =>
+        saved.isSyndic && person.tenantId === saved.tenantId && person.id !== saved.id
+          ? { ...person, isSyndic: false }
+          : person
+      )
+    }));
+    event.currentTarget.reset();
+    setMessage(saved.role === "PORTER" ? "Porteiro cadastrado." : "Sindico cadastrado.");
+    void refreshApiCache();
+  }
+
   async function deletePerson(person) {
     if (!person || !window.confirm(`Excluir ${person.name}?`)) return;
     const response = await apiFetch(`/api/people/${person.id}`, { method: "DELETE" });
@@ -1526,38 +1565,6 @@ function App() {
     void refreshApiCache();
   }
 
-  async function saveLicenseForm(event) {
-    event.preventDefault();
-    const response = await apiFetch("/api/licenses", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...licenseForm,
-        tenantId: licenseForm.tenantId || selectedTenant?.id,
-        contractor: selectedLicenseCompany?.name || licenseForm.contract
-      })
-    });
-    const saved = await response.json().catch(() => null);
-    if (!response.ok) {
-      setMessage(saved?.message || "Falha ao salvar licenca.");
-      return;
-    }
-    if (saved?.id) {
-      setData((current) => {
-        const exists = current.licenses.some((license) => license.id === saved.id);
-        return {
-          ...current,
-          licenses: exists
-            ? current.licenses.map((license) => license.id === saved.id ? saved : license)
-            : [saved, ...current.licenses]
-        };
-      });
-    }
-    setLicenseForm(emptyLicenseForm);
-    setMessage("Licenca salva.");
-    void refreshApiCache();
-  }
-
   async function saveCompanyForm(event) {
     event.preventDefault();
     const response = await apiFetch("/api/companies", {
@@ -1618,6 +1625,26 @@ function App() {
     setMessage("Configuracao financeira atualizada.");
     void refreshApiCache();
     return saved;
+  }
+
+  async function generateCompanyCharge(companyId, billingType) {
+    const response = await apiFetch("/api/billing/charges", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId, billingType })
+    });
+    const invoice = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(invoice?.message || "Falha ao gerar cobranca.");
+      setMessage(error.message);
+      throw error;
+    }
+    setData((current) => ({
+      ...current,
+      billingInvoices: [invoice, ...(current.billingInvoices || []).filter((item) => item.id !== invoice.id)]
+    }));
+    setMessage("Cobranca gerada no Asaas.");
+    return invoice;
   }
 
   async function saveCameraForm(event) {
@@ -2484,15 +2511,35 @@ function App() {
 
     if (activeSection === "syndic") {
       const tenantResidents = data.residents.filter((person) => person.tenantId === selectedTenant?.id && (person.kind || "RESIDENT") === "RESIDENT");
-      const syndic = tenantResidents.find((person) => person.isSyndic) || null;
+      const tenantStaff = data.residents.filter((person) => person.tenantId === selectedTenant?.id && person.kind === "STAFF");
+      const syndicCandidates = [...tenantResidents, ...tenantStaff.filter((person) => person.role === "CONDO_ADMIN")];
+      const syndic = syndicCandidates.find((person) => person.isSyndic) || null;
       const syndicFace = data.credentials.find((credential) => credential.personId === syndic?.id && credential.type === "FACE");
       return (
-        <section className="people-layout">
+        <section className="staff-page">
+          <form className="panel form-panel" key={`staff-${selectedTenant?.id || "tenant"}`} onSubmit={saveCondoStaff}>
+            <div className="panel-heading"><h2>Cadastrar sindico ou porteiro</h2><UserPlus size={20} /></div>
+            <div className="form-grid">
+              <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+              <Field label="Funcao"><select name="role" defaultValue="PORTER"><option value="PORTER">Porteiro</option><option value="CONDO_ADMIN">Sindico</option></select></Field>
+              <Field label="Nome completo"><input name="name" required /></Field>
+              <Field label="E-mail/Login"><input name="email" type="email" required /></Field>
+              <Field label="Celular"><input name="phone" /></Field>
+              <Field label="CPF"><input name="cpf" /></Field>
+              <Field label="RG"><input name="rg" /></Field>
+              <Field label="Cargo do sindico"><select name="syndicRole" defaultValue="SINDICO"><option>SINDICO</option><option>SUBSINDICO</option><option>CONSELHEIRO</option><option>ADMINISTRADORA</option></select></Field>
+              <Field label="Inicio do mandato"><input name="mandateStart" type="date" /></Field>
+              <Field label="Fim do mandato"><input name="mandateEnd" type="date" /></Field>
+              <Field label="Senha inicial"><input name="newPassword" type="password" placeholder="Padrao temporario se vazio" /></Field>
+              <button type="submit"><Save size={16} /> Salvar cadastro</button>
+            </div>
+            <div className="form-hint">Cadastros gerais do condominio nao ficam vinculados a uma unidade.</div>
+          </form>
           <form className="panel form-panel" key={`${selectedTenant?.id || "tenant"}-${syndic?.id || "none"}`} onSubmit={saveSyndic}>
             <div className="panel-heading"><h2>Definir sindico</h2><ShieldCheck size={20} /></div>
             <div className="form-grid">
               <Field label="Condominio"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)}>{visibleCondominiums.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-              <Field label="Pessoa"><select name="personId" required defaultValue={syndic?.id || ""}><option value="">Selecione</option>{tenantResidents.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
+              <Field label="Pessoa"><select name="personId" required defaultValue={syndic?.id || ""}><option value="">Selecione</option>{syndicCandidates.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
               <Field label="Cargo"><select name="syndicRole" defaultValue={syndic?.syndicRole || "SINDICO"}><option>SINDICO</option><option>SUBSINDICO</option><option>CONSELHEIRO</option><option>ADMINISTRADORA</option></select></Field>
               <Field label="Inicio do mandato"><input name="mandateStart" type="date" defaultValue={syndic?.mandateStart || ""} /></Field>
               <Field label="Fim do mandato"><input name="mandateEnd" type="date" defaultValue={syndic?.mandateEnd || ""} /></Field>
@@ -2501,15 +2548,19 @@ function App() {
             </div>
             <div className="form-hint">Esta tela define quem e sindico/subsindico e quais permissoes administrativas essa pessoa tera.</div>
           </form>
-          <article className="panel people-panel">
-            <div className="panel-heading"><h2>Sindico atual</h2><ShieldCheck size={20} /></div>
-            <div className="person-row">
-              <div className="person-name-cell"><PersonAvatar name={syndic?.name || "S"} photoUrl={credentialPhotoUrl(syndicFace, syndic)} /><div><strong>{syndic?.name || "Nao definido"}</strong><small>{syndic?.email || "-"}</small><small>{selectedTenant?.name}</small></div></div>
-              <span>CPF: {syndic?.cpf || "-"}<br />RG: {syndic?.rg || "-"}</span>
-              <span>{syndic?.phone || "-"}</span>
-              <span>{syndic?.syndicRole || "Sindico"}</span>
-              <div className="row-actions"><button className="compact-action-button secondary-button" type="button" onClick={() => setActiveSection("permissions")}>Permissoes</button><button className="compact-action-button secondary-button" type="button" disabled={!syndic} onClick={() => { setSelectedPersonId(syndic?.id || "new"); setActiveSection("residents"); }}>Editar</button></div>
-            </div>
+          <article className="panel people-panel staff-list-panel">
+            <div className="panel-heading"><h2>Equipe do condominio</h2><span>{tenantStaff.length} cadastro(s)</span></div>
+            <div className="people-header"><span>Nome</span><span>Documentos</span><span>Celular</span><span>Funcao</span><span>Status</span></div>
+            {tenantStaff.map((person) => (
+              <div className="person-row" key={person.id}>
+                <div className="person-name-cell"><PersonAvatar name={person.name} photoUrl={credentialPhotoUrl(data.credentials.find((credential) => credential.personId === person.id && credential.type === "FACE"), person)} /><div><strong>{person.name}</strong><small>{person.email || "-"}</small><small>{selectedTenant?.name}</small></div></div>
+                <span>CPF: {person.cpf || "-"}<br />RG: {person.rg || "-"}</span>
+                <span>{person.phone || "-"}</span>
+                <span>{person.role === "PORTER" ? "Porteiro" : person.syndicRole || "Sindico"}</span>
+                <span className="status">{person.isSyndic ? "Sindico atual" : "Ativo"}</span>
+              </div>
+            ))}
+            {!tenantStaff.length && <div className="empty-state">Nenhum sindico ou porteiro cadastrado na area geral.</div>}
           </article>
         </section>
       );
@@ -2660,11 +2711,11 @@ function App() {
                     </button>
                   ))}
                 </div>
-                {["credentials", "faces"].includes(equipmentIntegration.resource) && <div className="toolbar-actions unit-actions">
-                  <button className="secondary-button" type="button" disabled={equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void importEquipmentCredentials(true, equipmentIntegration.resource === "faces" ? "faces" : "credentials")}>
-                    <Search size={16} /> {equipmentIntegration.resource === "faces" ? "Atualizar previa facial" : "Previa credenciais do equipamento"}
+                {["credentials", "faces", "vehicleTags"].includes(equipmentIntegration.resource) && <div className="toolbar-actions unit-actions">
+                  <button className="secondary-button" type="button" disabled={equipmentIntegration.importing || !selectedIntegrationDevice} onClick={() => void importEquipmentCredentials(true, equipmentIntegration.resource)}>
+                    <Search size={16} /> {equipmentIntegration.resource === "faces" ? "Atualizar previa facial" : equipmentIntegration.resource === "vehicleTags" ? "Previa tags veiculares" : "Previa credenciais do equipamento"}
                   </button>
-                  <button type="button" disabled={equipmentIntegration.importing || !(equipmentIntegration.importReport?.total || equipmentIntegration.payload?.summary?.credentials)} onClick={() => void importEquipmentCredentials(false, equipmentIntegration.resource === "faces" ? "faces" : "credentials")}>
+                  <button type="button" disabled={equipmentIntegration.importing || !(equipmentIntegration.importReport?.total || equipmentIntegration.payload?.summary?.credentials)} onClick={() => void importEquipmentCredentials(false, equipmentIntegration.resource)}>
                     <Save size={16} /> Importar para o banco
                   </button>
                 </div>}
@@ -2704,10 +2755,12 @@ function App() {
                 <article className="panel">
                   <div className="panel-heading">
                     <div>
-                      <h2>{equipmentIntegration.resource === "faces" && equipmentIntegration.importReport.dryRun ? "Previa de cadastros faciais" : "Importacao do equipamento"}</h2>
+                      <h2>{equipmentIntegration.resource === "faces" && equipmentIntegration.importReport.dryRun ? "Previa de cadastros faciais" : equipmentIntegration.resource === "vehicleTags" && equipmentIntegration.importReport.dryRun ? "Previa de tags veiculares" : "Importacao do equipamento"}</h2>
                       <small>{equipmentIntegration.resource === "faces" && equipmentIntegration.importReport.dryRun
                         ? "Confira as fotos, marque quem sera importado e digite ou escolha a unidade."
-                        : equipmentIntegration.importReport.message || "Relatorio de credenciais lidas no equipamento."}</small>
+                        : equipmentIntegration.resource === "vehicleTags" && equipmentIntegration.importReport.dryRun
+                          ? "Tags sem veiculo local serao salvas como veiculos pendentes para informar placa e unidade."
+                          : equipmentIntegration.importReport.message || "Relatorio de credenciais lidas no equipamento."}</small>
                     </div>
                     <span className="status">{equipmentIntegration.importReport.dryRun ? "PREVIA" : "IMPORTADO"}</span>
                   </div>
@@ -2716,8 +2769,8 @@ function App() {
                     <span><strong>{equipmentIntegration.importReport.valid || 0}</strong>validas</span>
                     <span><strong>{equipmentIntegration.importReport.duplicates || 0}</strong>duplicadas</span>
                     <span><strong>{equipmentIntegration.importReport.unitsCreated || 0}</strong>unidades novas</span>
-                    <span><strong>{equipmentIntegration.importReport.credentialsCreated || 0}</strong>novas</span>
-                    <span><strong>{equipmentIntegration.importReport.credentialsUpdated || 0}</strong>atualizadas</span>
+                    <span><strong>{equipmentIntegration.resource === "vehicleTags" ? equipmentIntegration.importReport.vehiclesCreated || 0 : equipmentIntegration.importReport.credentialsCreated || 0}</strong>novas</span>
+                    <span><strong>{equipmentIntegration.resource === "vehicleTags" ? equipmentIntegration.importReport.vehiclesUpdated || 0 : equipmentIntegration.importReport.credentialsUpdated || 0}</strong>atualizadas</span>
                   </div>
                   {(equipmentIntegration.importReport.items || []).length ? (
                     <div className="face-import-review">
@@ -2864,8 +2917,47 @@ function App() {
               </div>
             </div>
           )}
+          <article className="panel porter-actions-strip">
+            <div className="panel-heading compact-heading">
+              <h2>Acionamentos do condominio</h2>
+              <span>{tenantActions.filter((action) => action.status !== "DISABLED").length} ativo(s)</span>
+            </div>
+            <div className="porter-action-grid porter-action-grid-horizontal">
+              {tenantActions.map((action) => {
+                const actionDevice = tenantDevices.find((device) => device.id === action.deviceId);
+                return (
+                  <button
+                    key={action.id}
+                    type="button"
+                    className={action.status === "DISABLED" ? "secondary-button disabled-action" : "secondary-button"}
+                    disabled={action.status === "DISABLED"}
+                    onClick={() => void triggerAction(action)}
+                    title={actionDevice ? `${actionDevice.name} - rele ${action.relay || 1}` : `Rele ${action.relay || 1}`}
+                  >
+                    <KeySquare size={16} />
+                    <span><strong>{action.name}</strong><small>{action.route || actionDevice?.name || "Portaria"}</small></span>
+                  </button>
+                );
+              })}
+              {!tenantActions.length && <div className="empty-state">Nenhum acionamento cadastrado para este condominio.</div>}
+            </div>
+          </article>
           <div className="resource-operational-grid remote-porter-layout">
             <article className="panel porter-attendance-panel">
+              <div className="porter-quick-search">
+                <div className="panel-heading compact-heading"><h2>Busca rapida</h2><ShieldCheck size={18} /></div>
+                <div className="remote-call-summary"><span><strong>{activeTenantCalls.length}</strong>chamadas ativas</span><span><strong>{tenantCalls.length}</strong>no historico</span></div>
+                <div className="porter-filter-grid">{["CPF", "RG", "Placa", "Nome", "Unidade", "Credencial"].map((item) => <button key={item} type="button" className={porterSearchType === item ? "" : "secondary-button"} onClick={() => setPorterSearchType(item)}><Search size={15} /> {item}</button>)}</div>
+                <label className="search-field porter-search-input"><Search size={16} /><input value={porterSearchTerm} onChange={(event) => setPorterSearchTerm(event.target.value)} placeholder={`Buscar por ${porterSearchType.toLowerCase()}`} /></label>
+                {porterSearchTerm.trim() && <div className="porter-quick-results">
+                  {porterSearchResults.map((result) => {
+                    const unitId = result.unitId || result.id;
+                    const resultUnit = data.units.find((unit) => unit.unitId === unitId);
+                    return <button key={`${porterSearchType}-${result.id}`} type="button" onClick={() => resultUnit && selectPorterUnit(resultUnit)}><strong>{result.name || result.valueLabel || unitDisplay(result)}</strong><small>{resultUnit ? unitDisplay(resultUnit) : result.email || result.type || "Sem unidade vinculada"}</small></button>;
+                  })}
+                  {!porterSearchResults.length && <div className="empty-state">Nenhum resultado encontrado.</div>}
+                </div>}
+              </div>
               <div className="panel-heading">
                 <h2>Atendimento da unidade</h2>
                 <span>{activeTenantCalls.length} chamada(s)</span>
@@ -2934,31 +3026,6 @@ function App() {
                   {!listedPorterUnits.length && <div className="empty-state">Nenhuma unidade encontrada.</div>}
                 </div>
               )}
-              <div className="porter-actions-panel">
-                <div className="panel-heading compact-heading">
-                  <h2>Acionamentos do condominio</h2>
-                  <span>{tenantActions.filter((action) => action.status !== "DISABLED").length} ativo(s)</span>
-                </div>
-                <div className="porter-action-grid">
-                  {tenantActions.map((action) => {
-                    const actionDevice = tenantDevices.find((device) => device.id === action.deviceId);
-                    return (
-                      <button
-                        key={action.id}
-                        type="button"
-                        className={action.status === "DISABLED" ? "secondary-button disabled-action" : "secondary-button"}
-                        disabled={action.status === "DISABLED"}
-                        onClick={() => void triggerAction(action)}
-                        title={actionDevice ? `${actionDevice.name} - rele ${action.relay || 1}` : `Rele ${action.relay || 1}`}
-                      >
-                        <KeySquare size={16} />
-                        <span><strong>{action.name}</strong><small>{action.route || actionDevice?.name || "Portaria"}</small></span>
-                      </button>
-                    );
-                  })}
-                  {!tenantActions.length && <div className="empty-state">Nenhum acionamento cadastrado para este condominio.</div>}
-                </div>
-              </div>
               <div className="porter-events-panel">
                 <div className="panel-heading compact-heading">
                   <h2>Eventos da API</h2>
@@ -3336,8 +3403,10 @@ function App() {
           companies={data.companies}
           condominiums={data.condominiums}
           licenses={data.licenses}
+          invoices={data.billingInvoices}
           gateway={data.billingGateway}
           onSaveBillingProfile={saveCompanyBillingProfile}
+          onGenerateCharge={generateCompanyCharge}
         />
       );
     }
@@ -3419,89 +3488,6 @@ function App() {
                 );
               })}
               {!data.companies.length && <div className="empty-state">Cadastre a primeira empresa cliente e defina o pacote comercial.</div>}
-            </div>
-          </article>
-        </section>
-      );
-    }
-
-    if (activeSection === "licenses") {
-      return (
-        <section className="crud-grid">
-          <form className="panel form-panel" onSubmit={saveLicenseForm}>
-            <div className="panel-heading"><h2>Liberacao por condominio</h2><FileKey2 size={20} /></div>
-            <div className="form-grid">
-              <Field label="Empresa cliente"><select required value={licenseForm.companyId} onChange={(event) => setLicenseForm((current) => ({ ...current, companyId: event.target.value, tenantId: "", resourceIds: [] }))}><option value="">Selecione</option>{data.companies.filter((company) => company.status !== "INACTIVE").map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</select></Field>
-              <Field label="Condominio"><select required value={licenseForm.tenantId} onChange={(event) => setLicenseForm((current) => ({ ...current, tenantId: event.target.value }))}><option value="">Selecione</option>{data.condominiums.filter((condo) => licenseForm.companyId && condo.companyId === licenseForm.companyId).map((condo) => <option key={condo.id} value={condo.id}>{condo.name}</option>)}</select></Field>
-              <Field label="Nome"><input required value={licenseForm.name} onChange={(event) => setLicenseForm((current) => ({ ...current, name: event.target.value }))} /></Field>
-              <Field label="Atendimento"><select value={licenseForm.attendance} onChange={(event) => setLicenseForm((current) => ({ ...current, attendance: event.target.value, plan: event.target.value }))}><option>Full</option><option>Showroom</option></select></Field>
-              <Field label="Cidade/UF"><input value={licenseForm.city} onChange={(event) => setLicenseForm((current) => ({ ...current, city: event.target.value }))} /></Field>
-              <Field label="Moradores"><input value={licenseForm.residents} onChange={(event) => setLicenseForm((current) => ({ ...current, residents: event.target.value }))} /></Field>
-              <Field label="Ramais liberados"><input type="number" min="0" value={licenseForm.extensionLimit} onChange={(event) => setLicenseForm((current) => ({ ...current, extensionLimit: event.target.value }))} /></Field>
-            </div>
-            <div className="module-license-grid">
-              {data.resources.map((resource) => {
-                const contracted = Boolean(selectedLicenseCompany && (selectedLicenseCompany.resourceIds || []).includes(resource.id));
-                return (
-                  <label className={`module-license-option ${contracted ? "" : "disabled"}`} key={resource.id}>
-                    <input
-                      type="checkbox"
-                      disabled={!contracted}
-                      checked={licenseForm.resourceIds.includes(resource.id)}
-                      onChange={(event) => setLicenseForm((current) => ({
-                        ...current,
-                        resourceIds: event.target.checked
-                          ? [...new Set([...current.resourceIds, resource.id])]
-                          : current.resourceIds.filter((id) => id !== resource.id)
-                      }))}
-                    />
-                    <span><strong>{resource.name}</strong><small>{contracted ? "Disponivel no contrato" : "Nao contratado pela empresa"}</small></span>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="form-actions">
-              <button type="submit"><Save size={16} /> Salvar licenca</button>
-              {licenseForm.id && <button className="secondary-button" type="button" onClick={() => setLicenseForm(emptyLicenseForm)}>Cancelar edicao</button>}
-            </div>
-          </form>
-          <article className="panel">
-            <div className="panel-heading"><h2>Licencas</h2><button><Plus size={16} /> Nova licenca</button></div>
-            <label className="search-field"><Search size={16} /><input placeholder="Pesquise o nome ou codigo da licenca" /></label>
-            <div className="license-list">
-              {data.licenses.map((license) => (
-                <article className="license-card" key={license.id}>
-                  <strong>{license.name}</strong>
-                  <span>{data.companies.find((company) => company.id === license.companyId)?.name || "Contrato legado"}</span>
-                  <span>{license.residents} moradores</span>
-                  <span>{license.extensionLimit || 0} ramais liberados</span>
-                  <span>{license.city}</span>
-                  <em>{license.plan} - {license.code}</em>
-                  <small>{license.contractor}</small>
-                  <button className="secondary-button" onClick={() => navigateTo(`/licencas/${license.code}/unidades`)}><Home size={15} /> Unidades</button>
-                  <button className="secondary-button" onClick={() => navigateTo(`/licencas/${license.code}/configuracaoCameras`)}><Camera size={15} /> Cameras</button>
-                  <button className="secondary-button" onClick={() => navigateTo(`/licencas/${license.code}/configuracaoAcionamentos`)}><KeySquare size={15} /> Acionamentos</button>
-                  <button className="secondary-button" onClick={() => navigateTo(`/licencas/${license.code}/equipamentos`)}><RadioTower size={15} /> Equipamentos</button>
-                  <button className="secondary-button" onClick={() => navigateTo(`/licencas/${license.code}/credenciais`)}><BadgeCheck size={15} /> Credenciais</button>
-                  <button className="secondary-button" onClick={() => setLicenseForm({
-                    id: license.id,
-                    companyId: license.companyId || data.condominiums.find((condo) => condo.id === license.tenantId)?.companyId || "",
-                    tenantId: license.tenantId || "",
-                    contract: license.contractor || "",
-                    contractor: license.contractor || "",
-                    name: license.name || "",
-                    cnpj: license.cnpj || "",
-                    type: license.type || "Condominio",
-                    structure: license.structure || "Residencial",
-                    attendance: license.plan || "Full",
-                    plan: license.plan || "Full",
-                    city: license.city || "",
-                    residents: String(license.residents || 0),
-                    extensionLimit: String(license.extensionLimit || 0),
-                    resourceIds: Array.isArray(license.resourceIds) ? license.resourceIds : []
-                  })}>Editar</button>
-                </article>
-              ))}
             </div>
           </article>
         </section>

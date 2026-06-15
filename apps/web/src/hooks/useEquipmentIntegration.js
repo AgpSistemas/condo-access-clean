@@ -85,10 +85,16 @@ function useEquipmentIntegration({ devices, units, setMessage, refreshApiCache, 
         setPersonSubtab("moradores");
       }
     }
-    setMessage(dryRun ? `${report.total || 0} credencial(is) encontrada(s) no equipamento para conferencia.` : `Importacao concluida: ${report.credentialsCreated || 0} nova(s), ${report.credentialsUpdated || 0} atualizada(s), ${report.eventsCreated || 0} evento(s) salvo(s).`);
+    setMessage(dryRun
+      ? `${report.total || 0} registro(s) encontrado(s) no equipamento para conferencia.`
+      : resource === "vehicleTags"
+        ? `Importacao concluida: ${report.vehiclesCreated || 0} veiculo(s) novo(s), ${report.vehiclesUpdated || 0} tag(s) atualizada(s).`
+        : `Importacao concluida: ${report.credentialsCreated || 0} nova(s), ${report.credentialsUpdated || 0} atualizada(s), ${report.eventsCreated || 0} evento(s) salvo(s).`);
   }
 
-  const readEquipmentIntegrationResource = (resource = equipmentIntegration.resource) => resource === "faces" ? importEquipmentCredentials(true, "faces") : readEquipmentIntegration(resource);
+  const readEquipmentIntegrationResource = (resource = equipmentIntegration.resource) => ["faces", "vehicleTags"].includes(resource)
+    ? importEquipmentCredentials(true, resource)
+    : readEquipmentIntegration(resource);
 
   return {
     equipmentIntegration,

@@ -274,6 +274,12 @@ Dockerfile
 railway.json
 ```
 
+Antes do deploy, o workflow instala as dependencias e executa os testes e a
+validacao sintatica da API. Sem o secret `RAILWAY_TOKEN`, a validacao continua
+rodando e o deploy e marcado como nao configurado por um aviso, sem reprovar o
+workflow. Se um token estiver cadastrado mas for rejeitado pelo Railway, o job
+falha para sinalizar que o deploy nao aconteceu.
+
 Deploy final validado:
 
 - Deployment ID: `333ae5af-c187-4b93-bd57-c161eaa6864a`

@@ -23,6 +23,7 @@ const emptyData = {
   accessRoutes: [],
   companies: [],
   licenses: [],
+  billingInvoices: [],
   billingGateway: {
     provider: "ASAAS",
     environment: "sandbox",
@@ -173,32 +174,72 @@ const emptyDeviceForm = {
   intercomEnabled: true
 };
 
-const controlIdIduhfProfile = {
-  model: "iDUHF",
-  actionOptions: [
-    ["door", "Rele interno do iDUHF"],
-    ["sec_box", "Rele externo via SecBox/MAE"]
-  ],
-  guidance: {
-    door: "Use rele interno quando a fechadura ou cancela estiver ligada diretamente ao iDUHF.",
-    sec_box: "Use SecBox somente para o modulo externo MAE e informe o ID numerico exibido pelo equipamento.",
-    group: "Preencha o grupo no modo standalone para incluir automaticamente usuarios sincronizados no departamento/grupo que ja possui regras e horarios. Deixe vazio no modo online ou quando o servidor controlar a autorizacao.",
-    device: "O perfil usa API HTTP na porta 80, sem RTSP, canais de video ou ramal SIP."
+const controlIdProfiles = {
+  iDAccess: {
+    action: "door",
+    actionOptions: [["door", "Rele interno"]],
+    guidance: "Acionamento door. API HTTP na porta 80."
+  },
+  "iDAccess Pro": {
+    action: "sec_box",
+    actionOptions: [["sec_box", "SecBox/MAE"]],
+    guidance: "Acionamento via SecBox/MAE; informe o ID numerico do modulo."
+  },
+  "iDAccess Nano": {
+    action: "sec_box",
+    actionOptions: [["sec_box", "SecBox/MAE"]],
+    guidance: "Acionamento via SecBox/MAE; informe o ID numerico do modulo."
+  },
+  iDFit: {
+    action: "door",
+    actionOptions: [["door", "Rele interno"]],
+    guidance: "Acionamento door. API HTTP na porta 80."
+  },
+  iDFlex: {
+    action: "sec_box",
+    actionOptions: [["sec_box", "SecBox/MAE"]],
+    guidance: "Acionamento via SecBox/MAE; informe o ID numerico do modulo."
+  },
+  iDBlock: {
+    action: "catra",
+    actionOptions: [["catra", "Liberar giro da catraca"], ["open_collector", "Abrir cofre coletor"]],
+    guidance: "A catraca usa a acao catra; selecione o rele 1 ou 2 na abertura."
+  },
+  iDBox: {
+    action: "door",
+    actionOptions: [["door", "Porta do iDBox"]],
+    guidance: "Acionamento door com suporte a ate quatro portas."
+  },
+  iDUHF: {
+    action: "door",
+    actionOptions: [["door", "Rele interno do iDUHF"], ["sec_box", "Rele externo via SecBox/MAE"]],
+    guidance: "Use door no rele interno e SecBox somente no modulo externo. O modo estendido aceita tags UHF de ate 96 bits.",
+    uhf: true
+  },
+  iDFace: {
+    action: "sec_box",
+    actionOptions: [["sec_box", "SecBox/MAE"]],
+    guidance: "Acionamento via SecBox/MAE. O suporte SIP depende da licenca Pro do equipamento.",
+    intercom: true
+  },
+  "iDFace Max": {
+    action: "door",
+    actionOptions: [["door", "Rele interno"], ["sec_box", "SecBox/MAE"]],
+    guidance: "Perfil facial com rele interno e suporte opcional ao SecBox/MAE.",
+    intercom: true
   }
 };
 
+const controlIdModels = Object.keys(controlIdProfiles);
+
 function controlIdActionOptions(model = "") {
-  return model === controlIdIduhfProfile.model
-    ? controlIdIduhfProfile.actionOptions
-    : [["door", "Rele interno"], ["sec_box", "SecBox"], ["catra", "Catraca"]];
+  return controlIdProfiles[model]?.actionOptions || [["door", "Rele interno"], ["sec_box", "SecBox"], ["catra", "Catraca"]];
 }
 
 function controlIdProfileGuidance(device = {}) {
-  if (device.model !== controlIdIduhfProfile.model) return "";
-  const actionHint = device.controlIdAction === "sec_box"
-    ? controlIdIduhfProfile.guidance.sec_box
-    : controlIdIduhfProfile.guidance.door;
-  return `${controlIdIduhfProfile.guidance.device} ${actionHint} ${controlIdIduhfProfile.guidance.group}`;
+  const profile = controlIdProfiles[device.model];
+  if (!profile) return "";
+  return `${profile.guidance} Sem RTSP. No modo standalone, o grupo de acesso e opcional e deve existir no equipamento.`;
 }
 
 const niceLinearModels = [
@@ -219,22 +260,6 @@ function niceLinearProfileGuidance(device = {}) {
   }
   return "Modo usado nas instalacoes Nice/Linear: o equipamento inicia a conexao. Configure nele o IP do servidor Condo Access e a mesma porta de escuta informada aqui. O status e os pacotes recebidos ficam disponiveis para diagnostico; o comando binario de abertura depende do protocolo/SDK da Nice.";
 }
-
-const emptyLicenseForm = {
-  id: "",
-  companyId: "",
-  tenantId: "",
-  contract: "",
-  name: "",
-  cnpj: "",
-  type: "Condominio",
-  structure: "Residencial",
-  attendance: "Full",
-  city: "",
-  residents: "0",
-  extensionLimit: "0",
-  resourceIds: []
-};
 
 const emptyCompanyForm = {
   id: "",
@@ -409,18 +434,19 @@ function intelbrasDeviceDefaults(category, manufacturer) {
   }
 
   if (manufacturer === "Control iD" && category === "access-control") {
+    const profile = controlIdProfiles.iDAccess;
     return {
-      model: "iDUHF",
+      model: "iDAccess",
       apiProtocol: "http",
       apiPort: "80",
       rtspPort: "0",
       channelCount: "0",
-      controlIdAction: "door",
+      controlIdAction: profile.action,
       controlIdSecBoxId: "",
       controlIdGroupId: "",
-      controlIdUhfMode: "EXTENDED",
+      controlIdUhfMode: "STANDARD",
       intercomType: "FACIAL",
-      intercomEnabled: true
+      intercomEnabled: false
     };
   }
 
@@ -494,7 +520,8 @@ function intelbrasModelDefaults(model) {
     };
   }
 
-  if (model === "iDUHF") {
+  if (controlIdProfiles[model]) {
+    const profile = controlIdProfiles[model];
     return {
       category: "access-control",
       manufacturer: "Control iD",
@@ -503,12 +530,12 @@ function intelbrasModelDefaults(model) {
       apiPort: "80",
       rtspPort: "0",
       channelCount: "0",
-      controlIdAction: "door",
+      controlIdAction: profile.action,
       controlIdSecBoxId: "",
       controlIdGroupId: "",
-      controlIdUhfMode: "EXTENDED",
-      intercomType: "UHF",
-      intercomEnabled: false
+      controlIdUhfMode: profile.uhf ? "EXTENDED" : "STANDARD",
+      intercomType: profile.uhf ? "UHF" : profile.intercom ? "FACIAL" : "ACCESS",
+      intercomEnabled: Boolean(profile.intercom)
     };
   }
 
@@ -584,8 +611,8 @@ function homologatedModelOptions(manufacturer, categoryOrType) {
   }
 
   if (manufacturer === "Control iD") {
-    if (key.includes("access") || key.includes("uhf") || key.includes("vehicle")) return ["iDUHF"];
-    return ["iDUHF"];
+    if (key.includes("uhf") || key.includes("vehicle")) return ["iDUHF"];
+    return controlIdModels;
   }
 
   if (isNiceLinearManufacturer(manufacturer)) {
@@ -741,7 +768,6 @@ export {
   unitExtension,
   resolveCallUnit,
   emptyDeviceForm,
-  emptyLicenseForm,
   emptyCompanyForm,
   emptyCameraForm,
   emptyActionForm,
