@@ -7,23 +7,35 @@ function deviceBaseUrl(device = {}) {
   return `${device.apiProtocol || "http"}://${address}:${Number(device.apiPort || 80)}`;
 }
 
-async function digestHeader(url, method, username, password) {
-  const probe = await fetch(url, { method, signal: AbortSignal.timeout(8000) });
-  const challenge = probe.headers.get("www-authenticate") || "";
-  if (!challenge.toLowerCase().includes("digest")) {
-    return { Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}` };
-  }
+function basicHeader(username, password) {
+  return { Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}` };
+}
 
-  const params = Object.fromEntries(
-    [...challenge.matchAll(/(\w+)="?([^",]+)"?/g)].map((match) => [match[1], match[2]])
-  );
+function parseDigestChallenge(challenge = "") {
+  const digest = String(challenge || "").replace(/^Digest\s+/i, "");
+  const params = {};
+  const pattern = /([a-z0-9_-]+)\s*=\s*(?:"([^"]*)"|([^,\s]+))/gi;
+  let match;
+  while ((match = pattern.exec(digest))) {
+    params[match[1]] = match[2] ?? match[3] ?? "";
+  }
+  return params;
+}
+
+function digestAuthorization(url, method, username, password, challenge = "") {
+  const params = parseDigestChallenge(challenge);
+  if (!params.realm || !params.nonce) return basicHeader(username, password);
   const parsedUrl = new URL(url);
   const uri = `${parsedUrl.pathname}${parsedUrl.search}`;
   const nc = "00000001";
   const cnonce = crypto.randomBytes(8).toString("hex");
-  const qop = params.qop?.split(",")[0];
+  const qop = params.qop?.split(",").map((item) => item.trim()).find((item) => item === "auth") ||
+    params.qop?.split(",").map((item) => item.trim()).filter(Boolean)[0];
+  const algorithm = String(params.algorithm || "MD5").toUpperCase();
   const md5 = (value) => crypto.createHash("md5").update(value).digest("hex");
-  const ha1 = md5(`${username}:${params.realm}:${password}`);
+  const ha1 = algorithm === "MD5-SESS"
+    ? md5(`${md5(`${username}:${params.realm}:${password}`)}:${params.nonce}:${cnonce}`)
+    : md5(`${username}:${params.realm}:${password}`);
   const ha2 = md5(`${method}:${uri}`);
   const response = qop
     ? md5(`${ha1}:${params.nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
@@ -34,12 +46,31 @@ async function digestHeader(url, method, username, password) {
     `nonce="${params.nonce}"`,
     `uri="${uri}"`,
     `response="${response}"`,
+    params.algorithm ? `algorithm=${params.algorithm}` : "",
     qop ? `qop=${qop}` : "",
     qop ? `nc=${nc}` : "",
     qop ? `cnonce="${cnonce}"` : "",
     params.opaque ? `opaque="${params.opaque}"` : ""
   ].filter(Boolean);
   return { Authorization: `Digest ${parts.join(", ")}` };
+}
+
+async function authHeader(url, method, username, password) {
+  const probe = await fetch(url, { method, signal: AbortSignal.timeout(8000) });
+  const challenge = probe.headers.get("www-authenticate") || "";
+  if (!challenge.toLowerCase().includes("digest")) {
+    return { headers: basicHeader(username, password), challenge, mode: "basic" };
+  }
+  return { headers: digestAuthorization(url, method, username, password, challenge), challenge, mode: "digest" };
+}
+
+async function fetchDevice(url, { method, headers, body, timeoutMs }) {
+  return fetch(url, {
+    method,
+    headers,
+    body,
+    signal: AbortSignal.timeout(Number(timeoutMs || 12000))
+  });
 }
 
 async function postJson(url, body, headers = {}) {
@@ -59,21 +90,37 @@ async function deviceHttp(command) {
   const request = command.request || {};
   const method = String(request.method || "GET").toUpperCase();
   const targetUrl = `${deviceBaseUrl(device)}${String(request.path || "/")}`;
-  const headers = await digestHeader(targetUrl, method, device.username || "admin", device.password || "");
+  const username = device.username || "admin";
+  const password = device.password || "";
+  const auth = await authHeader(targetUrl, method, username, password);
+  const headers = { ...auth.headers };
   if (request.body !== undefined && request.body !== null) {
     headers["Content-Type"] = request.contentType || "application/json";
   }
-  const response = await fetch(targetUrl, {
+  let response = await fetchDevice(targetUrl, {
     method,
     headers,
     body: request.body === undefined || request.body === null ? undefined : request.body,
-    signal: AbortSignal.timeout(Number(request.timeoutMs || 12000))
+    timeoutMs: request.timeoutMs
   });
+  let authMode = auth.mode;
+  if (response.status === 401 && auth.mode === "digest") {
+    response = await fetchDevice(targetUrl, {
+      method,
+      headers: {
+        ...headers,
+        ...basicHeader(username, password)
+      },
+      body: request.body === undefined || request.body === null ? undefined : request.body,
+      timeoutMs: request.timeoutMs
+    });
+    authMode = "digest-basic-fallback";
+  }
   const contentType = response.headers.get("content-type") || "";
   const buffer = Buffer.from(await response.arrayBuffer());
   const text = request.responseType === "base64" ? "" : buffer.toString("utf8");
   if (!response.ok) {
-    throw new Error(`Equipamento respondeu ${response.status}: ${text.slice(0, 300)}`);
+    throw new Error(`Equipamento respondeu ${response.status} (${authMode}): ${text.slice(0, 300)}`);
   }
   return {
     ok: true,
@@ -81,7 +128,7 @@ async function deviceHttp(command) {
     body: text,
     bodyBase64: request.responseType === "base64" ? buffer.toString("base64") : "",
     contentType,
-    message: `Requisicao local concluida (${response.status})`
+    message: `Requisicao local concluida (${response.status}, ${authMode})`
   };
 }
 
@@ -117,4 +164,4 @@ function testDeviceTcp(device, timeoutMs = 8000) {
   });
 }
 
-module.exports = { deviceBaseUrl, digestHeader, postJson, deviceHttp, testDeviceTcp };
+module.exports = { deviceBaseUrl, authHeader, digestAuthorization, postJson, deviceHttp, testDeviceTcp };
