@@ -372,7 +372,7 @@ function niceLinearTryJsonEvents(device, chunk) {
     const parsed = JSON.parse(text);
     const events = Array.isArray(parsed) ? parsed : [parsed];
     events.forEach((payload) => {
-      const log = niceLinearEventToAccessLog(device, payload, { makeId, now, tenantId: tenant.id });
+      const log = normalizeAccessLogForApi(niceLinearEventToAccessLog(device, payload, { makeId, now, tenantId: tenant.id }), device);
       accessLogs.unshift(log);
     });
     if (events.length) savePersistentState("nice-linear-tcp-event");
@@ -853,7 +853,13 @@ function extensionStatus(tenantId = "", registrationMap = null) {
 
 function publicCamera(camera) {
   const { password: _password, ...safeCamera } = camera;
-  return safeCamera;
+  const linkedDevice = camera.deviceId ? devices.find((device) => device.id === camera.deviceId) : null;
+  const localGatewayPlayback = Boolean(linkedDevice?.useLocalGateway);
+  return {
+    ...safeCamera,
+    localGatewayPlayback,
+    playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : safeCamera.playbackMode || safeCamera.loadMethod || "HLS_GATEWAY"
+  };
 }
 
 function publicDevice(device) {
@@ -1094,6 +1100,7 @@ function publicInviteHtml(invite, origin) {
     unitForId,
     invitePublicUrl,
     invitePublicPath,
+    inviteGeofence,
     normalizeLookup,
     timeZone: process.env.DEVICE_TIME_ZONE || "America/Sao_Paulo"
   });
@@ -1528,7 +1535,7 @@ function gatewayWindowsInstallerPath() {
 }
 
 function gatewayWindowsZipPath() {
-  const filename = "CondoAccessGateway-0.4.1.zip";
+  const filename = "CondoAccessGateway-0.4.2.zip";
   return [
     path.join(process.cwd(), "apps", "api", "public", "downloads", filename),
     path.join(process.cwd(), "public", "downloads", filename)
@@ -1571,6 +1578,77 @@ function toMobileInvite(invite, origin) {
     link: invitePublicUrl(origin, invite.code || invite.id),
     qrCodeUrl: `${invitePublicUrl(origin, invite.code || invite.id)}/qr.png`
   };
+}
+
+function numericCoordinate(value) {
+  const parsed = Number(String(value ?? "").replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function distanceMetersBetween(left = {}, right = {}) {
+  const earthRadiusMeters = 6371000;
+  const leftLat = numericCoordinate(left.latitude);
+  const leftLng = numericCoordinate(left.longitude);
+  const rightLat = numericCoordinate(right.latitude);
+  const rightLng = numericCoordinate(right.longitude);
+  if ([leftLat, leftLng, rightLat, rightLng].some((value) => value === null)) return null;
+  const toRad = (value) => (value * Math.PI) / 180;
+  const deltaLat = toRad(rightLat - leftLat);
+  const deltaLng = toRad(rightLng - leftLng);
+  const startLat = toRad(leftLat);
+  const endLat = toRad(rightLat);
+  const haversine = Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(startLat) * Math.cos(endLat) * Math.sin(deltaLng / 2) ** 2;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function inviteGeofence(invite = {}) {
+  const tenantData = findTenant(invite.tenantId);
+  const latitude = numericCoordinate(tenantData.latitude);
+  const longitude = numericCoordinate(tenantData.longitude);
+  const radiusMeters = Math.max(
+    20,
+    Number(invite.geofenceRadiusMeters || tenantData.inviteGeofenceRadiusMeters || tenantData.geofenceRadiusMeters || process.env.INVITE_GEOFENCE_RADIUS_METERS || 200) || 200
+  );
+  return {
+    configured: latitude !== null && longitude !== null,
+    latitude,
+    longitude,
+    radiusMeters,
+    tenantName: tenantData.name || "Condominio"
+  };
+}
+
+function verifyInviteLocation(invite = {}, coordinates = {}) {
+  const geofence = inviteGeofence(invite);
+  if (!geofence.configured) {
+    return {
+      ...geofence,
+      allowed: false,
+      distanceMeters: null,
+      message: "Localizacao do condominio nao configurada. Procure a portaria."
+    };
+  }
+  const distanceMeters = distanceMetersBetween(
+    { latitude: geofence.latitude, longitude: geofence.longitude },
+    coordinates
+  );
+  const allowed = distanceMeters !== null && distanceMeters <= geofence.radiusMeters;
+  return {
+    ...geofence,
+    allowed,
+    distanceMeters,
+    message: allowed
+      ? "Localizacao confirmada. QR Code liberado."
+      : "Voce esta fora das proximidades do condominio. Aproxime-se da entrada autorizada para liberar o QR Code."
+  };
+}
+
+function inviteLocationTokenValid(invite = {}, token = "") {
+  const location = invite.location || {};
+  if (!location.allowed || !location.token || location.token !== token) return false;
+  const expiresAt = Date.parse(location.expiresAt || "");
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
 }
 
 function allTenants() {
@@ -2033,6 +2111,192 @@ function credentialKey(tenantId, type, value) {
   return `${tenantId}:${normalizeCredentialType(type)}:${normalizeLookup(value)}`;
 }
 
+function firstEventText(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function rawEventText(raw = {}, keys = []) {
+  for (const key of keys) {
+    const value = String(key).split(".").reduce((current, part) => current?.[part], raw);
+    const text = firstEventText(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function findAccessLogUnitByIdentity(tenantId = "", unitIdentity = "", blockName = "") {
+  const normalizedIdentity = normalizeLookup(unitIdentity);
+  const normalizedBlock = normalizeLookup(blockName);
+  if (!normalizedIdentity) return null;
+  const tenantUnits = unitList().filter((unit) => !tenantId || unit.tenantId === tenantId);
+  return tenantUnits.find((unit) =>
+    normalizeLookup(unit.unitId) === normalizedIdentity ||
+    normalizeLookup(unit.id) === normalizedIdentity ||
+    (
+      normalizeLookup(unit.unitNumber) === normalizedIdentity &&
+      (!normalizedBlock || normalizeLookup(unit.blockName) === normalizedBlock)
+    )
+  ) || null;
+}
+
+function accessLogDeviceId(log = {}, device = {}) {
+  return firstEventText(log.door?.deviceId, log.deviceId, log.rawEvent?.deviceId, log.rawEvent?.device_id, device.id);
+}
+
+function accessLogCredentialValues(log = {}) {
+  const raw = log.rawEvent || {};
+  return [
+    log.cardNo,
+    log.credential?.value,
+    log.credentialValue,
+    raw.cardNo,
+    raw.cardNumber,
+    raw.CardNo,
+    raw.card,
+    raw.tag,
+    raw.credential,
+    raw.credentialValue,
+    raw.qrCode,
+    raw.pin
+  ].map((value) => firstEventText(value)).filter(Boolean);
+}
+
+function findPersonForAccessLog(log = {}, device = {}) {
+  const tenantId = firstEventText(log.tenantId, device.tenantId, tenant.id);
+  const deviceId = accessLogDeviceId(log, device);
+  const raw = log.rawEvent || {};
+  const credentialValues = accessLogCredentialValues(log).map(normalizeLookup).filter(Boolean);
+  if (credentialValues.length) {
+    const credential = credentials.find((item) =>
+      (!tenantId || item.tenantId === tenantId) &&
+      (!deviceId || !item.deviceId || item.deviceId === deviceId) &&
+      credentialValues.includes(normalizeLookup(item.value))
+    );
+    if (credential?.personId) {
+      const person = residents.find((item) => item.id === credential.personId);
+      if (person) return person;
+    }
+    if (credential?.unitId || credential?.personName) {
+      const person = residents.find((item) =>
+        (!tenantId || item.tenantId === tenantId) &&
+        (
+          (credential.unitId && item.unitId === credential.unitId) ||
+          (credential.personName && normalizeLookup(item.name) === normalizeLookup(credential.personName))
+        )
+      );
+      if (person) return person;
+    }
+  }
+
+  const externalIds = [
+    log.userId,
+    log.user?.id,
+    raw.userId,
+    raw.UserID,
+    raw.userid,
+    raw.employeeNoString,
+    raw.employeeNo,
+    raw.personId,
+    raw.personExternalId,
+    raw.registration
+  ].map((value) => firstEventText(value)).map(normalizeLookup).filter(Boolean);
+  if (externalIds.length) {
+    const person = residents.find((item) =>
+      (!tenantId || item.tenantId === tenantId) &&
+      [item.id, item.cpf, item.rg, item.phone, item.email, item.externalId, item.controlIdUserId, item.hikvisionEmployeeNo]
+        .some((value) => externalIds.includes(normalizeLookup(value)))
+    );
+    if (person) return person;
+  }
+
+  const userName = normalizeLookup(firstEventText(
+    log.user?.name,
+    log.userName,
+    raw.userName,
+    raw.personName,
+    raw.name,
+    raw.employeeName,
+    raw.CardName,
+    raw.Info?.UserName
+  ));
+  if (userName) {
+    const matches = residents.filter((item) =>
+      (!tenantId || item.tenantId === tenantId) &&
+      normalizeLookup(item.name) === userName
+    );
+    if (matches.length === 1) return matches[0];
+  }
+
+  return null;
+}
+
+function findUnitForAccessLog(log = {}, device = {}) {
+  const tenantId = firstEventText(log.tenantId, device.tenantId, tenant.id);
+  const raw = log.rawEvent || {};
+  const blockName = firstEventText(log.unit?.block?.name, raw.blockName, raw.block, raw.floorNo);
+  const unitIdentity = firstEventText(
+    log.unitId,
+    log.unit?.id,
+    raw.unitId,
+    raw.unitID,
+    raw.unit_id,
+    raw.apartmentId
+  );
+  const directUnit = findAccessLogUnitByIdentity(tenantId, unitIdentity, blockName);
+  if (directUnit) return directUnit;
+
+  const unitNumber = firstEventText(
+    log.unit?.number,
+    raw.unitNumber,
+    raw.unit,
+    raw.apartment,
+    raw.apto,
+    raw.roomNo,
+    raw.RoomNo
+  );
+  const numberUnit = findAccessLogUnitByIdentity(tenantId, unitNumber, blockName);
+  if (numberUnit) return numberUnit;
+
+  const person = findPersonForAccessLog(log, device);
+  return person?.unitId ? unitForId(person.unitId) : null;
+}
+
+function normalizeAccessLogForApi(log = {}, device = {}) {
+  const person = findPersonForAccessLog(log, device);
+  const unit = findUnitForAccessLog(log, device) || unitForId(person?.unitId || "");
+  const tenantId = firstEventText(log.tenantId, unit?.tenantId, person?.tenantId, device.tenantId, tenant.id);
+  const raw = log.rawEvent || {};
+  const userName = firstEventText(
+    person?.name,
+    log.user?.name,
+    log.userName,
+    raw.userName,
+    raw.personName,
+    raw.name,
+    raw.employeeName,
+    raw.CardName,
+    raw.Info?.UserName,
+    "Usuario nao informado"
+  );
+
+  return {
+    ...log,
+    tenantId,
+    unitId: firstEventText(log.unitId, unit?.unitId),
+    unit: log.unit || (unit ? { number: unit.unitNumber, block: { name: unit.blockName || "" } } : undefined),
+    user: {
+      ...(log.user || {}),
+      id: firstEventText(log.user?.id, person?.id, log.userId),
+      name: userName
+    }
+  };
+}
+
 function findPersonForCredential(body = {}) {
   if (body.personId) {
     const person = residents.find((item) => item.id === body.personId);
@@ -2287,15 +2551,16 @@ function persistDeviceEvents(device, events = []) {
   let created = 0;
   let updated = 0;
   events.forEach((event) => {
-    const key = normalizeLookup(`${event.door?.deviceId || device.id}-${event.createdAt}-${event.userId}-${event.cardNo}-${event.reason}`);
+    const normalizedEvent = normalizeAccessLogForApi(event, device);
+    const key = normalizeLookup(`${normalizedEvent.door?.deviceId || device.id}-${normalizedEvent.createdAt}-${normalizedEvent.user?.id || normalizedEvent.userId || ""}-${normalizedEvent.cardNo || ""}-${normalizedEvent.reason || ""}`);
     const existing = accessLogs.find((log) =>
       normalizeLookup(`${log.door?.deviceId || ""}-${log.createdAt}-${log.user?.id || log.userId || ""}-${log.cardNo || ""}-${log.reason || ""}`) === key
     );
     if (existing) {
-      Object.assign(existing, { ...existing, ...event, id: existing.id, updatedAt: now() });
+      Object.assign(existing, { ...existing, ...normalizedEvent, id: existing.id, updatedAt: now() });
       updated += 1;
     } else {
-      accessLogs.unshift(event);
+      accessLogs.unshift(normalizedEvent);
       created += 1;
     }
   });
@@ -3189,6 +3454,7 @@ async function deviceIntegrationPayload(device, resource = "summary", { limit = 
     .map(integrationUserRecord);
   const scheduleRecords = directPayload?.schedules || integrationScheduleRecords(device);
   const eventRecords = directPayload?.events || integrationEventRecords(device, limit);
+  if (directPayload?.events?.length) persistDeviceEvents(device, directPayload.events);
   const resourcesPayload = {
     events: eventRecords,
     credentials: credentialRecords,
@@ -3276,6 +3542,7 @@ async function directHikvisionIntegrationPayload(device, resource = "summary", {
   if (snapshot.events?.length) await consumeSingleUseInvitesFromEvents(device, snapshot.events);
   const credentialRecords = hikvisionDeviceCredentials(snapshot.records || [], device);
   const eventRecords = (snapshot.events || []).slice(0, limit);
+  if (eventRecords.length) persistDeviceEvents(device, eventRecords);
   const resourcesPayload = {
     events: eventRecords,
     credentials: credentialRecords,
@@ -5205,8 +5472,11 @@ function toMobileCamera(camera, origin) {
   const channel = Number(camera.channel || camera.activeChannels?.[0]?.channel || 1);
   const streamKey = cameraStreamKey(camera, channel);
   const hlsUrl = `${origin}/streams/${streamKey}/index.m3u8`;
+  const snapshotUrl = `${origin}/api/cameras/${camera.id}/snapshot.jpg?channel=${channel}`;
+  const localGatewayPlayback = Boolean(device?.useLocalGateway);
   const exposeDirectRtsp = process.env.EXPOSE_CAMERA_RTSP === "true";
   const directRtspUrl = exposeDirectRtsp && camera.password ? cameraRtspUrl(camera) : "";
+  const playbackUrl = localGatewayPlayback ? snapshotUrl : hlsUrl;
   return {
     id: camera.id,
     tenantId: camera.tenantId,
@@ -5222,10 +5492,13 @@ function toMobileCamera(camera, origin) {
     channel,
     activeChannels: camera.activeChannels || [{ channel, description: camera.description || `Canal ${channel}` }],
     status: camera.status || "ONLINE",
-    rtspUrl: hlsUrl,
-    streamUrl: hlsUrl,
+    rtspUrl: playbackUrl,
+    streamUrl: playbackUrl,
+    hlsUrl,
+    snapshotUrl,
     directRtspUrl,
-    playbackMode: directRtspUrl ? "RTSP_NATIVE" : "HLS_GATEWAY",
+    playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : directRtspUrl ? "RTSP_NATIVE" : "HLS_GATEWAY",
+    localGatewayPlayback,
     deviceType: camera.deviceType || camera.type,
     deviceId: camera.deviceId,
     device: device ? {
@@ -5484,6 +5757,10 @@ function toMobileCameraFileRecord(camera) {
   const device = devices.find((item) => item.id === camera.deviceId);
   const channel = Number(camera.channel || camera.activeChannels?.[0]?.channel || 1);
   const streamKey = cameraStreamKey(camera, channel);
+  const localGatewayPlayback = Boolean(device?.useLocalGateway);
+  const hlsUrl = `/streams/${streamKey}/index.m3u8`;
+  const snapshotUrl = `/api/cameras/${camera.id}/snapshot.jpg?channel=${channel}`;
+  const playbackUrl = localGatewayPlayback ? snapshotUrl : hlsUrl;
   return {
     id: camera.id,
     tenantId: camera.tenantId || "",
@@ -5504,9 +5781,12 @@ function toMobileCameraFileRecord(camera) {
       }))
       : [{ channel, description: camera.description || `Canal ${channel}` }],
     status: camera.status || "ONLINE",
-    rtspUrl: `/streams/${streamKey}/index.m3u8`,
-    streamUrl: `/streams/${streamKey}/index.m3u8`,
-    playbackMode: "HLS_GATEWAY",
+    rtspUrl: playbackUrl,
+    streamUrl: playbackUrl,
+    hlsUrl,
+    snapshotUrl,
+    playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : "HLS_GATEWAY",
+    localGatewayPlayback,
     deviceType: camera.deviceType || camera.type || "",
     deviceId: camera.deviceId || "",
     device: device ? {
@@ -6196,7 +6476,7 @@ async function handleRequest(request, response) {
       return json(response, 401, { message: "Token do gateway Nice/Linear invalido" });
     }
     const payload = await readBody(request);
-    const log = niceLinearEventToAccessLog(device, payload, { makeId, now, tenantId: tenant.id });
+    const log = normalizeAccessLogForApi(niceLinearEventToAccessLog(device, payload, { makeId, now, tenantId: tenant.id }), device);
     accessLogs.unshift(log);
     savePersistentState("nice-linear-http-event");
     return json(response, 201, { ok: true, log });
@@ -6295,10 +6575,11 @@ async function handleRequest(request, response) {
     const from = Date.parse(url.searchParams.get("from") || "") || 0;
     const to = Date.parse(url.searchParams.get("to") || "") || 0;
     const limit = Number(url.searchParams.get("limit") || 50);
-    const filtered = accessLogs.filter((log) => {
+    const normalizedLogs = accessLogs.map((log) => normalizeAccessLogForApi(log));
+    const filtered = normalizedLogs.filter((log) => {
       const logTime = Date.parse(log.createdAt || log.occurredAt || "") || 0;
       return (!tenantId || log.tenantId === tenantId) &&
-        (!unitId || !log.unitId || log.unitId === unitId) &&
+        (!unitId || log.unitId === unitId) &&
         (!since || logTime > since) &&
         (!from || logTime >= from) &&
         (!to || logTime <= to);
@@ -6316,7 +6597,7 @@ async function handleRequest(request, response) {
     const contentType = request.headers["content-type"] || "";
     const raw = await readRawBody(request);
     const payload = parseSs3532MfwEventPayload(raw, contentType);
-    const log = ss3532MfwEventToAccessLog(device, payload, { makeId, tenantId: tenant.id, now });
+    const log = normalizeAccessLogForApi(ss3532MfwEventToAccessLog(device, payload, { makeId, tenantId: tenant.id, now }), device);
     accessLogs.unshift(log);
     savePersistentState("intelbras-biot-event");
 
@@ -6361,7 +6642,7 @@ async function handleRequest(request, response) {
     const stat = fs.statSync(packagePath);
     response.writeHead(200, {
       "Content-Type": "application/zip",
-      "Content-Disposition": 'attachment; filename="CondoAccessGateway-0.4.1.zip"',
+      "Content-Disposition": 'attachment; filename="CondoAccessGateway-0.4.2.zip"',
       "Content-Length": stat.size,
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
       "Pragma": "no-cache",
@@ -6563,18 +6844,19 @@ async function handleRequest(request, response) {
       decision: delivered ? "ALLOW" : queued ? "PENDING" : "DENY",
       reason: body.reason || "Acionamento remoto",
       createdAt: now(),
-      user: { name: body.userName || "App Condo Access" },
+      user: { id: body.userId || "", name: body.userName || "Usuario nao informado" },
       door: { id: action?.id || body.doorId, name: action?.name || "Porta", deviceId: device?.id, manufacturer: device?.manufacturer },
-      rawEvent: { gatewayMessage }
+      rawEvent: { gatewayMessage, unitId: body.unitId || "", userId: body.userId || "", userName: body.userName || "" }
     };
-    accessLogs.unshift(log);
+    const normalizedLog = normalizeAccessLogForApi(log, device);
+    accessLogs.unshift(normalizedLog);
     savePersistentState("access-open-door");
     return json(response, delivered ? 200 : queued ? 202 : 502, {
       ok: delivered,
       delivered,
       queued,
       message: gatewayMessage,
-      log
+      log: normalizedLog
     });
   }
 
@@ -6676,6 +6958,14 @@ async function handleRequest(request, response) {
     const code = decodeURIComponent(publicInviteQrMatch[1]);
     const invite = unitInvites.find((item) => (item.code || item.id) === code);
     if (!invite) return sendText(response, 404, "text/plain; charset=utf-8", "Convite nao encontrado");
+    const geofence = inviteGeofence(invite);
+    const locationToken = url.searchParams.get("locationToken") || "";
+    if (!geofence.configured) {
+      return sendText(response, 403, "text/plain; charset=utf-8", "Localizacao do condominio nao configurada");
+    }
+    if (!inviteLocationTokenValid(invite, locationToken)) {
+      return sendText(response, 403, "text/plain; charset=utf-8", "Localizacao do convidado ainda nao validada");
+    }
     const buffer = await QRCode.toBuffer(invite.qrPayload || code, {
       type: "png",
       width: 512,
@@ -6712,16 +7002,33 @@ async function handleRequest(request, response) {
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
       return json(response, 400, { message: "Localizacao invalida" });
     }
+    const verification = verifyInviteLocation(invite, { latitude, longitude });
+    const token = verification.allowed ? randomBytes(16).toString("hex") : "";
+    const expiresAt = verification.allowed ? new Date(Date.now() + 10 * 60 * 1000).toISOString() : "";
     invite.location = {
       latitude,
       longitude,
       accuracy: Number.isFinite(accuracy) ? accuracy : 0,
+      allowed: verification.allowed,
+      distanceMeters: verification.distanceMeters,
+      radiusMeters: verification.radiusMeters,
+      token,
+      expiresAt,
       capturedAt: now(),
       consent: true
     };
     invite.updatedAt = now();
     await savePersistentStateAndWait("invite-location-shared");
-    return json(response, 200, { ok: true, capturedAt: invite.location.capturedAt });
+    return json(response, 200, {
+      ok: true,
+      allowed: verification.allowed,
+      message: verification.message,
+      distanceMeters: verification.distanceMeters,
+      radiusMeters: verification.radiusMeters,
+      locationToken: token,
+      expiresAt,
+      capturedAt: invite.location.capturedAt
+    });
   }
 
   if (request.method === "GET" && url.pathname === "/api/common-areas") {
@@ -7064,6 +7371,17 @@ async function handleRequest(request, response) {
     if (!/^(index\.m3u8|segment_\d+\.ts)$/.test(filename)) {
       response.writeHead(404, { "Content-Type": "text/plain", "Access-Control-Allow-Origin": "*" });
       return response.end("Segmento nao encontrado");
+    }
+    const linkedDevice = camera.deviceId ? devices.find((item) => item.id === camera.deviceId) : null;
+    if (linkedDevice?.useLocalGateway && filename === "index.m3u8") {
+      const snapshotPath = `/api/cameras/${encodeURIComponent(camera.id)}/snapshot.jpg?channel=${requestedChannel || camera.channel || 1}`;
+      response.writeHead(302, {
+        Location: snapshotPath,
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+        "X-Condo-Access-Gateway": "snapshot"
+      });
+      return response.end();
     }
 
     try {

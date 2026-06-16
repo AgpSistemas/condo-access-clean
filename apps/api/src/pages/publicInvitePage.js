@@ -14,19 +14,24 @@ export function renderPublicInvitePage({
   unitForId,
   invitePublicUrl,
   invitePublicPath,
+  inviteGeofence,
   normalizeLookup,
   timeZone = "America/Sao_Paulo"
 }) {
   const mobileInvite = toMobileInvite(invite, origin);
   const inviteUnit = unitForId(invite.unitId);
+  const geofence = inviteGeofence(invite);
   const dateOptions = { dateStyle: "short", timeStyle: "short", timeZone };
   const validFrom = mobileInvite.validFrom ? new Date(mobileInvite.validFrom).toLocaleString("pt-BR", dateOptions) : "";
   const validUntil = mobileInvite.validUntil ? new Date(mobileInvite.validUntil).toLocaleString("pt-BR", dateOptions) : "";
-  const qrUrl = mobileInvite.qrCodeUrl || `${invitePublicUrl(origin, mobileInvite.code)}/qr.png`;
+  const baseQrUrl = mobileInvite.qrCodeUrl || `${invitePublicUrl(origin, mobileInvite.code)}/qr.png`;
   const unitLabel = inviteUnit
     ? `${inviteUnit.blockName ? `${inviteUnit.blockName} - ` : ""}Unidade ${inviteUnit.unitNumber || inviteUnit.unitId}`
     : mobileInvite.unit?.id || "-";
   const statusClass = normalizeLookup(mobileInvite.status || "Ativo").includes("ativ") ? "active" : "inactive";
+  const initialLocationText = geofence.configured
+    ? `Para liberar o QR Code, permita a localizacao. Raio autorizado: ${Math.round(geofence.radiusMeters)} m.`
+    : "Localizacao do condominio nao configurada. O QR Code nao pode ser liberado.";
 
   return `<!doctype html>
 <html lang="pt-BR">
@@ -52,7 +57,11 @@ export function renderPublicInvitePage({
     .status.inactive { background: rgba(255, 224, 224, .18); color: #ffe0e0; }
     .content { padding: 22px; }
     .instruction { margin: 0 auto 16px; max-width: 380px; color: #526c67; text-align: center; line-height: 1.5; }
+    .gate-message { margin: 0 auto 16px; max-width: 420px; padding: 14px; border: 1px solid #dcebe7; border-radius: 14px; background: #f7fbfa; color: #31515b; text-align: center; line-height: 1.45; font-weight: 800; }
+    .gate-message.error { border-color: #ffd2c2; background: #fff4ef; color: #9a3412; }
+    .gate-message.ok { border-color: #a9e4cf; background: #ebfbf4; color: #0b5f55; }
     .qr-shell { width: min(100%, 390px); margin: 0 auto; padding: 16px; border: 2px solid #b9ddd5; border-radius: 22px; background: #fff; box-shadow: inset 0 0 0 7px #f1f8f6, 0 12px 28px rgba(20, 73, 65, .1); }
+    .qr-shell.hidden, .scan-label.hidden, .actions.hidden { display: none; }
     .qr { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; }
     .scan-label { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 15px 0 0; color: #0b5f55; font-size: 13px; font-weight: 800; }
     .scan-label::before, .scan-label::after { content: ""; width: 30px; height: 1px; background: #b9d8d1; }
@@ -97,39 +106,65 @@ export function renderPublicInvitePage({
         <span class="status ${statusClass}">${escapeHtml(mobileInvite.status || "Ativo")}</span>
       </header>
       <div class="content">
-        <p class="instruction">Aproxime este QR Code da camera do leitor facial para liberar o acesso.</p>
-        <div class="qr-shell"><img class="qr" src="${escapeHtml(qrUrl)}" alt="QR Code do convite"></div>
-        <p class="scan-label">Apresente no leitor</p>
+        <p class="instruction">O QR Code sera liberado somente quando o convidado estiver nas proximidades do condominio.</p>
+        <p class="gate-message" id="gate-message">${escapeHtml(initialLocationText)}</p>
+        <div class="qr-shell hidden" id="qr-shell"><img class="qr" id="qr-image" alt="QR Code do convite"></div>
+        <p class="scan-label hidden" id="scan-label">Apresente no leitor</p>
         <div class="details">
           <div class="detail wide"><span>Destino</span><strong>${escapeHtml(unitLabel)}</strong></div>
           <div class="detail"><span>Entrada</span><strong>${escapeHtml(mobileInvite.door?.name || "Entrada")}</strong></div>
           ${validFrom ? `<div class="detail"><span>Inicio</span><strong>${escapeHtml(validFrom)}</strong></div>` : ""}
           ${validUntil ? `<div class="detail wide"><span>Valido ate</span><strong>${escapeHtml(validUntil)}</strong></div>` : ""}
         </div>
-        <div class="actions">
-          <a class="button primary" href="${escapeHtml(qrUrl)}" download="convite-condo-access.png">Salvar QR Code</a>
+        <div class="actions hidden" id="qr-actions">
+          <a class="button primary" id="save-qr" href="#" download="convite-condo-access.png">Salvar QR Code</a>
           <button class="button" type="button" onclick="window.print()">Imprimir convite</button>
-          <button class="button" id="share-location" type="button">Compartilhar localizacao</button>
         </div>
-        <p class="location-result" id="location-result">${invite.location?.capturedAt ? "Localizacao compartilhada com o condominio." : "Compartilhamento opcional e somente com sua autorizacao."}</p>
+        <p class="location-result" id="location-result">${escapeHtml(initialLocationText)}</p>
         <p class="code">Codigo do convite: ${escapeHtml(mobileInvite.code)}</p>
       </div>
     </section>
     <p class="footer">Convite pessoal e intransferivel. Utilize somente dentro do periodo autorizado.</p>
   </main>
   <script>
-    const locationButton = document.getElementById("share-location");
+    const geofenceConfigured = ${geofence.configured ? "true" : "false"};
+    const qrBaseUrl = ${JSON.stringify(baseQrUrl)};
+    const qrShell = document.getElementById("qr-shell");
+    const qrImage = document.getElementById("qr-image");
+    const qrActions = document.getElementById("qr-actions");
+    const saveQr = document.getElementById("save-qr");
+    const scanLabel = document.getElementById("scan-label");
+    const gateMessage = document.getElementById("gate-message");
     const locationResult = document.getElementById("location-result");
-    locationButton?.addEventListener("click", () => {
-      if (!navigator.geolocation) {
-        locationResult.textContent = "Localizacao nao suportada neste navegador.";
+
+    function setGateMessage(text, status) {
+      gateMessage.textContent = text;
+      gateMessage.className = "gate-message" + (status ? " " + status : "");
+      locationResult.textContent = text;
+    }
+
+    function showQr(token) {
+      const qrUrl = qrBaseUrl + "?locationToken=" + encodeURIComponent(token);
+      qrImage.src = qrUrl;
+      saveQr.href = qrUrl;
+      qrShell.classList.remove("hidden");
+      qrActions.classList.remove("hidden");
+      scanLabel.classList.remove("hidden");
+    }
+
+    function validateLocation() {
+      if (!geofenceConfigured) {
+        setGateMessage("Localizacao do condominio nao configurada. Procure a portaria.", "error");
         return;
       }
-      locationButton.disabled = true;
-      locationResult.textContent = "Solicitando permissao de localizacao...";
+      if (!navigator.geolocation) {
+        setGateMessage("Localizacao nao suportada neste navegador.", "error");
+        return;
+      }
+      setGateMessage("Solicitando permissao de localizacao...", "");
       navigator.geolocation.getCurrentPosition(async (position) => {
         try {
-          const response = await fetch("${invitePublicPath(mobileInvite.code)}/location", {
+          const response = await fetch(${JSON.stringify(`${invitePublicPath(mobileInvite.code)}/location`)}, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -138,17 +173,23 @@ export function renderPublicInvitePage({
               accuracy: position.coords.accuracy
             })
           });
-          if (!response.ok) throw new Error("Falha ao registrar");
-          locationResult.textContent = "Localizacao compartilhada com o condominio.";
-        } catch {
-          locationResult.textContent = "Nao foi possivel registrar a localizacao.";
-          locationButton.disabled = false;
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result.message || "Falha ao validar");
+          if (!result.allowed) {
+            setGateMessage(result.message || "Voce esta fora das proximidades do condominio.", "error");
+            return;
+          }
+          showQr(result.locationToken);
+          setGateMessage(result.message || "Localizacao confirmada. QR Code liberado.", "ok");
+        } catch (error) {
+          setGateMessage(error instanceof Error ? error.message : "Nao foi possivel validar a localizacao.", "error");
         }
       }, () => {
-        locationResult.textContent = "Permissao de localizacao nao concedida.";
-        locationButton.disabled = false;
+        setGateMessage("Permissao de localizacao nao concedida. O QR Code nao sera exibido.", "error");
       }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
-    });
+    }
+
+    validateLocation();
   </script>
 </body>
 </html>`;

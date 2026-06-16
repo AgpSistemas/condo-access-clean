@@ -27,6 +27,7 @@ $InstallDir = Join-Path $env:ProgramFiles "Condo Access Gateway"
 $DataDir = Join-Path $env:ProgramData "CondoAccessGateway"
 $TaskName = "CondoAccessGateway"
 $InstalledExe = Join-Path $InstallDir "CondoAccessGateway.exe"
+$InstalledFfmpeg = Join-Path $InstallDir "ffmpeg.exe"
 
 if (-not $InstallCode) { $InstallCode = Read-Host "Codigo de instalacao exibido no painel" }
 $InstallCode = ($InstallCode -replace "[^a-zA-Z0-9]", "").ToUpper()
@@ -69,14 +70,24 @@ Get-CimInstance Win32_Process |
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir | Out-Null
 $SourceExe = Join-Path $PSScriptRoot "CondoAccessGateway.exe"
+$SourceFfmpeg = Join-Path $PSScriptRoot "ffmpeg.exe"
 if (-not (Test-Path -LiteralPath $SourceExe)) {
   throw "CondoAccessGateway.exe nao encontrado. Extraia todo o ZIP em uma pasta e execute o run-install.cmd dentro da pasta extraida."
 }
+if (-not (Test-Path -LiteralPath $SourceFfmpeg)) {
+  throw "ffmpeg.exe nao encontrado. Baixe novamente o ZIP do Gateway e extraia todos os arquivos antes de executar o run-install.cmd."
+}
 Copy-Item -LiteralPath $SourceExe -Destination $InstalledExe -Force
+Copy-Item -LiteralPath $SourceFfmpeg -Destination $InstalledFfmpeg -Force
 $SourceHash = (Get-FileHash -LiteralPath $SourceExe -Algorithm SHA256).Hash
 $InstalledHash = (Get-FileHash -LiteralPath $InstalledExe -Algorithm SHA256).Hash
 if ($SourceHash -ne $InstalledHash) {
   throw "O executavel instalado nao corresponde a nova versao."
+}
+$SourceFfmpegHash = (Get-FileHash -LiteralPath $SourceFfmpeg -Algorithm SHA256).Hash
+$InstalledFfmpegHash = (Get-FileHash -LiteralPath $InstalledFfmpeg -Algorithm SHA256).Hash
+if ($SourceFfmpegHash -ne $InstalledFfmpegHash) {
+  throw "O ffmpeg instalado nao corresponde ao pacote baixado."
 }
 
 @{
