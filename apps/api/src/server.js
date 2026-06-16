@@ -3792,17 +3792,25 @@ function personForStoredCredential(credential = {}) {
 }
 
 function hikvisionEmployeeNoForCredential(credential = {}, person = null) {
-  const explicit = String(
+  const source = String(
     credential.personExternalId ||
     credential.externalId ||
     person?.externalId ||
     person?.hikvisionEmployeeNo ||
-    ""
+    person?.cpf ||
+    person?.rg ||
+    person?.phone ||
+    credential.unitId && unitForId(credential.unitId)?.unitNumber ||
+    person?.id ||
+    credential.personId ||
+    credential.id ||
+    credential.value ||
+    randomBytes(4).toString("hex")
   ).trim();
-  if (explicit) return explicit.slice(0, 32);
-  if (credential.type === "APP" && credential.value) return String(credential.value).trim().slice(0, 32);
-  const fallback = normalizeLookup(person?.cpf || person?.rg || person?.id || credential.personId || credential.personName || credential.id || credential.value);
-  return (fallback || normalizeLookup(credential.id || randomBytes(4).toString("hex"))).slice(0, 32);
+  const numeric = source.replace(/\D+/g, "");
+  if (numeric) return numeric.slice(0, 16);
+  const hash = createHash("md5").update(source || randomBytes(4).toString("hex")).digest("hex");
+  return String(parseInt(hash.slice(0, 8), 16)).slice(0, 10);
 }
 
 function hikvisionUserNameForCredential(credential = {}, person = null) {
