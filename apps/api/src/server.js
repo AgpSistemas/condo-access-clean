@@ -11,6 +11,12 @@ import QRCode from "qrcode";
 import { matchingSingleUseInvite } from "./modules/invites/lifecycle.js";
 import { createCommunityArea, createCommunityEvent } from "./modules/community/records.js";
 import { waitForGatewayCommand, requestGatewayCameraSnapshot } from "./modules/gateway/commandResult.js";
+import {
+  GATEWAY_WINDOWS_INSTALLER_FILENAME,
+  GATEWAY_WINDOWS_ZIP_FILENAME,
+  gatewayWindowsInstallerPath,
+  gatewayWindowsZipPath
+} from "./modules/gateway/downloads.js";
 import { renderPublicInvitePage } from "./pages/publicInvitePage.js";
 import {
   publicRestAccessProfiles,
@@ -41,6 +47,12 @@ import {
   openHikvisionIsapiDoor,
   testHikvisionIsapi
 } from "./integrations/hikvision/isapi.js";
+import {
+  hikvisionEmployeeNoForCredential,
+  hikvisionLocalDateTime,
+  hikvisionUserNameForCredential,
+  hikvisionUserPayload
+} from "./integrations/hikvision/credentials.js";
 import {
   INTELBRAS_MHDX_3116C_ADAPTER,
   matchesMhdx3116c,
@@ -1524,22 +1536,6 @@ async function waitForGatewayCommands(commands, timeoutMs = 15000) {
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   return pending;
-}
-
-function gatewayWindowsInstallerPath() {
-  const filename = "CondoAccessGateway-Setup.exe";
-  return [
-    path.join(process.cwd(), "apps", "api", "public", "downloads", filename),
-    path.join(process.cwd(), "public", "downloads", filename)
-  ].find((candidate) => fs.existsSync(candidate)) || "";
-}
-
-function gatewayWindowsZipPath() {
-  const filename = "CondoAccessGateway-0.4.3.zip";
-  return [
-    path.join(process.cwd(), "apps", "api", "public", "downloads", filename),
-    path.join(process.cwd(), "public", "downloads", filename)
-  ].find((candidate) => fs.existsSync(candidate)) || "";
 }
 
 function invitePublicPath(code) {
@@ -3791,68 +3787,6 @@ function personForStoredCredential(credential = {}) {
   ) || null;
 }
 
-function hikvisionEmployeeNoForCredential(credential = {}, person = null) {
-  const source = String(
-    credential.personExternalId ||
-    credential.externalId ||
-    person?.externalId ||
-    person?.hikvisionEmployeeNo ||
-    person?.cpf ||
-    person?.rg ||
-    person?.phone ||
-    credential.unitId && unitForId(credential.unitId)?.unitNumber ||
-    person?.id ||
-    credential.personId ||
-    credential.id ||
-    credential.value ||
-    randomBytes(4).toString("hex")
-  ).trim();
-  const numeric = source.replace(/\D+/g, "");
-  if (numeric) return numeric.slice(0, 16);
-  const hash = createHash("md5").update(source || randomBytes(4).toString("hex")).digest("hex");
-  return String(parseInt(hash.slice(0, 8), 16)).slice(0, 10);
-}
-
-function hikvisionUserNameForCredential(credential = {}, person = null) {
-  return String(person?.name || credential.personName || credential.valueLabel || credential.value || "Usuario").trim().slice(0, 96);
-}
-
-function hikvisionLocalDateTime(value = "", fallback = "") {
-  const parsed = Date.parse(String(value || ""));
-  if (!Number.isFinite(parsed)) return fallback;
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: process.env.DEVICE_TIME_ZONE || "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(new Date(parsed));
-  const valueFor = (type) => parts.find((part) => part.type === type)?.value || "";
-  return `${valueFor("year")}-${valueFor("month")}-${valueFor("day")}T${valueFor("hour")}:${valueFor("minute")}:${valueFor("second")}`;
-}
-
-function hikvisionUserPayload(credential = {}, person = null, employeeNo = "") {
-  const payload = {
-    employeeNo,
-    employeeNoString: employeeNo,
-    name: hikvisionUserNameForCredential(credential, person),
-    userType: "normal",
-    Valid: {
-      enable: true,
-      beginTime: hikvisionLocalDateTime(credential.validFrom, "2020-01-01T00:00:00"),
-      endTime: hikvisionLocalDateTime(credential.validUntil, "2037-12-31T23:59:59"),
-      timeType: "local"
-    },
-    doorRight: "1",
-    RightPlan: [{ doorNo: 1, planTemplateNo: "1" }]
-  };
-  if (credential.type === "PIN" && credential.value) payload.password = String(credential.value);
-  return payload;
-}
-
 async function hikvisionTryJsonWrites(device, attempts = []) {
   const errors = [];
   for (const attempt of attempts) {
@@ -4112,7 +4046,7 @@ async function hikvisionTryMultipartFaceWrite(device, faceInfo = {}, photoUrl = 
 
 async function sendHikvisionStoredCredential(device, credential = {}) {
   const person = personForStoredCredential(credential);
-  const employeeNo = hikvisionEmployeeNoForCredential(credential, person);
+  const employeeNo = hikvisionEmployeeNoForCredential(credential, person, { unitForId });
   const userResult = await ensureHikvisionCredentialUser(device, credential, person, employeeNo);
   if (!userResult.ok) {
     return {
@@ -4624,7 +4558,7 @@ async function deleteStoredCredentialFromDevice(device, credential = {}) {
   }
 
   const person = personForStoredCredential(credential);
-  const employeeNo = hikvisionEmployeeNoForCredential(credential, person);
+  const employeeNo = hikvisionEmployeeNoForCredential(credential, person, { unitForId });
   const type = normalizeCredentialType(credential.type);
   const attempts = type === "FACE"
     ? [{
@@ -6634,7 +6568,7 @@ async function handleRequest(request, response) {
     const stat = fs.statSync(installerPath);
     response.writeHead(200, {
       "Content-Type": "application/vnd.microsoft.portable-executable",
-      "Content-Disposition": 'attachment; filename="CondoAccessGateway-Setup.exe"',
+      "Content-Disposition": `attachment; filename="${GATEWAY_WINDOWS_INSTALLER_FILENAME}"`,
       "Content-Length": stat.size,
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
       "Pragma": "no-cache",
@@ -6650,7 +6584,7 @@ async function handleRequest(request, response) {
     const stat = fs.statSync(packagePath);
     response.writeHead(200, {
       "Content-Type": "application/zip",
-      "Content-Disposition": 'attachment; filename="CondoAccessGateway-0.4.3.zip"',
+      "Content-Disposition": `attachment; filename="${GATEWAY_WINDOWS_ZIP_FILENAME}"`,
       "Content-Length": stat.size,
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
       "Pragma": "no-cache",
