@@ -1218,6 +1218,7 @@ function deviceAdapter(device) {
 async function authenticatedDeviceRequest(device, targetPath, {
   method = "GET",
   body = undefined,
+  bodyBase64 = "",
   contentType = "application/xml",
   timeoutMs = 7000,
   responseType = "text"
@@ -1228,7 +1229,7 @@ async function authenticatedDeviceRequest(device, targetPath, {
 
   if (device.useLocalGateway) {
     const command = queueGatewayCommand(device, 1, {
-      request: { path: targetPath, method, body, contentType, timeoutMs, responseType }
+      request: { path: targetPath, method, body, bodyBase64, contentType, timeoutMs, responseType }
     }, "DEVICE_HTTP");
     if (!command) throw new Error("Gateway local nao configurado para este condominio");
     await waitForGatewayCommands([command], Math.max(timeoutMs + 10000, 20000));
@@ -1249,12 +1250,13 @@ async function authenticatedDeviceRequest(device, targetPath, {
 
   const targetUrl = `${deviceBaseUrl(device)}${targetPath}`;
   const headers = await hikvisionAuthHeaders(device, targetUrl, method);
+  const requestBody = bodyBase64 ? Buffer.from(bodyBase64, "base64") : body;
   const request = withTimeout(timeoutMs);
   try {
     const response = await fetch(targetUrl, {
       method,
-      headers: body ? { ...headers, "Content-Type": contentType } : headers,
-      body,
+      headers: requestBody ? { ...headers, "Content-Type": contentType } : headers,
+      body: requestBody,
       signal: request.signal
     });
     const responseContentType = response.headers.get("content-type") || "";
@@ -1581,6 +1583,7 @@ function numericCoordinate(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Calcula distancia em metros entre condominio e convidado para liberar ou bloquear o QR do convite.
 function distanceMetersBetween(left = {}, right = {}) {
   const earthRadiusMeters = 6371000;
   const leftLat = numericCoordinate(left.latitude);
@@ -1598,6 +1601,7 @@ function distanceMetersBetween(left = {}, right = {}) {
   return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
 }
 
+// Centraliza a regra de raio do convite: convite > condominio > ambiente > padrao seguro.
 function inviteGeofence(invite = {}) {
   const tenantData = findTenant(invite.tenantId);
   const latitude = numericCoordinate(tenantData.latitude);
@@ -1615,6 +1619,7 @@ function inviteGeofence(invite = {}) {
   };
 }
 
+// Decide se a localizacao informada pelo navegador esta dentro da area permitida do condominio.
 function verifyInviteLocation(invite = {}, coordinates = {}) {
   const geofence = inviteGeofence(invite);
   if (!geofence.configured) {
@@ -1640,6 +1645,7 @@ function verifyInviteLocation(invite = {}, coordinates = {}) {
   };
 }
 
+// O QR so e entregue quando o token temporario foi emitido por uma validacao de localizacao aprovada.
 function inviteLocationTokenValid(invite = {}, token = "") {
   const location = invite.location || {};
   if (!location.allowed || !location.token || location.token !== token) return false;
@@ -3973,40 +3979,49 @@ function devicePhotoReferenceAllowed(device, photoUrl = "") {
   }
 }
 
-async function hikvisionMultipartFaceWrite(device, faceInfo = {}, photo = {}, imageField = "FaceImage") {
-  const pathName = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
-  const targetUrl = `${deviceBaseUrl(device)}${pathName}`;
-  const label = `Hikvision FDLib multipart (${imageField})`;
-  const headers = await hikvisionAuthHeaders(device, targetUrl, "POST");
-  const form = new FormData();
-  form.append("FaceDataRecord", new Blob([JSON.stringify({
+function multipartPartHeader(name, filename = "", contentType = "") {
+  const lines = [`Content-Disposition: form-data; name="${name}"${filename ? `; filename="${filename}"` : ""}`];
+  if (contentType) lines.push(`Content-Type: ${contentType}`);
+  return `${lines.join("\r\n")}\r\n\r\n`;
+}
+
+function hikvisionFaceMultipartBody(faceInfo = {}, photo = {}, imageField = "FaceImage") {
+  const boundary = `----CondoAccessFace${randomBytes(8).toString("hex")}`;
+  const faceRecord = JSON.stringify({
     faceLibType: faceInfo.faceLibType || "blackFD",
     FDID: faceInfo.FDID || "1",
     FPID: faceInfo.FPID,
     name: faceInfo.name
-  })], { type: "application/json" }), "FaceDataRecord.json");
-  form.append(imageField, new Blob([photo.buffer], { type: photo.mimeType || "image/jpeg" }), "face.jpg");
-  const request = withTimeout(15000);
-  try {
-    const response = await fetch(targetUrl, {
-      method: "POST",
-      headers,
-      body: form,
-      signal: request.signal
-    });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`Equipamento respondeu ${response.status}: ${text.slice(0, 240)}`);
-    const responseError = hikvisionResponseError(text);
-    if (responseError) throw new Error(responseError);
-    return {
-      ok: true,
-      status: response.status,
-      message: `Upload facial multipart respondeu ${response.status}`,
-      attempts: [{ label, path: pathName, ok: true, status: response.status }]
-    };
-  } finally {
-    request.done();
-  }
+  });
+  const chunks = [
+    Buffer.from(`--${boundary}\r\n${multipartPartHeader("FaceDataRecord", "FaceDataRecord.json", "application/json")}`, "utf8"),
+    Buffer.from(faceRecord, "utf8"),
+    Buffer.from(`\r\n--${boundary}\r\n${multipartPartHeader(imageField, "face.jpg", photo.mimeType || "image/jpeg")}`, "utf8"),
+    photo.buffer,
+    Buffer.from(`\r\n--${boundary}--\r\n`, "utf8")
+  ];
+  return {
+    boundary,
+    buffer: Buffer.concat(chunks)
+  };
+}
+
+async function hikvisionMultipartFaceWrite(device, faceInfo = {}, photo = {}, imageField = "FaceImage") {
+  const pathName = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
+  const label = `Hikvision FDLib multipart (${imageField})`;
+  const multipart = hikvisionFaceMultipartBody(faceInfo, photo, imageField);
+  const result = await authenticatedDeviceRequest(device, pathName, {
+    method: "POST",
+    bodyBase64: multipart.buffer.toString("base64"),
+    contentType: `multipart/form-data; boundary=${multipart.boundary}`,
+    timeoutMs: 15000
+  });
+  return {
+    ok: true,
+    status: result.status,
+    message: `Upload facial multipart respondeu ${result.status}`,
+    attempts: [{ label, path: pathName, ok: true, status: result.status }]
+  };
 }
 
 async function hikvisionTryMultipartFaceWrite(device, faceInfo = {}, photoUrl = "") {

@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const GATEWAY_WINDOWS_VERSION = "0.4.3";
+const GATEWAY_WINDOWS_VERSION = "0.4.4";
 const GATEWAY_WINDOWS_INSTALLER_FILENAME = "CondoAccessGateway-Setup.exe";
 const GATEWAY_WINDOWS_ZIP_FILENAME = `CondoAccessGateway-${GATEWAY_WINDOWS_VERSION}.zip`;
 
+// Procura o artefato em dev e em producao para a mesma rota de download funcionar nos dois ambientes.
 function gatewayDownloadPath(filename) {
   return [
     path.join(process.cwd(), "apps", "api", "public", "downloads", filename),

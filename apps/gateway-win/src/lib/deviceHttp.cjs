@@ -94,13 +94,16 @@ async function deviceHttp(command) {
   const password = device.password || "";
   const auth = await authHeader(targetUrl, method, username, password);
   const headers = { ...auth.headers };
-  if (request.body !== undefined && request.body !== null) {
+  const requestBody = request.bodyBase64
+    ? Buffer.from(String(request.bodyBase64), "base64")
+    : request.body;
+  if (requestBody !== undefined && requestBody !== null) {
     headers["Content-Type"] = request.contentType || "application/json";
   }
   let response = await fetchDevice(targetUrl, {
     method,
     headers,
-    body: request.body === undefined || request.body === null ? undefined : request.body,
+    body: requestBody === undefined || requestBody === null ? undefined : requestBody,
     timeoutMs: request.timeoutMs
   });
   let authMode = auth.mode;
@@ -111,7 +114,7 @@ async function deviceHttp(command) {
         ...headers,
         ...basicHeader(username, password)
       },
-      body: request.body === undefined || request.body === null ? undefined : request.body,
+      body: requestBody === undefined || requestBody === null ? undefined : requestBody,
       timeoutMs: request.timeoutMs
     });
     authMode = "digest-basic-fallback";

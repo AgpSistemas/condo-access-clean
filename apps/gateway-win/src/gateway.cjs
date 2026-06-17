@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { executeCommand } = require("./commands/router.cjs");
 
-const VERSION = "0.4.3";
+const VERSION = "0.4.4";
 const home = process.env.PROGRAMDATA
   ? path.join(process.env.PROGRAMDATA, "CondoAccessGateway")
   : path.join(os.homedir(), ".condo-access-gateway");
