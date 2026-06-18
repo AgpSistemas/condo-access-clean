@@ -57,6 +57,18 @@ function controlIdCreateOrModifyBody(object = "", id, value = {}) {
   };
 }
 
+function controlIdModifyBody(object = "", id, value = {}) {
+  return {
+    object,
+    values: value,
+    where: { [object]: { id } }
+  };
+}
+
+function isControlIdInvalidCommand(error) {
+  return /invalid command/i.test(String(error?.message || error || ""));
+}
+
 function controlIdVehicleTagRecords(snapshot = {}, device = {}) {
   const objects = snapshot.objects || {};
   const users = objects.users || [];
@@ -106,17 +118,45 @@ async function upsertControlIdVehicleTag({
     throw new Error(`A tag ${value} ja pertence a outro usuario no Control iD`);
   }
 
-  const pathName = existing?.id ? "/create_or_modify_objects.fcgi" : "/create_objects.fcgi";
   const objectValue = {
     value: normalized.value,
     user_id: userId
   };
-  const result = await post(device, session, pathName, existing?.id
-    ? controlIdCreateOrModifyBody(normalized.object, existing.id, objectValue)
-    : { object: normalized.object, values: [objectValue] });
+
+  if (existing?.id) {
+    try {
+      await post(
+        device,
+        session,
+        "/create_or_modify_objects.fcgi",
+        controlIdCreateOrModifyBody(normalized.object, existing.id, objectValue)
+      );
+      return {
+        id: existing.id,
+        ...normalized
+      };
+    } catch (error) {
+      if (!isControlIdInvalidCommand(error)) throw error;
+      await post(
+        device,
+        session,
+        "/modify_objects.fcgi",
+        controlIdModifyBody(normalized.object, existing.id, objectValue)
+      );
+      return {
+        id: existing.id,
+        ...normalized
+      };
+    }
+  }
+
+  const result = await post(device, session, "/create_objects.fcgi", {
+    object: normalized.object,
+    values: [objectValue]
+  });
 
   return {
-    id: existing?.id || result.payload?.ids?.[0] || "",
+    id: result.payload?.ids?.[0] || "",
     ...normalized
   };
 }

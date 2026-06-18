@@ -23,6 +23,31 @@ test("atualiza tag Control iD existente usando create_or_modify_objects", async 
   assert.equal(tag.id, 77);
 });
 
+test("usa modify_objects quando firmware nao aceita create_or_modify_objects", async () => {
+  const calls = [];
+  const tag = await upsertControlIdVehicleTag({
+    device: { controlIdUhfMode: "EXTENDED" },
+    session: "session-1",
+    userId: 123,
+    value: "ABCD1234",
+    loadObjects: async () => [{ id: 77, value: "ABCD1234", user_id: 123 }],
+    post: async (_device, _session, pathName, body) => {
+      calls.push({ pathName, body });
+      if (pathName === "/create_or_modify_objects.fcgi") {
+        throw new Error('Control iD /create_or_modify_objects.fcgi respondeu 400: {"error":"Invalid command: create_or_modify_objects","code":1}');
+      }
+      return { payload: {} };
+    }
+  });
+
+  assert.equal(calls[0].pathName, "/create_or_modify_objects.fcgi");
+  assert.equal(calls[1].pathName, "/modify_objects.fcgi");
+  assert.equal(calls[1].body.object, "uhf_tags");
+  assert.deepEqual(calls[1].body.values, { value: "ABCD1234", user_id: 123 });
+  assert.deepEqual(calls[1].body.where, { uhf_tags: { id: 77 } });
+  assert.equal(tag.id, 77);
+});
+
 test("cria tag Control iD nova usando create_objects", async () => {
   const calls = [];
   const tag = await upsertControlIdVehicleTag({

@@ -4586,6 +4586,19 @@ function controlIdCreateOrModifyBody(object = "", id, value = {}) {
   };
 }
 
+function controlIdModifyBody(object = "", id, value = {}) {
+  const { id: _id, ...fields } = value || {};
+  return {
+    object,
+    values: fields,
+    where: { [object]: { id } }
+  };
+}
+
+function isControlIdInvalidCommand(error) {
+  return /invalid command/i.test(String(error?.message || error || ""));
+}
+
 async function ensureControlIdCredentialUser(device, session, credential = {}, person = null) {
   const registration = controlIdUserRegistration(credential, person);
   const name = String(person?.name || credential.personName || credential.valueLabel || "Usuario").trim().slice(0, 100);
@@ -4602,7 +4615,12 @@ async function ensureControlIdCredentialUser(device, session, credential = {}, p
     end_time: controlIdUnixTimestamp(credential.validUntil)
   };
   if (existing?.id) {
-    await controlIdPost(device, session, "/create_or_modify_objects.fcgi", controlIdCreateOrModifyBody("users", existing.id, value));
+    try {
+      await controlIdPost(device, session, "/create_or_modify_objects.fcgi", controlIdCreateOrModifyBody("users", existing.id, value));
+    } catch (error) {
+      if (!isControlIdInvalidCommand(error)) throw error;
+      await controlIdPost(device, session, "/modify_objects.fcgi", controlIdModifyBody("users", existing.id, value));
+    }
     return { ...existing, ...value };
   }
 
@@ -4644,11 +4662,17 @@ async function upsertControlIdCredentialObject(device, session, object, userId, 
   const existing = records.find((record) =>
     String(record.value) === String(value) || (object === "pins" && String(record.user_id) === String(userId))
   );
-  const pathName = existing?.id ? "/create_or_modify_objects.fcgi" : "/create_objects.fcgi";
   const objectValue = { value, user_id: userId };
-  await controlIdPost(device, session, pathName, existing?.id
-    ? controlIdCreateOrModifyBody(object, existing.id, objectValue)
-    : { object, values: [objectValue] });
+  if (existing?.id) {
+    try {
+      await controlIdPost(device, session, "/create_or_modify_objects.fcgi", controlIdCreateOrModifyBody(object, existing.id, objectValue));
+    } catch (error) {
+      if (!isControlIdInvalidCommand(error)) throw error;
+      await controlIdPost(device, session, "/modify_objects.fcgi", controlIdModifyBody(object, existing.id, objectValue));
+    }
+    return existing;
+  }
+  await controlIdPost(device, session, "/create_objects.fcgi", { object, values: [objectValue] });
   return existing;
 }
 
@@ -4769,7 +4793,7 @@ async function sendControlIdStoredCredential(device, credential = {}) {
   const type = normalizeCredentialType(credential.type);
   const attempts = [{
     label: "Control iD usuario",
-    path: "/create_objects.fcgi|/create_or_modify_objects.fcgi:users",
+    path: "/create_objects.fcgi|/create_or_modify_objects.fcgi|/modify_objects.fcgi:users",
     ok: true
   }];
   if (groupId) {
@@ -4848,14 +4872,14 @@ async function sendControlIdStoredCredential(device, credential = {}) {
       acceptedObjects.push(candidateObject);
       attempts.push({
         label: `Control iD ${candidateObject}`,
-        path: `/create_objects.fcgi|/create_or_modify_objects.fcgi:${candidateObject}`,
+        path: `/create_objects.fcgi|/create_or_modify_objects.fcgi|/modify_objects.fcgi:${candidateObject}`,
         ok: true
       });
     } catch (error) {
       objectErrors.push(`${candidateObject}: ${error instanceof Error ? error.message : "falha"}`);
       attempts.push({
         label: `Control iD ${candidateObject}`,
-        path: `/create_objects.fcgi|/create_or_modify_objects.fcgi:${candidateObject}`,
+        path: `/create_objects.fcgi|/create_or_modify_objects.fcgi|/modify_objects.fcgi:${candidateObject}`,
         ok: false,
         error: error instanceof Error ? error.message : "Falha ao gravar credencial"
       });
