@@ -1467,7 +1467,11 @@ function App() {
       canvas.width = outputSize;
       canvas.height = outputSize;
       const context = canvas.getContext("2d");
-      context.drawImage(image, sourceX, sourceY, side, side, 0, 0, outputSize, outputSize);
+      context.fillStyle = "#f2f2f2";
+      context.fillRect(0, 0, outputSize, outputSize);
+      const faceMargin = Math.round(outputSize * 0.12);
+      const faceSize = outputSize - (faceMargin * 2);
+      context.drawImage(image, sourceX, sourceY, side, side, faceMargin, faceMargin, faceSize, faceSize);
       const photoUrl = canvas.toDataURL("image/jpeg", 0.82);
       if (photoUrl.length > 1000000) {
         setMessage("A foto ficou muito grande. Selecione uma imagem mais simples ou com menor resolucao.");
