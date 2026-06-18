@@ -1,5 +1,5 @@
 import Hls from "hls.js";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Camera, Plus, RadioTower, Save, Trash2 } from "lucide-react";
 import { apiUrl, homologatedModelOptions, intelbrasCameraDefaults } from "../config/appConfig.jsx";
 import { Field } from "./common.jsx";
@@ -11,10 +11,40 @@ function cameraStreamKey(camera, channel) {
   return selectedChannel ? `${camera.id}--ch-${selectedChannel}` : camera.id;
 }
 
-function cameraSnapshotUrl(camera, channel) {
+function cameraSnapshotUrl(camera, channel, tick = "") {
   if (!camera) return "";
   const selectedChannel = Number(channel || camera.channel || camera.activeChannels?.[0]?.channel || 1);
-  return `${apiUrl}/api/cameras/${camera.id}/snapshot.jpg?channel=${selectedChannel}`;
+  const cacheKey = tick ? `&t=${encodeURIComponent(tick)}` : "";
+  return `${apiUrl}/api/cameras/${camera.id}/snapshot.jpg?channel=${selectedChannel}${cacheKey}`;
+}
+
+function cameraLinkedDevice(camera, devices = []) {
+  return camera?.deviceId ? devices.find((device) => device.id === camera.deviceId) || null : null;
+}
+
+function cameraUsesLocalGateway(camera, devices = []) {
+  const linkedDevice = cameraLinkedDevice(camera, devices);
+  return Boolean(
+    camera?.localGatewayPlayback ||
+    camera?.localGatewayConnection ||
+    camera?.useLocalGateway ||
+    String(camera?.connectionMode || "").toUpperCase() === "LOCAL_GATEWAY" ||
+    linkedDevice?.useLocalGateway
+  );
+}
+
+function cameraConnectionInfo(camera, devices = []) {
+  const localGateway = cameraUsesLocalGateway(camera, devices);
+  return {
+    localGateway,
+    label: localGateway ? "Gateway local" : "API direta",
+    playbackLabel: localGateway ? "HLS pelo gateway" : "HLS pela API"
+  };
+}
+
+function cameraUsesSnapshotPlayback(camera, devices = []) {
+  const mode = String(camera?.playbackMode || camera?.loadMethod || "").toUpperCase();
+  return mode === "SNAPSHOT_GATEWAY" || camera?.localGatewayPlayback === true;
 }
 
 function cameraChannels(camera) {
@@ -61,12 +91,23 @@ function groupCameraDevices(cameras) {
 function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
   const videoRef = useRef(null);
   const [status, setStatus] = useState("Carregando camera...");
+  const [snapshotTick, setSnapshotTick] = useState(Date.now());
   const selectedChannel = Number(channel || camera?.channel || camera?.activeChannels?.[0]?.channel || 1);
   const streamKey = cameraStreamKey(camera, selectedChannel);
   const streamUrl = camera ? `${apiUrl}/streams/${streamKey}/index.m3u8` : "";
+  const usesSnapshotPlayback = cameraUsesSnapshotPlayback(camera);
+
+  useEffect(() => {
+    if (!usesSnapshotPlayback || !camera) return undefined;
+    setStatus("Atualizando imagem pelo Gateway local...");
+    setSnapshotTick(Date.now());
+    const timer = window.setInterval(() => setSnapshotTick(Date.now()), 4000);
+    return () => window.clearInterval(timer);
+  }, [usesSnapshotPlayback, camera?.id, selectedChannel]);
 
   useEffect(() => {
     const video = videoRef.current;
+    if (usesSnapshotPlayback) return undefined;
     if (!video || !streamUrl) return undefined;
 
     let hls = null;
@@ -153,15 +194,15 @@ function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
         void stopCameraStream(streamKey).catch(() => undefined);
       }
     };
-  }, [streamKey, streamUrl]);
+  }, [streamKey, streamUrl, usesSnapshotPlayback]);
 
   if (!camera) {
     return <div className="empty-state">Selecione uma camera do condominio.</div>;
   }
 
   const failed = status.startsWith("Falha") || status.startsWith("Nao foi possivel");
-  const connected = status === "Stream conectado";
-  const previewImageUrl = cameraSnapshotUrl(camera, selectedChannel);
+  const connected = usesSnapshotPlayback ? status.startsWith("Imagem") : status === "Stream conectado";
+  const previewImageUrl = cameraSnapshotUrl(camera, selectedChannel, usesSnapshotPlayback ? snapshotTick : "");
 
   return (
     <div className="camera-preview">
@@ -178,10 +219,16 @@ function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
         }}
         aria-label={frameLabel}
       >
-        <img className="camera-preview-snapshot" src={previewImageUrl} alt={camera.description || camera.name || "Camera"} />
-        <video ref={videoRef} controls muted playsInline autoPlay />
+        <img
+          className="camera-preview-snapshot"
+          src={previewImageUrl}
+          alt={camera.description || camera.name || "Camera"}
+          onLoad={() => usesSnapshotPlayback && setStatus("Imagem atualizada pelo Gateway local")}
+          onError={() => usesSnapshotPlayback && setStatus("Falha ao carregar snapshot pelo Gateway local")}
+        />
+        {!usesSnapshotPlayback && <video ref={videoRef} controls muted playsInline autoPlay />}
         <span className={`camera-live-badge ${connected ? "online" : failed ? "offline" : ""}`}>
-          {connected ? "AO VIVO" : failed ? "Falha ao carregar" : "Carregando"}
+          {connected ? (usesSnapshotPlayback ? "GATEWAY" : "AO VIVO") : failed ? "Falha ao carregar" : "Carregando"}
         </span>
       </div>
       <div className="camera-preview-meta">
@@ -191,7 +238,9 @@ function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
       </div>
       <div className="camera-preview-actions">
         <a className="secondary-button" href={`${apiUrl}/api/cameras/${camera.id}/vlc.m3u`} download><Camera size={16} /> Abrir no VLC</a>
-        <a className="secondary-button" href={streamUrl} target="_blank" rel="noreferrer"><Camera size={16} /> HLS</a>
+        {usesSnapshotPlayback
+          ? <a className="secondary-button" href={previewImageUrl} target="_blank" rel="noreferrer"><Camera size={16} /> Snapshot</a>
+          : <a className="secondary-button" href={streamUrl} target="_blank" rel="noreferrer"><Camera size={16} /> HLS</a>}
       </div>
     </div>
   );
@@ -202,11 +251,22 @@ function CameraTile({ camera, channel, description, index, onSelect }) {
   const selectedChannel = Number(channel || camera?.channel || camera?.activeChannels?.[0]?.channel || index + 1);
   const streamKey = cameraStreamKey(camera, selectedChannel);
   const streamUrl = camera ? `${apiUrl}/streams/${streamKey}/index.m3u8` : "";
-  const snapshotUrl = cameraSnapshotUrl(camera, selectedChannel);
+  const usesSnapshotPlayback = cameraUsesSnapshotPlayback(camera);
+  const [snapshotTick, setSnapshotTick] = useState(Date.now());
+  const snapshotUrl = cameraSnapshotUrl(camera, selectedChannel, usesSnapshotPlayback ? snapshotTick : "");
   const [status, setStatus] = useState("loading");
 
   useEffect(() => {
+    if (!usesSnapshotPlayback || !camera) return undefined;
+    setStatus("loading");
+    setSnapshotTick(Date.now());
+    const timer = window.setInterval(() => setSnapshotTick(Date.now()), 5000);
+    return () => window.clearInterval(timer);
+  }, [usesSnapshotPlayback, camera?.id, selectedChannel]);
+
+  useEffect(() => {
     const video = videoRef.current;
+    if (usesSnapshotPlayback) return undefined;
     if (!video || !streamUrl) return undefined;
 
     let hls = null;
@@ -267,16 +327,23 @@ function CameraTile({ camera, channel, description, index, onSelect }) {
         void stopCameraStream(streamKey).catch(() => undefined);
       }
     };
-  }, [streamKey, streamUrl]);
+  }, [streamKey, streamUrl, usesSnapshotPlayback]);
 
   if (!camera) return null;
 
   return (
     <button className={`camera-tile live-tile tile-tone-${index % 4}`} type="button" onClick={onSelect}>
-      <img className="camera-tile-snapshot" src={snapshotUrl} alt={description || camera.description || camera.name || `Camera ${index + 1}`} loading="eager" />
-      <video ref={videoRef} className="camera-tile-video" muted playsInline autoPlay />
+      <img
+        className="camera-tile-snapshot"
+        src={snapshotUrl}
+        alt={description || camera.description || camera.name || `Camera ${index + 1}`}
+        loading="eager"
+        onLoad={() => usesSnapshotPlayback && setStatus("online")}
+        onError={() => usesSnapshotPlayback && setStatus("offline")}
+      />
+      {!usesSnapshotPlayback && <video ref={videoRef} className="camera-tile-video" muted playsInline autoPlay />}
       <span className="camera-tile-channel">Canal {selectedChannel}</span>
-      <span className={`camera-tile-live ${status}`}>{status === "online" ? "AO VIVO" : status === "offline" ? "Falha" : "Carregando"}</span>
+      <span className={`camera-tile-live ${status}`}>{status === "online" ? (usesSnapshotPlayback ? "GATEWAY" : "AO VIVO") : status === "offline" ? "Falha" : "Carregando"}</span>
       <strong>{description || camera.description || camera.name || `Camera ${index + 1}`}</strong>
     </button>
   );
@@ -286,6 +353,7 @@ function CameraTile({ camera, channel, description, index, onSelect }) {
 function CameraConfig({ cameras, devices = [], form, setForm, showForm, onSave, onEdit, onNew, onDelete }) {
   const isMultiChannel = form.type === "DVR" || form.type === "NVR";
   const cameraModelOptions = homologatedModelOptions(form.manufacturer, form.type);
+  const selectedConnection = useMemo(() => cameraConnectionInfo(form, devices), [devices, form.deviceId, form.connectionMode, form.localGatewayConnection, form.localGatewayPlayback, form.useLocalGateway]);
   return (
     <section className="config-stack">
       {showForm && <form className="nested-form" onSubmit={onSave}>
@@ -332,37 +400,41 @@ function CameraConfig({ cameras, devices = [], form, setForm, showForm, onSave, 
           <Field label="Stream"><select name="stream" value={form.stream} onChange={(event) => setForm((current) => ({ ...current, stream: event.target.value }))}><option value="MAIN">Principal</option><option value="SUB">Substream</option></select></Field>
           <Field label="Proporcao"><select name="aspectRatio" value={form.aspectRatio} onChange={(event) => setForm((current) => ({ ...current, aspectRatio: event.target.value }))}><option value="WIDESCREEN">16:9</option><option value="STANDARD">4:3</option><option value="PORTRAIT">Vertical</option></select></Field>
           <Field label="Metodo no app"><select name="loadMethod" value={form.loadMethod} onChange={(event) => setForm((current) => ({ ...current, loadMethod: event.target.value }))}><option value="SNAPSHOT_TEMPO_REAL">RTSP tempo real</option><option value="HLS_GATEWAY">HLS pela API</option><option value="CLOUD">Cloud/fabricante</option></select></Field>
+          <Field label="Conexao"><input value={`${selectedConnection.label} - ${selectedConnection.playbackLabel}`} readOnly /></Field>
           <Field label="Captura de foto"><select name="photoCaptureEnabled" value={form.photoCaptureEnabled ? "true" : "false"} onChange={(event) => setForm((current) => ({ ...current, photoCaptureEnabled: event.target.value === "true" }))}><option value="false">Desativada</option><option value="true">Ativada</option></select></Field>
         </div>
       </form>}
       {cameras.length ? (
         <div className="camera-card-grid">
-          {cameras.map((camera) => (
-            <article className="config-card camera-card" key={camera.id}>
-              <header>
-                <div>
-                  <strong>{camera.description || camera.name}</strong>
-                  <span>{camera.manufacturer} {camera.model || ""} - {camera.type}</span>
+          {cameras.map((camera) => {
+            const connection = cameraConnectionInfo(camera, devices);
+            return (
+              <article className="config-card camera-card" key={camera.id}>
+                <header>
+                  <div>
+                    <strong>{camera.description || camera.name}</strong>
+                    <span>{camera.manufacturer} {camera.model || ""} - {camera.type}</span>
+                  </div>
+                  <span className={`status ${camera.status === "ONLINE" ? "" : "offline"}`}>{camera.status === "ONLINE" ? "Online" : "Offline"}</span>
+                </header>
+                <div className="summary-list">
+                  <span><strong>Host</strong>{camera.host || camera.ipAddress || "-"}</span>
+                  <span><strong>Portas</strong>RTSP {camera.rtspPort} / HTTP {camera.httpPort}</span>
+                  <span><strong>Canais ativos</strong>{cameraChannels(camera).length}</span>
+                  <span><strong>Conexao</strong>{connection.label}</span>
+                  <span><strong>Reproducao</strong>{connection.playbackLabel}</span>
+                  <span><strong>RTSP no APK</strong>{camera.passwordSet ? "Pronto" : "Salvar senha"}</span>
                 </div>
-                <span className={`status ${camera.status === "ONLINE" ? "" : "offline"}`}>{camera.status === "ONLINE" ? "Online" : "Offline"}</span>
-              </header>
-              <div className="summary-list">
-                <span><strong>Host</strong>{camera.host || camera.ipAddress || "-"}</span>
-                <span><strong>Portas</strong>RTSP {camera.rtspPort} / HTTP {camera.httpPort}</span>
-                <span><strong>Canais ativos</strong>{cameraChannels(camera).length}</span>
-                <span><strong>Stream</strong>{camera.stream}</span>
-                <span><strong>Metodo</strong>{camera.loadMethod}</span>
-                <span><strong>RTSP no APK</strong>{camera.passwordSet ? "Pronto" : "Salvar senha"}</span>
-              </div>
-              <div className="channel-list">
-                {cameraChannels(camera).map((channel) => <em key={channel.channel}>Canal {channel.channel} - {channel.description || camera.groupName || "sem descricao"}</em>)}
-              </div>
-              <div className="toolbar-actions compact-actions">
-                <button className="secondary-button" onClick={() => onEdit(camera)}>Editar camera</button>
-                <button className="danger-button" type="button" onClick={() => onDelete(camera)}><Trash2 size={16} /> Excluir</button>
-              </div>
-            </article>
-          ))}
+                <div className="channel-list">
+                  {cameraChannels(camera).map((channel) => <em key={channel.channel}>Canal {channel.channel} - {channel.description || camera.groupName || "sem descricao"}</em>)}
+                </div>
+                <div className="toolbar-actions compact-actions">
+                  <button className="secondary-button" onClick={() => onEdit(camera)}>Editar camera</button>
+                  <button className="danger-button" type="button" onClick={() => onDelete(camera)}><Trash2 size={16} /> Excluir</button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       ) : <div className="empty-state">Nenhuma camera cadastrada neste condominio.</div>}
     </section>

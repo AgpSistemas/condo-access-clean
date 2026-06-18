@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { executeCommand } = require("./commands/router.cjs");
 
-const VERSION = "0.4.4";
+const VERSION = "0.4.5";
 const home = process.env.PROGRAMDATA
   ? path.join(process.env.PROGRAMDATA, "CondoAccessGateway")
   : path.join(os.homedir(), ".condo-access-gateway");
@@ -28,7 +28,7 @@ function loadConfig() {
     throw new Error("Configuracao incompleta. Informe apiUrl, tenantId e activationCode.");
   }
   return {
-    pollMs: 3000,
+    pollMs: 700,
     gatewayId: os.hostname(),
     ...config,
     apiUrl: String(config.apiUrl).replace(/\/+$/, "")
@@ -114,5 +114,5 @@ log(`Gateway iniciado tenant=${config.tenantId} gateway=${config.gatewayId} vers
 guardedCycle().catch((error) => log(`Falha inicial: ${error.message}`));
 setInterval(
   () => guardedCycle().catch((error) => log(`Falha de comunicacao: ${error.message}`)),
-  Number(config.pollMs || 3000)
+  Math.max(500, Number(config.pollMs || 700))
 );

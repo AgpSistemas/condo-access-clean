@@ -10,7 +10,7 @@ import pg from "pg";
 import QRCode from "qrcode";
 import { matchingSingleUseInvite } from "./modules/invites/lifecycle.js";
 import { createCommunityArea, createCommunityEvent } from "./modules/community/records.js";
-import { waitForGatewayCommand, requestGatewayCameraSnapshot } from "./modules/gateway/commandResult.js";
+import { waitForGatewayCommand, requestGatewayCameraHlsFile, requestGatewayCameraSnapshot } from "./modules/gateway/commandResult.js";
 import {
   localGatewayConfigForDevice,
   localGatewayEnabledForDevice,
@@ -883,8 +883,11 @@ function publicCamera(camera) {
   return {
     ...safeCamera,
     connectionMode: localGatewayPlayback ? "LOCAL_GATEWAY" : safeCamera.connectionMode || "DIRECT_API",
-    localGatewayPlayback,
-    playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : safeCamera.playbackMode || safeCamera.loadMethod || "HLS_GATEWAY"
+    localGatewayConnection: localGatewayPlayback,
+    localGatewayPlayback: false,
+    playbackMode: safeCamera.playbackMode || safeCamera.loadMethod || "HLS_GATEWAY",
+    webPlaybackMode: safeCamera.playbackMode || safeCamera.loadMethod || "HLS_GATEWAY",
+    mobilePlaybackMode: safeCamera.mobilePlaybackMode || "HLS_GATEWAY"
   };
 }
 
@@ -5077,14 +5080,15 @@ function cameraUsesGatewayPlayback(camera = {}) {
 
 function cameraPlaybackRecord(camera = {}) {
   const linkedDevice = camera.deviceId ? devices.find((device) => device.id === camera.deviceId) : null;
-  const localGatewayPlayback = deviceUsesLocalGateway(linkedDevice || {});
+  const localGatewayConnection = deviceUsesLocalGateway(linkedDevice || {});
   const profiledCamera = applyCameraProfileDefaults(camera);
   const deviceBackedCamera = linkedDevice
     ? {
       ...profiledCamera,
-      connectionMode: localGatewayPlayback ? "LOCAL_GATEWAY" : profiledCamera.connectionMode || "DIRECT_API",
-      localGatewayPlayback,
-      playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : profiledCamera.playbackMode || profiledCamera.loadMethod || "HLS_GATEWAY",
+      connectionMode: localGatewayConnection ? "LOCAL_GATEWAY" : profiledCamera.connectionMode || "DIRECT_API",
+      localGatewayConnection,
+      localGatewayPlayback: false,
+      playbackMode: profiledCamera.playbackMode || profiledCamera.loadMethod || "HLS_GATEWAY",
       host: profiledCamera.host || linkedDevice.ipAddress || linkedDevice.apiHost || "",
       ipAddress: profiledCamera.ipAddress || linkedDevice.ipAddress || linkedDevice.apiHost || "",
       rtspPort: Number(profiledCamera.rtspPort || linkedDevice.rtspPort || 554),
@@ -5095,6 +5099,7 @@ function cameraPlaybackRecord(camera = {}) {
     : {
       ...profiledCamera,
       connectionMode: profiledCamera.connectionMode || "DIRECT_API",
+      localGatewayConnection: Boolean(profiledCamera.localGatewayConnection),
       localGatewayPlayback: Boolean(profiledCamera.localGatewayPlayback),
       playbackMode: profiledCamera.playbackMode || profiledCamera.loadMethod || "HLS_GATEWAY"
     };
@@ -5518,7 +5523,7 @@ function toMobileCamera(camera, origin) {
   const localGatewayPlayback = deviceUsesLocalGateway(device || {});
   const exposeDirectRtsp = process.env.EXPOSE_CAMERA_RTSP === "true";
   const directRtspUrl = exposeDirectRtsp && camera.password ? cameraRtspUrl(camera) : "";
-  const playbackUrl = localGatewayPlayback ? snapshotUrl : hlsUrl;
+  const videoPlaybackUrl = directRtspUrl || hlsUrl;
   return {
     id: camera.id,
     tenantId: camera.tenantId,
@@ -5534,13 +5539,16 @@ function toMobileCamera(camera, origin) {
     channel,
     activeChannels: camera.activeChannels || [{ channel, description: camera.description || `Canal ${channel}` }],
     status: camera.status || "ONLINE",
-    rtspUrl: playbackUrl,
-    streamUrl: playbackUrl,
+    rtspUrl: videoPlaybackUrl,
+    streamUrl: hlsUrl,
     hlsUrl,
     snapshotUrl,
     directRtspUrl,
-    playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : directRtspUrl ? "RTSP_NATIVE" : "HLS_GATEWAY",
-    localGatewayPlayback,
+    playbackMode: directRtspUrl ? "RTSP_NATIVE" : "HLS_GATEWAY",
+    webPlaybackMode: "HLS_GATEWAY",
+    mobilePlaybackMode: directRtspUrl ? "RTSP_NATIVE" : "HLS_GATEWAY",
+    localGatewayConnection: localGatewayPlayback,
+    localGatewayPlayback: false,
     deviceType: camera.deviceType || camera.type,
     deviceId: camera.deviceId,
     device: device ? {
@@ -5807,7 +5815,6 @@ function toMobileCameraFileRecord(camera) {
   const localGatewayPlayback = deviceUsesLocalGateway(device || {});
   const hlsUrl = `/streams/${streamKey}/index.m3u8`;
   const snapshotUrl = `/api/cameras/${camera.id}/snapshot.jpg?channel=${channel}`;
-  const playbackUrl = localGatewayPlayback ? snapshotUrl : hlsUrl;
   return {
     id: camera.id,
     tenantId: camera.tenantId || "",
@@ -5828,12 +5835,15 @@ function toMobileCameraFileRecord(camera) {
       }))
       : [{ channel, description: camera.description || `Canal ${channel}` }],
     status: camera.status || "ONLINE",
-    rtspUrl: playbackUrl,
-    streamUrl: playbackUrl,
+    rtspUrl: hlsUrl,
+    streamUrl: hlsUrl,
     hlsUrl,
     snapshotUrl,
-    playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : "HLS_GATEWAY",
-    localGatewayPlayback,
+    playbackMode: "HLS_GATEWAY",
+    webPlaybackMode: "HLS_GATEWAY",
+    mobilePlaybackMode: "HLS_GATEWAY",
+    localGatewayConnection: localGatewayPlayback,
+    localGatewayPlayback: false,
     deviceType: camera.deviceType || camera.type || "",
     deviceId: camera.deviceId || "",
     device: device ? {
@@ -6759,7 +6769,7 @@ async function handleRequest(request, response) {
       tenantName: findTenant(installation.tenantId).name,
       activationCode: installation.activationCode,
       label: installation.label || "Portaria principal",
-      pollMs: 3000,
+      pollMs: 700,
       localPort: 4040
     });
   }
@@ -6806,9 +6816,14 @@ async function handleRequest(request, response) {
         item.deliveredAt = "";
       });
     const cleanupBefore = Date.now() - 24 * 60 * 60 * 1000;
+    const hlsCleanupBefore = Date.now() - 60 * 1000;
     for (let index = gatewayCommands.length - 1; index >= 0; index -= 1) {
       const item = gatewayCommands[index];
-      if (["DONE", "ERROR"].includes(item.status) && Date.parse(item.finishedAt || 0) < cleanupBefore) {
+      const finishedAt = Date.parse(item.finishedAt || 0);
+      const isFinished = ["DONE", "ERROR"].includes(item.status);
+      if (isFinished && item.type === "CAMERA_HLS_FILE" && finishedAt < hlsCleanupBefore) {
+        gatewayCommands.splice(index, 1);
+      } else if (isFinished && finishedAt < cleanupBefore) {
         gatewayCommands.splice(index, 1);
       }
     }
@@ -6844,7 +6859,7 @@ async function handleRequest(request, response) {
         if (body.ok !== false) device.lastSeenAt = device.lastCheckedAt;
       }
     }
-    savePersistentState("gateway-command-result");
+    if (command.type !== "CAMERA_HLS_FILE") savePersistentState("gateway-command-result");
     return json(response, 200, { ok: true });
   }
 
@@ -7434,15 +7449,34 @@ async function handleRequest(request, response) {
       return response.end("Segmento nao encontrado");
     }
     const linkedDevice = camera.deviceId ? devices.find((item) => item.id === camera.deviceId) : null;
-    if (deviceUsesLocalGateway(linkedDevice || {}) && filename === "index.m3u8") {
-      const snapshotPath = `/api/cameras/${encodeURIComponent(camera.id)}/snapshot.jpg?channel=${requestedChannel || camera.channel || 1}`;
-      response.writeHead(302, {
-        Location: snapshotPath,
-        "Cache-Control": "no-store",
-        "Access-Control-Allow-Origin": "*",
-        "X-Condo-Access-Gateway": "snapshot"
-      });
-      return response.end();
+    if (deviceUsesLocalGateway(linkedDevice || {})) {
+      try {
+        const hlsFile = await requestGatewayCameraHlsFile(streamCamera, linkedDevice, filename, {
+          queueCommand: queueGatewayCommand,
+          waitForCommands: waitForGatewayCommands,
+          streamKey,
+          timeoutMs: filename === "index.m3u8" ? 18000 : 12000
+        });
+        response.writeHead(200, {
+          "Content-Type": hlsFile.contentType,
+          "Content-Length": hlsFile.buffer.length,
+          "Cache-Control": filename === "index.m3u8" ? "no-store" : "private, max-age=4",
+          "Access-Control-Allow-Origin": "*",
+          "X-Condo-Access-Gateway": "hls"
+        });
+        return response.end(hlsFile.buffer);
+      } catch (error) {
+        response.writeHead(502, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Access-Control-Allow-Origin": "*",
+          "X-Condo-Access-Gateway": "hls"
+        });
+        return response.end(JSON.stringify({
+          message: error instanceof Error ? error.message : "Gateway local nao retornou o fluxo HLS",
+          cameraId: streamCamera.id,
+          rtsp: cameraRtspUrl(streamCamera, { maskPassword: true })
+        }));
+      }
     }
 
     try {

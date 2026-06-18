@@ -82,4 +82,4 @@ function cameraSnapshot(command = {}) {
   });
 }
 
-module.exports = { cameraSnapshot, rtspUrl };
+module.exports = { cameraSnapshot, ffmpegPath, rtspUrl };
