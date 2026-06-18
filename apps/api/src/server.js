@@ -4740,10 +4740,7 @@ async function uploadControlIdUserImage(device, session, userId, photo = {}) {
   const timestamp = Math.floor(Date.now() / 1000);
   const contentType = "application/octet-stream";
   const paths = [
-    `/user_set_image.fcgi?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`,
-    `/user_set_image.fcgi?user_id=${encodeURIComponent(userId)}`,
-    `/user_set_image?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`,
-    `/user_set_image?user_id=${encodeURIComponent(userId)}`
+    `/user_set_image.fcgi?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`
   ];
 
   for (const pathName of paths) {
