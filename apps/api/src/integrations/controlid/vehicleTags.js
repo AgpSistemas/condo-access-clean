@@ -96,7 +96,7 @@ async function upsertControlIdVehicleTag({
     throw new Error(`A tag ${value} ja pertence a outro usuario no Control iD`);
   }
 
-  const pathName = existing?.id ? "/create_or_modify_objects.fcgi" : "/create_objects.fcgi";
+  const pathName = existing?.id ? "/modify_objects.fcgi" : "/create_objects.fcgi";
   const result = await post(device, session, pathName, {
     object: normalized.object,
     values: [{

@@ -4579,7 +4579,7 @@ async function ensureControlIdCredentialUser(device, session, credential = {}, p
     end_time: controlIdUnixTimestamp(credential.validUntil)
   };
   if (existing?.id) {
-    await controlIdPost(device, session, "/create_or_modify_objects.fcgi", {
+    await controlIdPost(device, session, "/modify_objects.fcgi", {
       object: "users",
       values: [value]
     });
@@ -4624,7 +4624,7 @@ async function upsertControlIdCredentialObject(device, session, object, userId, 
   const existing = records.find((record) =>
     String(record.value) === String(value) || (object === "pins" && String(record.user_id) === String(userId))
   );
-  const pathName = existing?.id ? "/create_or_modify_objects.fcgi" : "/create_objects.fcgi";
+  const pathName = existing?.id ? "/modify_objects.fcgi" : "/create_objects.fcgi";
   await controlIdPost(device, session, pathName, {
     object,
     values: [{
@@ -4660,7 +4660,7 @@ async function sendControlIdStoredCredential(device, credential = {}) {
   const type = normalizeCredentialType(credential.type);
   const attempts = [{
     label: "Control iD usuario",
-    path: "/create_or_modify_objects.fcgi:users",
+    path: "/create_objects.fcgi|/modify_objects.fcgi:users",
     ok: true
   }];
   if (groupId) {
@@ -4749,14 +4749,14 @@ async function sendControlIdStoredCredential(device, credential = {}) {
       acceptedObjects.push(candidateObject);
       attempts.push({
         label: `Control iD ${candidateObject}`,
-        path: `/create_or_modify_objects.fcgi:${candidateObject}`,
+        path: `/create_objects.fcgi|/modify_objects.fcgi:${candidateObject}`,
         ok: true
       });
     } catch (error) {
       objectErrors.push(`${candidateObject}: ${error instanceof Error ? error.message : "falha"}`);
       attempts.push({
         label: `Control iD ${candidateObject}`,
-        path: `/create_or_modify_objects.fcgi:${candidateObject}`,
+        path: `/create_objects.fcgi|/modify_objects.fcgi:${candidateObject}`,
         ok: false,
         error: error instanceof Error ? error.message : "Falha ao gravar credencial"
       });
