@@ -112,6 +112,7 @@ export async function requestGatewayCameraHlsFile(camera, device, filename, {
       channel,
       rtspPath: camera.rtspPath || `/Streaming/channels/${channelId}`,
       rtspTransport: camera.rtspTransport || "tcp",
+      hlsListSize: Number(camera.hlsListSize || 12),
       timeoutMs,
       responseType: "base64"
     }
