@@ -4563,6 +4563,15 @@ function controlIdCardValue(value = "") {
   return Number(parsed);
 }
 
+function controlIdModifyBody(object = "", id, value = {}) {
+  const { id: _id, ...fields } = value || {};
+  return {
+    object,
+    values: fields,
+    where: { [object]: { id } }
+  };
+}
+
 async function ensureControlIdCredentialUser(device, session, credential = {}, person = null) {
   const registration = controlIdUserRegistration(credential, person);
   const name = String(person?.name || credential.personName || credential.valueLabel || "Usuario").trim().slice(0, 100);
@@ -4579,10 +4588,7 @@ async function ensureControlIdCredentialUser(device, session, credential = {}, p
     end_time: controlIdUnixTimestamp(credential.validUntil)
   };
   if (existing?.id) {
-    await controlIdPost(device, session, "/modify_objects.fcgi", {
-      object: "users",
-      values: [value]
-    });
+    await controlIdPost(device, session, "/modify_objects.fcgi", controlIdModifyBody("users", existing.id, value));
     return { ...existing, ...value };
   }
 
@@ -4625,14 +4631,10 @@ async function upsertControlIdCredentialObject(device, session, object, userId, 
     String(record.value) === String(value) || (object === "pins" && String(record.user_id) === String(userId))
   );
   const pathName = existing?.id ? "/modify_objects.fcgi" : "/create_objects.fcgi";
-  await controlIdPost(device, session, pathName, {
-    object,
-    values: [{
-      ...(existing?.id ? { id: existing.id } : {}),
-      value,
-      user_id: userId
-    }]
-  });
+  const objectValue = { value, user_id: userId };
+  await controlIdPost(device, session, pathName, existing?.id
+    ? controlIdModifyBody(object, existing.id, objectValue)
+    : { object, values: [objectValue] });
   return existing;
 }
 
@@ -4650,6 +4652,85 @@ async function ensureControlIdUserGroup(device, session, userId) {
     });
   }
   return groupId;
+}
+
+function controlIdDelay(ms = 300) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function controlIdUserImageExists(device, session, userId) {
+  const userIdText = String(userId);
+  for (const pathName of ["/user_list_images.fcgi?get_timestamp=1", "/user_list_images?get_timestamp=1"]) {
+    try {
+      const result = await controlIdRequest(device, pathName, { session, method: "GET" });
+      const imageInfo = Array.isArray(result.payload?.image_info)
+        ? result.payload.image_info
+        : Array.isArray(result.payload?.user_ids)
+          ? result.payload.user_ids.map((id) => ({ user_id: id }))
+          : [];
+      if (imageInfo.some((image) => String(image.user_id ?? image.userId ?? image.id ?? image) === userIdText)) {
+        return true;
+      }
+    } catch {
+      // Alguns firmwares nao possuem user_list_images; valida pelo usuario abaixo.
+    }
+  }
+
+  try {
+    const users = await controlIdLoadObjects(device, session, "users", { limit: 1000 });
+    const user = users.find((item) => String(item.id) === userIdText);
+    return Number(user?.image_timestamp || user?.imageTimestamp || 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function uploadControlIdUserImage(device, session, userId, photo = {}) {
+  const attempts = [];
+  const timestamp = Math.floor(Date.now() / 1000);
+  const contentType = photo.mimeType || "image/jpeg";
+  const paths = [
+    `/user_set_image.fcgi?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`,
+    `/user_set_image?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`
+  ];
+
+  for (const pathName of paths) {
+    try {
+      await controlIdBinaryRequest(device, session, pathName, {
+        body: photo.buffer,
+        contentType,
+        timeoutMs: 20000
+      });
+      for (let index = 0; index < 4; index += 1) {
+        if (await controlIdUserImageExists(device, session, userId)) {
+          return {
+            ok: true,
+            attempts: [
+              ...attempts,
+              { label: "Control iD foto facial", path: pathName, ok: true },
+              { label: "Control iD validar foto facial", path: "/user_list_images.fcgi", ok: true }
+            ]
+          };
+        }
+        await controlIdDelay(500);
+      }
+      attempts.push({
+        label: "Control iD foto facial",
+        path: pathName,
+        ok: false,
+        error: "Equipamento respondeu ao upload, mas a foto nao apareceu no usuario"
+      });
+    } catch (error) {
+      attempts.push({
+        label: "Control iD foto facial",
+        path: pathName,
+        ok: false,
+        error: error instanceof Error ? error.message : "Falha ao enviar foto facial"
+      });
+    }
+  }
+
+  throw new Error(attempts.at(-1)?.error || "Control iD nao confirmou a foto facial");
 }
 
 async function sendControlIdStoredCredential(device, credential = {}) {
@@ -4697,18 +4778,8 @@ async function sendControlIdStoredCredential(device, credential = {}) {
     if (photo.buffer.length > maxBytes) {
       throw new Error(`Foto facial maior que ${maxBytes} bytes para o Control iD`);
     }
-    const timestamp = Math.floor(Date.now() / 1000);
-    await controlIdBinaryRequest(
-      device,
-      session,
-      `/user_set_image.fcgi?user_id=${encodeURIComponent(user.id)}&timestamp=${timestamp}&match=0`,
-      { body: photo.buffer }
-    );
-    attempts.push({
-      label: "Control iD foto facial",
-      path: "/user_set_image.fcgi",
-      ok: true
-    });
+    const upload = await uploadControlIdUserImage(device, session, user.id, photo);
+    attempts.push(...(upload.attempts || []));
     return {
       ok: true,
       deviceId: device.id,
@@ -5619,6 +5690,72 @@ function hlsContentType(filename) {
   if (filename.endsWith(".m3u8")) return "application/vnd.apple.mpegurl; charset=utf-8";
   if (filename.endsWith(".ts")) return "video/mp2t";
   return "application/octet-stream";
+}
+
+function streamCameraFromKey(streamKey = "") {
+  const channelMatch = String(streamKey || "").match(/^(.*)--ch-(\d+)$/);
+  const cameraId = channelMatch ? channelMatch[1] : streamKey;
+  const requestedChannel = channelMatch ? Number(channelMatch[2]) : 0;
+  const camera = cameras.find((item) => item.id === cameraId);
+  return {
+    camera,
+    requestedChannel,
+    streamCamera: camera && requestedChannel > 0
+      ? { ...camera, id: streamKey, channel: requestedChannel }
+      : camera
+  };
+}
+
+function cameraStreamPlayerHtml(streamKey = "", camera = {}) {
+  const title = escapeHtml(camera.description || camera.name || "Camera Condo Access");
+  const playlistUrl = `/streams/${encodeURIComponent(streamKey)}/index.m3u8`;
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+  <style>
+    body{margin:0;background:#0b1115;color:#edf7f2;font-family:Arial,sans-serif}
+    main{min-height:100vh;display:grid;grid-template-rows:auto 1fr;background:#0b1115}
+    header{padding:14px 18px;background:#111b21;border-bottom:1px solid #26343b}
+    h1{font-size:16px;margin:0}
+    video{width:100%;height:calc(100vh - 53px);background:#000;display:block}
+    .status{position:fixed;left:18px;bottom:18px;background:rgba(0,0,0,.68);padding:8px 10px;border-radius:6px;font-size:13px}
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>${title}</h1></header>
+    <video id="video" controls autoplay muted playsinline></video>
+    <div class="status" id="status">Abrindo fluxo...</div>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+  <script>
+    const video = document.getElementById("video");
+    const statusEl = document.getElementById("status");
+    const src = ${JSON.stringify(playlistUrl)};
+    function status(text){ statusEl.textContent = text; }
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = src;
+      video.addEventListener("loadedmetadata", () => { status("Ao vivo"); video.play().catch(() => {}); });
+    } else if (window.Hls && Hls.isSupported()) {
+      const hls = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 2, backBufferLength: 8 });
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { status("Ao vivo"); video.play().catch(() => {}); });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { status("Reconectando..."); hls.startLoad(); return; }
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { status("Recuperando video..."); hls.recoverMediaError(); return; }
+        status("Falha ao abrir fluxo");
+      });
+    } else {
+      status("Navegador sem suporte HLS");
+    }
+  </script>
+</body>
+</html>`;
 }
 
 function snapshotFile(cameraId) {
@@ -7740,20 +7877,29 @@ async function handleRequest(request, response) {
     return json(response, 200, { ok: true, stopped: streamStopMatch[1] });
   }
 
+  const streamPlayerMatch = url.pathname.match(/^\/streams\/([^/]+)\/player$/);
+  if (request.method === "GET" && streamPlayerMatch) {
+    const streamKey = streamPlayerMatch[1];
+    const { camera } = streamCameraFromKey(streamKey);
+    if (!camera) {
+      return sendText(response, 404, "text/plain; charset=utf-8", "Camera nao encontrada", {
+        "Access-Control-Allow-Origin": "*"
+      });
+    }
+    return sendText(response, 200, "text/html; charset=utf-8", cameraStreamPlayerHtml(streamKey, camera), {
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*"
+    });
+  }
+
   const streamMatch = url.pathname.match(/^\/streams\/([^/]+)\/([^/]+)$/);
   if (request.method === "GET" && streamMatch) {
     const streamKey = streamMatch[1];
-    const channelMatch = streamKey.match(/^(.*)--ch-(\d+)$/);
-    const cameraId = channelMatch ? channelMatch[1] : streamKey;
-    const requestedChannel = channelMatch ? Number(channelMatch[2]) : 0;
-    const camera = cameras.find((item) => item.id === cameraId);
+    const { camera, requestedChannel, streamCamera } = streamCameraFromKey(streamKey);
     if (!camera) {
       response.writeHead(404, { "Content-Type": "text/plain", "Access-Control-Allow-Origin": "*" });
       return response.end("Camera nao encontrada");
     }
-    const streamCamera = requestedChannel > 0
-      ? { ...camera, id: streamKey, channel: requestedChannel }
-      : camera;
 
     const filename = streamMatch[2];
     if (!/^(index\.m3u8|segment_\d+\.ts)$/.test(filename)) {

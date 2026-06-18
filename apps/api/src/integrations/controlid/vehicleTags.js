@@ -47,6 +47,14 @@ function normalizeControlIdVehicleTag(value = "", mode = CONTROL_ID_UHF_EXTENDED
   };
 }
 
+function controlIdModifyBody(object = "", id, value = {}) {
+  return {
+    object,
+    values: value,
+    where: { [object]: { id } }
+  };
+}
+
 function controlIdVehicleTagRecords(snapshot = {}, device = {}) {
   const objects = snapshot.objects || {};
   const users = objects.users || [];
@@ -97,14 +105,13 @@ async function upsertControlIdVehicleTag({
   }
 
   const pathName = existing?.id ? "/modify_objects.fcgi" : "/create_objects.fcgi";
-  const result = await post(device, session, pathName, {
-    object: normalized.object,
-    values: [{
-      ...(existing?.id ? { id: existing.id } : {}),
-      value: normalized.value,
-      user_id: userId
-    }]
-  });
+  const objectValue = {
+    value: normalized.value,
+    user_id: userId
+  };
+  const result = await post(device, session, pathName, existing?.id
+    ? controlIdModifyBody(normalized.object, existing.id, objectValue)
+    : { object: normalized.object, values: [objectValue] });
 
   return {
     id: existing?.id || result.payload?.ids?.[0] || "",

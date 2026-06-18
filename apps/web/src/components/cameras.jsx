@@ -95,6 +95,7 @@ function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
   const selectedChannel = Number(channel || camera?.channel || camera?.activeChannels?.[0]?.channel || 1);
   const streamKey = cameraStreamKey(camera, selectedChannel);
   const streamUrl = camera ? `${apiUrl}/streams/${streamKey}/index.m3u8` : "";
+  const playerUrl = camera ? `${apiUrl}/streams/${streamKey}/player` : "";
   const usesSnapshotPlayback = cameraUsesSnapshotPlayback(camera);
 
   useEffect(() => {
@@ -240,7 +241,7 @@ function CameraPreview({ camera, channel, onFrameClick, frameLabel }) {
         <a className="secondary-button" href={`${apiUrl}/api/cameras/${camera.id}/vlc.m3u`} download><Camera size={16} /> Abrir no VLC</a>
         {usesSnapshotPlayback
           ? <a className="secondary-button" href={previewImageUrl} target="_blank" rel="noreferrer"><Camera size={16} /> Snapshot</a>
-          : <a className="secondary-button" href={streamUrl} target="_blank" rel="noreferrer"><Camera size={16} /> HLS</a>}
+          : <a className="secondary-button" href={playerUrl} target="_blank" rel="noreferrer"><Camera size={16} /> Navegador</a>}
       </div>
     </div>
   );
