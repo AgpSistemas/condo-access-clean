@@ -77,9 +77,10 @@ import {
   testSs3532Mfw
 } from "./integrations/intelbras/ss3532Mfw.js";
 import { createHikvisionParsers } from "./integrations/hikvision/parsers.js";
-import { createControlIdClient } from "./integrations/controlid/client.js";
+import { DEFAULT_SNAPSHOT_OBJECTS, createControlIdClient } from "./integrations/controlid/client.js";
 import {
   CONTROL_ID_ACCESS_ADAPTER,
+  controlIdActionParameters,
   controlIdDeviceDefaults,
   matchesControlIdDevice,
   publicControlIdProfiles,
@@ -150,16 +151,7 @@ const postgresPool = databaseUrl
     ssl: postgresSslMode === "require" ? { rejectUnauthorized: false } : undefined
   })
   : null;
-const controlIdClient = createControlIdClient();
-const {
-  binaryRequest: controlIdBinaryRequest,
-  loadObjects: controlIdLoadObjects,
-  login: controlIdLogin,
-  openDoor: openControlIdDoor,
-  post: controlIdPost,
-  readSnapshot: readControlIdSnapshot,
-  testConnection: testControlIdConnection
-} = controlIdClient;
+const directControlIdClient = createControlIdClient();
 let postgresStateReady = false;
 let postgresSaveQueue = Promise.resolve();
 let lastPostgresSaveError = "";
@@ -1248,7 +1240,8 @@ async function authenticatedDeviceRequest(device, targetPath, {
   bodyBase64 = "",
   contentType = "application/xml",
   timeoutMs = 7000,
-  responseType = "text"
+  responseType = "text",
+  skipHttpAuth = false
 } = {}) {
   if (!device.password) {
     throw new Error("Senha de integracao nao cadastrada para este equipamento");
@@ -1256,7 +1249,7 @@ async function authenticatedDeviceRequest(device, targetPath, {
 
   if (deviceUsesLocalGateway(device)) {
     const command = queueGatewayCommand(device, 1, {
-      request: { path: targetPath, method, body, bodyBase64, contentType, timeoutMs, responseType }
+      request: { path: targetPath, method, body, bodyBase64, contentType, timeoutMs, responseType, skipHttpAuth }
     }, "DEVICE_HTTP");
     if (!command) throw new Error("Gateway local nao configurado para este condominio");
     await waitForGatewayCommands([command], Math.max(timeoutMs + 10000, 20000));
@@ -1304,6 +1297,219 @@ async function authenticatedDeviceRequest(device, targetPath, {
   } finally {
     request.done();
   }
+}
+
+function parseControlIdPayload(text = "") {
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return {};
+  }
+}
+
+function controlIdResponseError(pathName = "", status = 200, text = "", payload = {}) {
+  if (payload?.success === false || payload?.error) {
+    const detail = String(text || JSON.stringify(payload)).replace(/\s+/g, " ").trim().slice(0, 240);
+    return `Control iD ${pathName} respondeu ${status}${detail ? `: ${detail}` : ""}`;
+  }
+  return "";
+}
+
+async function controlIdGatewayRequest(device, pathName, {
+  session = "",
+  method = "POST",
+  body,
+  contentType = "application/json; charset=utf-8",
+  timeoutMs = 9000
+} = {}) {
+  const separator = pathName.includes("?") ? "&" : "?";
+  const targetPath = session ? `${pathName}${separator}session=${encodeURIComponent(session)}` : pathName;
+  const isJson = contentType === "application/json; charset=utf-8";
+  const requestBody = body === undefined
+    ? undefined
+    : isJson
+      ? JSON.stringify(body)
+      : Buffer.isBuffer(body)
+        ? undefined
+        : body;
+  const result = await authenticatedDeviceRequest(device, targetPath, {
+    method,
+    body: requestBody,
+    bodyBase64: Buffer.isBuffer(body) ? body.toString("base64") : "",
+    contentType,
+    timeoutMs,
+    responseType: "text",
+    skipHttpAuth: true
+  });
+  const payload = parseControlIdPayload(result.body);
+  const responseError = controlIdResponseError(pathName, result.status, result.body, payload);
+  if (responseError) throw new Error(responseError);
+  return { ok: true, status: result.status, body: result.body, payload };
+}
+
+async function controlIdRequest(device, pathName, options = {}) {
+  if (deviceUsesLocalGateway(device)) {
+    return controlIdGatewayRequest(device, pathName, options);
+  }
+  return directControlIdClient.request(device, pathName, options);
+}
+
+async function controlIdLogin(device, { timeoutMs = 9000 } = {}) {
+  if (!device.password) {
+    throw new Error("Senha Control iD nao cadastrada para este equipamento");
+  }
+  if (!deviceUsesLocalGateway(device)) {
+    return directControlIdClient.login(device, { timeoutMs });
+  }
+  const result = await controlIdGatewayRequest(device, "/login.fcgi", {
+    body: {
+      login: device.username || "admin",
+      password: device.password
+    },
+    timeoutMs
+  });
+  if (!result.payload.session) {
+    throw new Error(`Control iD login nao retornou uma sessao valida (${result.status})`);
+  }
+  return result.payload.session;
+}
+
+function controlIdPost(device, session, pathName, body = {}, options = {}) {
+  if (!deviceUsesLocalGateway(device)) {
+    return directControlIdClient.post(device, session, pathName, body, options);
+  }
+  return controlIdGatewayRequest(device, pathName, { ...options, session, body });
+}
+
+function controlIdBinaryRequest(device, session, pathName, {
+  method = "POST",
+  body,
+  contentType = "application/octet-stream",
+  timeoutMs = 15000
+} = {}) {
+  if (!deviceUsesLocalGateway(device)) {
+    return directControlIdClient.binaryRequest(device, session, pathName, { method, body, contentType, timeoutMs });
+  }
+  return controlIdGatewayRequest(device, pathName, { session, method, body, contentType, timeoutMs });
+}
+
+async function controlIdLoadObjects(device, session, object, {
+  limit = 500,
+  timeoutMs = 9000,
+  maxPages = 50,
+  ...query
+} = {}) {
+  if (!deviceUsesLocalGateway(device)) {
+    return directControlIdClient.loadObjects(device, session, object, { limit, timeoutMs, maxPages, ...query });
+  }
+  const records = [];
+  const seen = new Set();
+  let offset = Number(query.offset || 0);
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await controlIdPost(device, session, "/load_objects.fcgi", {
+      ...query,
+      object,
+      limit,
+      offset
+    }, { timeoutMs });
+    const pageRecords = Array.isArray(result.payload?.[object]) ? result.payload[object] : [];
+    const firstKey = pageRecords[0]
+      ? JSON.stringify([pageRecords[0].id, pageRecords[0].user_id, pageRecords[0].registration])
+      : "";
+    if (firstKey && seen.has(firstKey)) break;
+    if (firstKey) seen.add(firstKey);
+    records.push(...pageRecords);
+    if (pageRecords.length < limit) break;
+    offset += pageRecords.length;
+  }
+  return records;
+}
+
+async function readControlIdSnapshot(device, { includeOptional = true } = {}) {
+  if (!deviceUsesLocalGateway(device)) {
+    return directControlIdClient.readSnapshot(device, { includeOptional });
+  }
+  const session = await controlIdLogin(device);
+  const specs = DEFAULT_SNAPSHOT_OBJECTS.filter((spec) => includeOptional || !spec.optional);
+  const objects = {};
+  const attempts = [];
+  for (const spec of specs) {
+    try {
+      const records = await controlIdLoadObjects(device, session, spec.object, { limit: spec.limit || 1000 });
+      objects[spec.object] = records;
+      attempts.push({
+        label: spec.label,
+        path: `/load_objects.fcgi:${spec.object}`,
+        ok: true,
+        records: records.length
+      });
+    } catch (error) {
+      attempts.push({
+        label: spec.label,
+        path: `/load_objects.fcgi:${spec.object}`,
+        ok: false,
+        optional: !spec.required,
+        error: error instanceof Error ? error.message : "Falha ao ler objeto Control iD"
+      });
+      if (spec.required) throw error;
+      objects[spec.object] = [];
+    }
+  }
+  objects.user_images = [];
+  for (const pathName of ["/user_list_images.fcgi?get_timestamp=1", "/user_list_images?get_timestamp=1"]) {
+    try {
+      const result = await controlIdRequest(device, pathName, { session, method: "GET" });
+      const imageInfo = Array.isArray(result.payload?.image_info)
+        ? result.payload.image_info
+        : Array.isArray(result.payload?.user_ids)
+          ? result.payload.user_ids.map((userId) => ({ user_id: userId }))
+          : [];
+      objects.user_images = imageInfo;
+      attempts.push({
+        label: "Control iD lista de fotos faciais",
+        path: pathName.split("?")[0],
+        ok: true,
+        records: imageInfo.length
+      });
+      break;
+    } catch (error) {
+      attempts.push({
+        label: "Control iD lista de fotos faciais",
+        path: pathName.split("?")[0],
+        ok: false,
+        optional: true,
+        error: error instanceof Error ? error.message : "Falha ao listar fotos Control iD"
+      });
+    }
+  }
+  return { session, objects, attempts };
+}
+
+async function openControlIdDoor(device, relay = 1) {
+  if (!deviceUsesLocalGateway(device)) {
+    return directControlIdClient.openDoor(device, relay);
+  }
+  const session = await controlIdLogin(device);
+  const action = controlIdActionParameters(device, relay);
+  return controlIdPost(device, session, "/execute_actions.fcgi", { actions: [action] });
+}
+
+async function testControlIdConnection(device) {
+  if (!deviceUsesLocalGateway(device)) {
+    return directControlIdClient.testConnection(device);
+  }
+  const session = await controlIdLogin(device);
+  const [system, users] = await Promise.all([
+    controlIdPost(device, session, "/system_information.fcgi", {}),
+    controlIdLoadObjects(device, session, "users", { limit: 1 })
+  ]);
+  return {
+    ok: true,
+    status: system.status,
+    system: system.payload,
+    usersSample: users.length,
+    matchedEndpoint: "Gateway local + /login.fcgi + /system_information.fcgi + /load_objects.fcgi:users"
+  };
 }
 
 function hikvisionResponseError(text = "") {
@@ -2366,6 +2572,7 @@ function saveCredential(body = {}) {
   const person = findPersonForCredential(body);
   const unit = units.get(body.unitId || person?.unitId) || units.get("unit-101");
   const existing = body.id ? credentials.find((credential) => credential.id === body.id) : null;
+  const previousCredential = existing ? { ...existing } : null;
   const tenantId = body.tenantId || person?.tenantId || existing?.tenantId || unit?.tenantId || tenant.id;
   const type = normalizeCredentialType(body.type || body.credentialType || existing?.type || person?.credentialType || "APP");
   const value = String(body.value || body.credentialValue || existing?.value || generatedCredentialValue(type, person || body)).trim();
@@ -2405,7 +2612,7 @@ function saveCredential(body = {}) {
 
   const updated = existing ? updateById(credentials, body.id, credential) : null;
   if (!updated) credentials.unshift(credential);
-  return { credential: updated || credential, duplicate: null };
+  return { credential: updated || credential, duplicate: null, previousCredential };
 }
 
 const {
@@ -3022,32 +3229,13 @@ async function consumeSingleUseInviteFromEvent(device, event = {}) {
   };
   const invite = matchingSingleUseInvite(unitInvites, normalizedEvent);
   if (!invite) return null;
-  const credential = credentials.find((item) => item.id === invite.credentialId)
-    || credentials.find((item) => item.type === "QR_CODE" && String(item.value) === String(invite.qrPayload || invite.code));
   invite.usedAt = event.createdAt || now();
   invite.usageCount = Number(invite.usageCount || 0) + 1;
   invite.status = "Usado";
   invite.consumedEventId = event.id || "";
   invite.updatedAt = now();
-  if (!credential) {
-    invite.syncStatus = "ERROR";
-    invite.syncMessage = "Convite usado, mas a credencial vinculada nao foi encontrada para revogacao";
-    return invite;
-  }
-  const targetDevice = devices.find((item) => item.id === (invite.deviceId || credential.deviceId)) || device;
-  try {
-    const result = await deleteStoredCredentialFromDevice(targetDevice, credential);
-    credential.syncStatus = result.ok ? "REVOKED" : "ERROR";
-    credential.syncMessage = result.message || "";
-    credential.lastSyncedAt = result.ok ? now() : credential.lastSyncedAt;
-    invite.syncStatus = result.ok ? "REVOKED" : "ERROR";
-    invite.syncMessage = result.ok ? "Convite consumido e removido do equipamento" : result.message;
-  } catch (error) {
-    invite.syncStatus = "ERROR";
-    invite.syncMessage = error instanceof Error ? error.message : "Falha ao remover convite usado do equipamento";
-    credential.syncStatus = "ERROR";
-    credential.syncMessage = invite.syncMessage;
-  }
+  if (!invite.deviceId && device?.id) invite.deviceId = device.id;
+  await revokeInviteCredential(invite, "Convite consumido e removido do equipamento");
   return invite;
 }
 
@@ -3059,6 +3247,70 @@ async function consumeSingleUseInvitesFromEvents(device, events = []) {
   }
   if (consumed.length) await savePersistentStateAndWait("single-use-invite-consumed");
   return consumed;
+}
+
+function credentialForInvite(invite = {}) {
+  return credentials.find((item) => item.id === invite.credentialId)
+    || credentials.find((item) =>
+      item.type === "QR_CODE" &&
+      String(item.value) === String(invite.qrPayload || invite.code) &&
+      item.tenantId === invite.tenantId
+    );
+}
+
+async function revokeInviteCredential(invite = {}, reason = "Convite revogado") {
+  const credential = credentialForInvite(invite);
+  invite.updatedAt = now();
+  if (!credential) {
+    invite.syncStatus = "ERROR";
+    invite.syncMessage = `${reason}, mas a credencial vinculada nao foi encontrada para revogacao`;
+    return { invite, credential: null, ok: false };
+  }
+
+  const targetDevice = devices.find((item) => item.id === (invite.deviceId || credential.deviceId));
+  if (!targetDevice) {
+    invite.syncStatus = "ERROR";
+    invite.syncMessage = `${reason}, mas o equipamento vinculado nao foi encontrado`;
+    credential.syncStatus = "ERROR";
+    credential.syncMessage = invite.syncMessage;
+    return { invite, credential, ok: false };
+  }
+
+  try {
+    const result = await deleteStoredCredentialFromDevice(targetDevice, credential);
+    credential.syncStatus = result.ok ? "REVOKED" : "ERROR";
+    credential.syncMessage = result.message || "";
+    credential.lastSyncedAt = result.ok ? now() : credential.lastSyncedAt;
+    invite.syncStatus = result.ok ? "REVOKED" : "ERROR";
+    invite.syncMessage = result.ok ? reason : result.message;
+    return { invite, credential, ok: Boolean(result.ok), result };
+  } catch (error) {
+    invite.syncStatus = "ERROR";
+    invite.syncMessage = error instanceof Error ? error.message : "Falha ao remover convite temporario do equipamento";
+    credential.syncStatus = "ERROR";
+    credential.syncMessage = invite.syncMessage;
+    return { invite, credential, ok: false };
+  }
+}
+
+async function revokeExpiredInviteCredentials() {
+  const expired = unitInvites.filter((invite) =>
+    invite.validUntil &&
+    Date.parse(invite.validUntil) < Date.now() &&
+    !invite.usedAt &&
+    invite.syncStatus === "SYNCED" &&
+    String(invite.status || "Ativo").toLowerCase() === "ativo"
+  );
+  if (!expired.length) return [];
+
+  const revoked = [];
+  for (const invite of expired) {
+    invite.status = "Expirado";
+    const revokedInvite = await revokeInviteCredential(invite, "Convite expirado e removido do equipamento");
+    revoked.push(revokedInvite);
+  }
+  await savePersistentStateAndWait("expired-invite-credentials-revoked");
+  return revoked;
 }
 
 const inviteEventPollState = { running: false, lastError: "" };
@@ -4567,6 +4819,41 @@ async function deleteControlIdStoredCredential(device, credential = {}) {
         // QR can exist in only one mode; deleting the alternate object is best-effort.
       }
     }
+    const attempts = objects.map((object) => ({
+      label: `Control iD excluir ${object}`,
+      path: `/destroy_objects.fcgi:${object}`,
+      ok: removedObjects.includes(object)
+    }));
+    if (String(credential.source || "").toUpperCase() === "INVITE" && user?.id) {
+      try {
+        await controlIdPost(device, session, "/destroy_objects.fcgi", {
+          object: "user_groups",
+          where: { user_groups: { user_id: user.id } }
+        });
+        attempts.push({ label: "Control iD excluir grupo temporario", path: "/destroy_objects.fcgi:user_groups", ok: true });
+      } catch (error) {
+        attempts.push({
+          label: "Control iD excluir grupo temporario",
+          path: "/destroy_objects.fcgi:user_groups",
+          ok: false,
+          error: error instanceof Error ? error.message : "Falha ao excluir grupo temporario"
+        });
+      }
+      try {
+        await controlIdPost(device, session, "/destroy_objects.fcgi", {
+          object: "users",
+          where: { users: { id: user.id } }
+        });
+        attempts.push({ label: "Control iD excluir usuario temporario", path: "/destroy_objects.fcgi:users", ok: true });
+      } catch (error) {
+        attempts.push({
+          label: "Control iD excluir usuario temporario",
+          path: "/destroy_objects.fcgi:users",
+          ok: false,
+          error: error instanceof Error ? error.message : "Falha ao excluir usuario temporario"
+        });
+      }
+    }
     return {
       ok: true,
       deviceId: device.id,
@@ -4574,11 +4861,7 @@ async function deleteControlIdStoredCredential(device, credential = {}) {
       message: removedObjects.length
         ? `${type} excluido do Control iD em ${removedObjects.join(" + ")}`
         : `${type} nao foi localizado nos modos de QR do Control iD`,
-      attempts: objects.map((object) => ({
-        label: `Control iD excluir ${object}`,
-        path: `/destroy_objects.fcgi:${object}`,
-        ok: removedObjects.includes(object)
-      }))
+      attempts
     };
   }
 
@@ -4695,13 +4978,36 @@ function credentialTargetDevice(credential = {}) {
   }) || null;
 }
 
+function credentialDevicePayloadChanged(previous = null, current = {}) {
+  if (!previous) return false;
+  return [
+    "deviceId",
+    "personId",
+    "personExternalId",
+    "type",
+    "value",
+    "photoUrl",
+    "validFrom",
+    "validUntil"
+  ].some((field) => String(previous[field] || "") !== String(current[field] || ""));
+}
+
 async function emitCredentialEvent(action, credential = {}) {
-  const device = credentialTargetDevice(credential);
-  if (!device) return { action, ok: false, message: "Nenhum equipamento compativel cadastrado" };
-  const result = action === "DELETE"
-    ? await deleteStoredCredentialFromDevice(device, credential)
-    : await sendStoredCredentialToDevice(device, credential);
-  return { action, ...result };
+  try {
+    const device = credentialTargetDevice(credential);
+    if (!device) return { action, ok: false, message: "Nenhum equipamento compativel cadastrado" };
+    const result = action === "DELETE"
+      ? await deleteStoredCredentialFromDevice(device, credential)
+      : await sendStoredCredentialToDevice(device, credential);
+    return { action, ...result };
+  } catch (error) {
+    return {
+      action,
+      ok: false,
+      message: error instanceof Error ? error.message : "Falha ao sincronizar credencial com o equipamento",
+      attempts: []
+    };
+  }
 }
 
 async function processCredentialSyncJob(job) {
@@ -6023,6 +6329,12 @@ setInterval(() => {
 setInterval(() => {
   void pollSingleUseInviteEvents();
 }, Number(process.env.INVITE_EVENT_POLL_MS || 15000)).unref();
+
+setInterval(() => {
+  void revokeExpiredInviteCredentials().catch((error) => {
+    console.error(`[invite-expiration] ${error instanceof Error ? error.message : "Falha ao revogar convites expirados"}`);
+  });
+}, Number(process.env.INVITE_EXPIRATION_POLL_MS || 60000)).unref();
 
 function isRequestAbortError(error) {
   return error?.code === "ECONNRESET" || error?.code === "ECONNABORTED" || error?.message === "aborted";
@@ -7713,10 +8025,15 @@ async function handleRequest(request, response) {
     const result = saveCredential({ ...body, photoUrl: uploadedPhoto ? "" : body.photoUrl });
     if (result.error) return json(response, result.duplicate ? 409 : 400, { message: result.error, duplicate: result.duplicate });
     if (uploadedPhoto) result.credential.photoUrl = await storeCredentialFacePhoto(result.credential.id, uploadedPhoto);
+    const isUpdate = Boolean(body.id);
+    let cleanupEvent = null;
+    if (isUpdate && credentialDevicePayloadChanged(result.previousCredential, result.credential)) {
+      cleanupEvent = await emitCredentialEvent("DELETE", result.previousCredential);
+    }
     const event = await emitCredentialEvent(body.id ? "UPDATE" : "CREATE", result.credential);
     Object.assign(result.credential, {
       syncStatus: event.ok ? "SYNCED" : "ERROR",
-      syncMessage: event.message || "",
+      syncMessage: event.message || cleanupEvent?.message || "",
       deviceId: event.deviceId || result.credential.deviceId || "",
       lastSyncedAt: event.ok ? now() : result.credential.lastSyncedAt
     });

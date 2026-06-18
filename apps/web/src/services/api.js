@@ -4,8 +4,22 @@ function apiPath(path) {
   return `${apiUrl}${path}`;
 }
 
+let apiPendingRequests = 0;
+
+function notifyApiPending() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("condo-api-pending", {
+    detail: { pending: apiPendingRequests }
+  }));
+}
+
 function apiFetch(path, options) {
-  return fetch(apiPath(path), options);
+  apiPendingRequests += 1;
+  notifyApiPending();
+  return fetch(apiPath(path), options).finally(() => {
+    apiPendingRequests = Math.max(0, apiPendingRequests - 1);
+    notifyApiPending();
+  });
 }
 
 async function readJson(response, fallback = {}) {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const GATEWAY_WINDOWS_VERSION = "0.4.5";
+const GATEWAY_WINDOWS_VERSION = "0.4.6";
 const GATEWAY_WINDOWS_INSTALLER_FILENAME = "CondoAccessGateway-Setup.exe";
 const GATEWAY_WINDOWS_ZIP_FILENAME = `CondoAccessGateway-${GATEWAY_WINDOWS_VERSION}.zip`;
 

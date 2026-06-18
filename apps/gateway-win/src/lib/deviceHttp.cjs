@@ -92,7 +92,10 @@ async function deviceHttp(command) {
   const targetUrl = `${deviceBaseUrl(device)}${String(request.path || "/")}`;
   const username = device.username || "admin";
   const password = device.password || "";
-  const auth = await authHeader(targetUrl, method, username, password);
+  const skipHttpAuth = request.skipHttpAuth === true;
+  const auth = skipHttpAuth
+    ? { headers: {}, challenge: "", mode: "none" }
+    : await authHeader(targetUrl, method, username, password);
   const headers = { ...auth.headers };
   const requestBody = request.bodyBase64
     ? Buffer.from(String(request.bodyBase64), "base64")
@@ -107,7 +110,7 @@ async function deviceHttp(command) {
     timeoutMs: request.timeoutMs
   });
   let authMode = auth.mode;
-  if (response.status === 401 && auth.mode === "digest") {
+  if (!skipHttpAuth && response.status === 401 && auth.mode === "digest") {
     response = await fetchDevice(targetUrl, {
       method,
       headers: {
