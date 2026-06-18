@@ -142,6 +142,9 @@ function App() {
   const [showCameraForm, setShowCameraForm] = useState(false);
   const [actionForm, setActionForm] = useState(emptyActionForm);
   const [credentialForm, setCredentialForm] = useState(emptyCredentialForm);
+  const [selectedCredentialIds, setSelectedCredentialIds] = useState([]);
+  const [selectedPersonIds, setSelectedPersonIds] = useState([]);
+  const [bulkActionBusy, setBulkActionBusy] = useState("");
   const [vehicleForm, setVehicleForm] = useState(emptyVehicleForm);
   const [vehicleTagBusyId, setVehicleTagBusyId] = useState("");
   const [credentialImportRows, setCredentialImportRows] = useState([]);
@@ -1351,6 +1354,7 @@ function App() {
       return;
     }
     setSelectedPersonId("new");
+    setSelectedPersonIds((current) => current.filter((id) => id !== person.id));
     setData((current) => {
       const nextResidents = current.residents.filter((item) => item.id !== person.id);
       const principal = nextResidents.find((item) => item.unitId === person.unitId && (item.kind || "RESIDENT") === "RESIDENT");
@@ -1367,12 +1371,42 @@ function App() {
     void refreshApiCache();
   }
 
+  async function deleteSelectedPeople(kind, people = []) {
+    const ids = selectedPersonIds.filter((id) => people.some((person) => person.id === id));
+    if (!ids.length) return setMessage("Selecione as pessoas para excluir.");
+    if (!window.confirm(`Excluir ${ids.length} pessoa(s) selecionada(s) e suas credenciais dos equipamentos?`)) return;
+    setBulkActionBusy("people");
+    const response = await apiFetch("/api/people/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids })
+    });
+    const result = await response.json().catch(() => ({}));
+    setBulkActionBusy("");
+    if (!response.ok) {
+      setMessage(result.message || "Falha ao excluir pessoas em massa.");
+      return;
+    }
+    const removedIds = (result.removed || []).map((person) => person.id);
+    setSelectedPersonIds((current) => current.filter((id) => !removedIds.includes(id)));
+    setSelectedPersonId("new");
+    setData((current) => ({
+      ...current,
+      residents: current.residents.filter((person) => !removedIds.includes(person.id)),
+      credentials: current.credentials.filter((credential) => !removedIds.includes(credential.personId))
+    }));
+    setMessage(`${removedIds.length} ${kind === "RESIDENT" ? "morador(es)" : "pessoa(s)"} excluido(s).`);
+    void refreshApiCache();
+  }
+
   async function saveCredentialForm(event) {
     event.preventDefault();
     const payload = {
       ...credentialForm,
       tenantId: credentialForm.tenantId || selectedTenant?.id || "",
-      unitId: credentialForm.unitId || selectedUnit?.unitId || ""
+      unitId: credentialForm.unitId || selectedUnit?.unitId || "",
+      deviceId: credentialForm.syncDeviceScope === "ALL" ? "" : credentialForm.deviceId || "",
+      syncDeviceScope: credentialForm.syncDeviceScope === "ALL" ? "ALL" : "ONE"
     };
     const response = await apiFetch("/api/credentials", {
       method: "POST",
@@ -1461,8 +1495,34 @@ function App() {
       ...current,
       credentials: current.credentials.filter((item) => item.id !== credential.id)
     }));
+    setSelectedCredentialIds((current) => current.filter((id) => id !== credential.id));
     setCredentialForm((current) => current.id === credential.id ? { ...emptyCredentialForm, tenantId: selectedTenant?.id || "" } : current);
     setMessage(result.event?.ok ? "Credencial excluida do sistema e do equipamento." : `Credencial excluida do sistema. ${result.event?.message || "Falha ao excluir no equipamento."}`);
+    void refreshApiCache();
+  }
+
+  async function deleteSelectedCredentials() {
+    if (!selectedCredentialIds.length) return setMessage("Selecione as credenciais para excluir.");
+    if (!window.confirm(`Excluir ${selectedCredentialIds.length} credencial(is) selecionada(s) dos equipamentos?`)) return;
+    setBulkActionBusy("credentials");
+    const response = await apiFetch("/api/credentials/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: selectedCredentialIds })
+    });
+    const result = await response.json().catch(() => ({}));
+    setBulkActionBusy("");
+    if (!response.ok) {
+      setMessage(result.message || "Falha ao excluir credenciais em massa.");
+      return;
+    }
+    const removedIds = (result.removed || []).map((credential) => credential.id);
+    setData((current) => ({
+      ...current,
+      credentials: current.credentials.filter((credential) => !removedIds.includes(credential.id))
+    }));
+    setSelectedCredentialIds((current) => current.filter((id) => !removedIds.includes(id)));
+    setMessage(`${removedIds.length} credencial(is) excluida(s).`);
     void refreshApiCache();
   }
 
@@ -1476,7 +1536,8 @@ function App() {
         unitId: person.unitId,
         personId: person.id,
         credentialType: type,
-        deviceId: options.deviceId || "",
+        deviceId: options.syncDeviceScope === "ALL" ? "" : options.deviceId || "",
+        syncDeviceScope: options.syncDeviceScope === "ALL" ? "ALL" : "ONE",
         photoUrl: options.photoUrl || ""
       })
     });
@@ -2297,6 +2358,7 @@ function App() {
       ? data.credentials.filter((credential) => credential.personId === currentPerson.id)
       : [];
     const currentPersonFace = currentPersonCredentials.find((credential) => credential.type === "FACE");
+    const selectedPeopleCount = selectedPersonIds.filter((id) => people.some((person) => person.id === id)).length;
 
     return (
       <section className="people-layout">
@@ -2331,13 +2393,15 @@ function App() {
         <article className="panel people-panel">
           <div className="resource-toolbar">
             <label className="search-field"><Search size={16} /><input placeholder={`Filtre por ${title.toLowerCase()}`} /></label>
+            <button className="danger-button" type="button" disabled={!selectedPeopleCount || bulkActionBusy === "people"} onClick={() => void deleteSelectedPeople(kind, people)}><Trash2 size={16} /> Excluir selecionados ({selectedPeopleCount})</button>
             <button type="button" onClick={() => setSelectedPersonId("new")}><Plus size={16} /> Novo {title.toLowerCase()}</button>
           </div>
-          <div className="people-header"><span>Nome</span><span>Documentos</span><span>Celular</span><span>Relacao</span><span>Acoes</span></div>
+          <div className="people-header"><span>Sel.</span><span>Nome</span><span>Documentos</span><span>Celular</span><span>Relacao</span><span>Acoes</span></div>
           {people.map((person) => {
             const face = data.credentials.find((credential) => credential.personId === person.id && credential.type === "FACE");
             return (
               <div className="person-row" key={person.id}>
+                <span><input type="checkbox" checked={selectedPersonIds.includes(person.id)} onChange={(event) => setSelectedPersonIds((current) => event.target.checked ? [...new Set([...current, person.id])] : current.filter((id) => id !== person.id))} /></span>
                 <button className="person-name-cell row-link" onClick={() => setSelectedPersonId(person.id)}><PersonAvatar name={person.name} photoUrl={credentialPhotoUrl(face, person)} /><div><strong>{person.name}</strong><small>{person.email || person.company || person.authorizedBy || "Sem login"}</small><small>{isResident ? `Permissao: ${person.role || "RESIDENT"} - Face ${face ? "importada" : "pendente"}` : person.credentialType}</small></div></button>
                 <span>CPF: {person.cpf || "-"}<br />RG: {person.rg || "-"}</span>
                 <span>{person.phone || "-"}</span>
@@ -3391,7 +3455,8 @@ function App() {
               <Field label="Pessoa"><select value={credentialForm.personId} onChange={(event) => setCredentialForm((current) => ({ ...current, personId: event.target.value }))}><option value="">Selecione</option>{data.residents.filter((person) => person.tenantId === selectedTenant?.id && (!credentialForm.unitId || person.unitId === credentialForm.unitId)).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
               <Field label="Tipo de credencial"><select value={credentialForm.type} onChange={(event) => setCredentialForm((current) => ({ ...current, type: event.target.value }))}><option>APP</option><option>FACE</option><option>RFID</option><option>QR_CODE</option><option>PIN</option><option>PLATE</option></select></Field>
               <Field label="Valor"><input value={credentialForm.value} placeholder="Vazio gera automaticamente" onChange={(event) => setCredentialForm((current) => ({ ...current, value: event.target.value }))} /></Field>
-              <Field label="Equipamento alvo"><select value={credentialForm.deviceId} onChange={(event) => setCredentialForm((current) => ({ ...current, deviceId: event.target.value }))}><option value="">Primeiro equipamento compativel</option>{tenantDevices.map((device) => <option key={device.id} value={device.id}>{device.name} - {device.manufacturer}</option>)}</select></Field>
+              <Field label="Envio ao equipamento"><select value={credentialForm.syncDeviceScope || "ONE"} onChange={(event) => setCredentialForm((current) => ({ ...current, syncDeviceScope: event.target.value, deviceId: event.target.value === "ALL" ? "" : current.deviceId }))}><option value="ONE">Um equipamento</option><option value="ALL">Todos compativeis</option></select></Field>
+              <Field label="Equipamento alvo"><select value={credentialForm.deviceId} disabled={credentialForm.syncDeviceScope === "ALL"} onChange={(event) => setCredentialForm((current) => ({ ...current, deviceId: event.target.value }))}><option value="">Primeiro equipamento compativel</option>{tenantDevices.map((device) => <option key={device.id} value={device.id}>{device.name} - {device.manufacturer}</option>)}</select></Field>
               {credentialForm.type === "FACE" && <div className="face-photo-upload">
                 <PersonAvatar name={data.residents.find((person) => person.id === credentialForm.personId)?.name || "Face"} photoUrl={credentialForm.photoUrl} />
                 <Field label="Foto facial para enviar ao equipamento"><input type="file" accept="image/jpeg,image/png" onChange={handleFacePhotoFile} /></Field>
@@ -3450,15 +3515,16 @@ function App() {
             {!tenantFaces.length && <div className="empty-state">Nenhuma facial importada para este condominio.</div>}
           </article>
           <article className="panel">
-            <div className="panel-heading"><h2>Credenciais</h2><BadgeCheck size={20} /></div>
-            <div className="unit-table header"><span>Foto / Pessoa</span><span>Tipo</span><span>Identificacao</span><span>Sincronismo</span></div>
+            <div className="panel-heading"><h2>Credenciais</h2><button className="danger-button" type="button" disabled={!selectedCredentialIds.length || bulkActionBusy === "credentials"} onClick={() => void deleteSelectedCredentials()}><Trash2 size={16} /> Excluir selecionadas ({selectedCredentialIds.length})</button></div>
+            <div className="unit-table credential-table header"><span>Sel.</span><span>Foto / Pessoa</span><span>Tipo</span><span>Identificacao</span><span>Sincronismo</span><span>Acoes</span></div>
             {tenantCredentials.map((credential) => {
               const person = data.residents.find((item) => item.id === credential.personId);
               const unit = data.units.find((item) => item.unitId === credential.unitId);
               const credentialName = person?.name || credential.personName || credential.personId || "Sem pessoa";
               const credentialPhoto = credentialPhotoUrl(credential, person);
               return (
-                <div className="unit-table row" key={credential.id}>
+                <div className="unit-table credential-table row" key={credential.id}>
+                  <span><input type="checkbox" checked={selectedCredentialIds.includes(credential.id)} onChange={(event) => setSelectedCredentialIds((current) => event.target.checked ? [...new Set([...current, credential.id])] : current.filter((id) => id !== credential.id))} /></span>
                   <span className="credential-person-cell"><PersonAvatar name={credentialName} photoUrl={credentialPhoto} /><span><strong>{credentialName}</strong><small>Unidade {unit?.unitNumber || "-"}</small></span></span>
                   <span>{credential.type}</span>
                   <span>{credential.valueLabel}</span>

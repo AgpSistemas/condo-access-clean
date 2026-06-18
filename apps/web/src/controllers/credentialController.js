@@ -3,7 +3,8 @@ import { resolveResponse } from "./controllerResponse.js";
 
 const saveCredentialForm = async (payload) => resolveResponse(await service.saveCredential(payload));
 const deleteCredential = async (id) => resolveResponse(await service.deleteCredential(id));
+const deleteCredentials = async (ids) => resolveResponse(await service.deleteCredentials(ids));
 const generateCredential = async (payload) => resolveResponse(await service.generateCredential(payload));
 const importCredentials = async (payload) => resolveResponse(await service.importCredentials(payload));
 
-export { saveCredentialForm, deleteCredential, generateCredential, importCredentials };
+export { saveCredentialForm, deleteCredential, deleteCredentials, generateCredential, importCredentials };

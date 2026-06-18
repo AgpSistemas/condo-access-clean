@@ -1098,7 +1098,7 @@ nav button:hover {
 .person-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(200px, 1.35fr) minmax(125px, 0.75fr) minmax(90px, 0.55fr) minmax(130px, 0.75fr) minmax(190px, 0.9fr);
+  grid-template-columns: 42px minmax(200px, 1.35fr) minmax(125px, 0.75fr) minmax(90px, 0.55fr) minmax(130px, 0.75fr) minmax(190px, 0.9fr);
   gap: 10px;
   align-items: center;
 }
@@ -2333,6 +2333,10 @@ nav button:hover {
 
 .unit-table.row {
   border-bottom: 1px solid #edf1f2;
+}
+
+.unit-table.credential-table {
+  grid-template-columns: 42px minmax(220px, 1.2fr) minmax(120px, 0.55fr) minmax(170px, 0.85fr) minmax(120px, 0.6fr) minmax(190px, 0.9fr);
 }
 
 .unit-table span {

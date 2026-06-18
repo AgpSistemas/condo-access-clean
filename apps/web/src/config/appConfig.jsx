@@ -325,6 +325,8 @@ const emptyCredentialForm = {
   value: "",
   valueLabel: "",
   deviceId: "",
+  syncDeviceScope: "ONE",
+  syncDeviceIds: [],
   photoUrl: ""
 };
 

@@ -2588,6 +2588,15 @@ function saveCredential(body = {}) {
     return { error: "Credencial duplicada", duplicate };
   }
 
+  const syncDeviceScope = body.deviceId === "__ALL__" || body.syncDeviceScope === "ALL" ? "ALL" : (body.syncDeviceScope || existing?.syncDeviceScope || "ONE");
+  const syncDeviceIds = Array.isArray(body.syncDeviceIds)
+    ? body.syncDeviceIds
+    : syncDeviceScope === "ALL"
+      ? []
+      : body.deviceId && body.deviceId !== "__ALL__"
+        ? [body.deviceId]
+        : existing?.syncDeviceIds || [];
+
   const credential = {
     id: body.id || makeId("credential"),
     tenantId,
@@ -2599,7 +2608,10 @@ function saveCredential(body = {}) {
     valueLabel: body.valueLabel || existing?.valueLabel || credentialDisplayValue(type, value, person || body),
     syncStatus: body.syncStatus || existing?.syncStatus || "PENDING",
     syncMessage: body.syncMessage || existing?.syncMessage || "",
-    deviceId: body.deviceId || existing?.deviceId || "",
+    deviceId: syncDeviceScope === "ALL" ? "" : body.deviceId || existing?.deviceId || "",
+    syncDeviceScope,
+    syncDeviceIds,
+    syncResults: Array.isArray(body.syncResults) ? body.syncResults : existing?.syncResults || [],
     source: body.source || existing?.source || "MANUAL",
     personExternalId: body.personExternalId || body.externalId || existing?.personExternalId || "",
     devicePath: body.devicePath || existing?.devicePath || "",
@@ -4660,6 +4672,18 @@ function controlIdDelay(ms = 300) {
 
 async function controlIdUserImageExists(device, session, userId) {
   const userIdText = String(userId);
+  try {
+    const result = await controlIdPost(device, session, "/user_get_image_list.fcgi", {
+      user_ids: [Number(userId) || userId]
+    });
+    const images = Array.isArray(result.payload?.user_images) ? result.payload.user_images : [];
+    if (images.some((image) => String(image.id ?? image.user_id ?? image.userId ?? "") === userIdText && (image.image || image.timestamp))) {
+      return true;
+    }
+  } catch {
+    // Older firmwares expose only user_list_images or image_timestamp on users.
+  }
+
   for (const pathName of ["/user_list_images.fcgi?get_timestamp=1", "/user_list_images?get_timestamp=1"]) {
     try {
       const result = await controlIdRequest(device, pathName, { session, method: "GET" });
@@ -4688,10 +4712,12 @@ async function controlIdUserImageExists(device, session, userId) {
 async function uploadControlIdUserImage(device, session, userId, photo = {}) {
   const attempts = [];
   const timestamp = Math.floor(Date.now() / 1000);
-  const contentType = photo.mimeType || "image/jpeg";
+  const contentType = "application/octet-stream";
   const paths = [
     `/user_set_image.fcgi?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`,
-    `/user_set_image?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`
+    `/user_set_image.fcgi?user_id=${encodeURIComponent(userId)}`,
+    `/user_set_image?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`,
+    `/user_set_image?user_id=${encodeURIComponent(userId)}`
   ];
 
   for (const pathName of paths) {
@@ -5036,17 +5062,33 @@ async function deleteStoredCredentialFromDevice(device, credential = {}) {
   };
 }
 
+function credentialDeviceCompatible(device = {}, credential = {}) {
+  const adapter = deviceAdapter(device);
+  if (normalizeCredentialType(credential.type) === "FACE") {
+    return [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI"].includes(adapter);
+  }
+  return adapter !== "GENERIC_TCP" || device.category === "access-control";
+}
+
+function credentialTargetDevices(credential = {}, options = {}) {
+  const requestedIds = Array.isArray(options.deviceIds) && options.deviceIds.length
+    ? options.deviceIds
+    : Array.isArray(credential.syncDeviceIds) && credential.syncDeviceIds.length
+      ? credential.syncDeviceIds
+      : [];
+  const deviceId = firstEventText(options.deviceId, credential.deviceId);
+  const allTargets = options.all === true || credential.syncDeviceScope === "ALL" || deviceId === "__ALL__";
+  const baseDevices = requestedIds.length
+    ? devices.filter((device) => requestedIds.includes(device.id))
+    : !allTargets && deviceId
+      ? devices.filter((device) => device.id === deviceId)
+      : devices.filter((device) => device.tenantId === credential.tenantId);
+  const compatible = baseDevices.filter((device) => credentialDeviceCompatible(device, credential));
+  return allTargets || requestedIds.length ? compatible : compatible.slice(0, 1);
+}
+
 function credentialTargetDevice(credential = {}) {
-  const targetDevices = credential.deviceId
-    ? devices.filter((device) => device.id === credential.deviceId)
-    : devices.filter((device) => device.tenantId === credential.tenantId);
-  return targetDevices.find((device) => {
-    const adapter = deviceAdapter(device);
-    if (credential.type === "FACE") {
-      return [CONTROL_ID_ACCESS_ADAPTER, "HIKVISION_ISAPI"].includes(adapter);
-    }
-    return adapter !== "GENERIC_TCP" || device.category === "access-control";
-  }) || null;
+  return credentialTargetDevices(credential)[0] || null;
 }
 
 function credentialDevicePayloadChanged(previous = null, current = {}) {
@@ -5065,12 +5107,30 @@ function credentialDevicePayloadChanged(previous = null, current = {}) {
 
 async function emitCredentialEvent(action, credential = {}) {
   try {
-    const device = credentialTargetDevice(credential);
-    if (!device) return { action, ok: false, message: "Nenhum equipamento compativel cadastrado" };
-    const result = action === "DELETE"
-      ? await deleteStoredCredentialFromDevice(device, credential)
-      : await sendStoredCredentialToDevice(device, credential);
-    return { action, ...result };
+    const targetDevices = credentialTargetDevices(credential);
+    if (!targetDevices.length) return { action, ok: false, message: "Nenhum equipamento compativel cadastrado" };
+    const results = [];
+    for (const device of targetDevices) {
+      const result = action === "DELETE"
+        ? await deleteStoredCredentialFromDevice(device, credential)
+        : await sendStoredCredentialToDevice(device, credential);
+      results.push({ ...result, deviceId: result.deviceId || device.id, deviceName: device.name || device.id });
+    }
+    const failed = results.filter((result) => !result.ok);
+    const ok = failed.length === 0;
+    const mainResult = failed[0] || results[0] || {};
+    const label = targetDevices.length === 1
+      ? (mainResult.message || "")
+      : `${ok ? "Sincronizado" : "Falha parcial"} em ${results.length - failed.length}/${results.length} equipamento(s)`;
+    return {
+      action,
+      ...mainResult,
+      ok,
+      message: label,
+      deviceId: targetDevices.length === 1 ? mainResult.deviceId : "",
+      deviceIds: results.filter((result) => result.ok).map((result) => result.deviceId).filter(Boolean),
+      results
+    };
   } catch (error) {
     return {
       action,
@@ -5079,6 +5139,34 @@ async function emitCredentialEvent(action, credential = {}) {
       attempts: []
     };
   }
+}
+
+async function deleteCredentialRecord(credential = {}) {
+  if (!credential?.id) return { ok: false, message: "Credencial invalida" };
+  const index = credentials.findIndex((item) => item.id === credential.id);
+  if (index === -1) return { ok: false, message: "Credencial nao encontrada", credential };
+  const event = await emitCredentialEvent("DELETE", credentials[index]);
+  const [removed] = credentials.splice(index, 1);
+  await deleteCredentialFacePhoto(removed.id);
+  return { ok: true, removed, event };
+}
+
+async function deletePersonRecord(person = {}) {
+  if (!person?.id) return { ok: false, message: "Pessoa invalida" };
+  const index = residents.findIndex((item) => item.id === person.id);
+  if (index === -1) return { ok: false, message: "Pessoa nao encontrada", person };
+  const currentPerson = residents[index];
+  const credentialResults = [];
+  const personCredentials = credentials.filter((credential) => credential.personId === currentPerson.id);
+  for (const credential of personCredentials) {
+    credentialResults.push(await deleteCredentialRecord(credential));
+  }
+  const [removed] = residents.splice(index, 1);
+  vehicles.forEach((vehicle) => {
+    if (vehicle.personId === removed.id) vehicle.personId = "";
+  });
+  syncUnitResidentSummary(removed.unitId);
+  return { ok: true, removed, credentialResults };
 }
 
 async function processCredentialSyncJob(job) {
@@ -8181,6 +8269,8 @@ async function handleRequest(request, response) {
       syncStatus: event.ok ? "SYNCED" : "ERROR",
       syncMessage: event.message || cleanupEvent?.message || "",
       deviceId: event.deviceId || result.credential.deviceId || "",
+      syncDeviceIds: event.deviceIds?.length ? event.deviceIds : result.credential.syncDeviceIds || [],
+      syncResults: event.results || [],
       lastSyncedAt: event.ok ? now() : result.credential.lastSyncedAt
     });
     savePersistentState("credential-saved");
@@ -8214,6 +8304,8 @@ async function handleRequest(request, response) {
       syncStatus: event.ok ? "SYNCED" : "ERROR",
       syncMessage: event.message || "",
       deviceId: event.deviceId || result.credential.deviceId || "",
+      syncDeviceIds: event.deviceIds?.length ? event.deviceIds : result.credential.syncDeviceIds || [],
+      syncResults: event.results || [],
       lastSyncedAt: event.ok ? now() : result.credential.lastSyncedAt
     });
     savePersistentState("credential-generated");
@@ -8301,15 +8393,34 @@ async function handleRequest(request, response) {
     return json(response, dryRun ? 200 : 201, report);
   }
 
+  if (request.method === "POST" && url.pathname === "/api/credentials/bulk-delete") {
+    const body = await readBody(request);
+    const ids = Array.isArray(body.ids) ? body.ids.map((id) => String(id)).filter(Boolean) : [];
+    if (!ids.length) return json(response, 400, { message: "Informe as credenciais para excluir" });
+    const results = [];
+    for (const credentialId of ids) {
+      const credential = credentials.find((item) => item.id === credentialId);
+      if (!credential) {
+        results.push({ ok: false, credentialId, message: "Credencial nao encontrada" });
+        continue;
+      }
+      const result = await deleteCredentialRecord(credential);
+      results.push({ credentialId, ...result });
+    }
+    await savePersistentStateAndWait("credentials-bulk-deleted");
+    return json(response, 200, {
+      ok: results.every((item) => item.ok),
+      removed: results.filter((item) => item.ok).map((item) => item.removed).filter(Boolean),
+      results
+    });
+  }
+
   const deleteCredentialMatch = url.pathname.match(/^\/api\/credentials\/([^/]+)$/);
   if (request.method === "DELETE" && deleteCredentialMatch) {
     const credentialId = decodeURIComponent(deleteCredentialMatch[1]);
-    const index = credentials.findIndex((item) => item.id === credentialId);
-    if (index === -1) return json(response, 404, { message: "Credencial nao encontrada" });
-    const credential = credentials[index];
-    const event = await emitCredentialEvent("DELETE", credential);
-    const [removed] = credentials.splice(index, 1);
-    await deleteCredentialFacePhoto(credential.id);
+    const credential = credentials.find((item) => item.id === credentialId);
+    if (!credential) return json(response, 404, { message: "Credencial nao encontrada" });
+    const { removed, event } = await deleteCredentialRecord(credential);
     await savePersistentStateAndWait("credential-deleted");
     return json(response, 200, { ok: true, removed, event });
   }
@@ -8961,20 +9072,35 @@ async function handleRequest(request, response) {
     return json(response, updated ? 200 : 201, publicPerson(updated || person));
   }
 
+  if (request.method === "POST" && url.pathname === "/api/people/bulk-delete") {
+    const body = await readBody(request);
+    const ids = Array.isArray(body.ids) ? body.ids.map((id) => String(id)).filter(Boolean) : [];
+    if (!ids.length) return json(response, 400, { message: "Informe as pessoas para excluir" });
+    const results = [];
+    for (const personId of ids) {
+      const person = residents.find((item) => item.id === personId);
+      if (!person) {
+        results.push({ ok: false, personId, message: "Pessoa nao encontrada" });
+        continue;
+      }
+      const result = await deletePersonRecord(person);
+      results.push({ personId, ...result });
+    }
+    await savePersistentStateAndWait("people-bulk-deleted");
+    return json(response, 200, {
+      ok: results.every((item) => item.ok),
+      removed: results.filter((item) => item.ok).map((item) => item.removed).filter(Boolean),
+      results
+    });
+  }
+
   const deletePersonMatch = url.pathname.match(/^\/api\/people\/([^/]+)$/);
   if (request.method === "DELETE" && deletePersonMatch) {
-    const index = residents.findIndex((person) => person.id === deletePersonMatch[1]);
-    if (index === -1) return json(response, 404, { message: "Pessoa nao encontrada" });
-    const [removed] = residents.splice(index, 1);
-    for (let credentialIndex = credentials.length - 1; credentialIndex >= 0; credentialIndex -= 1) {
-      if (credentials[credentialIndex].personId === removed.id) credentials.splice(credentialIndex, 1);
-    }
-    vehicles.forEach((vehicle) => {
-      if (vehicle.personId === removed.id) vehicle.personId = "";
-    });
-    syncUnitResidentSummary(removed.unitId);
+    const person = residents.find((item) => item.id === deletePersonMatch[1]);
+    if (!person) return json(response, 404, { message: "Pessoa nao encontrada" });
+    const result = await deletePersonRecord(person);
     await savePersistentStateAndWait("person-deleted");
-    return json(response, 200, { ok: true, removed });
+    return json(response, 200, result);
   }
 
   const unitLoginsMatch = url.pathname.match(/^\/api\/units\/([^/]+)\/logins$/);
