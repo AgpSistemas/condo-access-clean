@@ -9,6 +9,7 @@ equipamentos de controle de acesso da Control iD.
   snapshot, diagnostico e abertura remota.
 - `profiles.js`: modelos suportados, recursos, defaults, validacao e formato
   das acoes por equipamento.
+- `faces.js`: recuperacao, fallback e upload oficial de fotos faciais.
 - `vehicleTags.js`: tags veiculares nos modos UHF estendido e padrao.
 - `iduhf.js`: compatibilidade com o perfil antigo especifico do iDUHF.
 

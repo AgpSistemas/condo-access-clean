@@ -79,6 +79,10 @@ import {
 import { createHikvisionParsers } from "./integrations/hikvision/parsers.js";
 import { DEFAULT_SNAPSHOT_OBJECTS, createControlIdClient } from "./integrations/controlid/client.js";
 import {
+  fetchControlIdFacePhotoBytes,
+  uploadControlIdUserImage
+} from "./integrations/controlid/faces.js";
+import {
   CONTROL_ID_ACCESS_ADAPTER,
   controlIdActionParameters,
   controlIdDeviceDefaults,
@@ -4735,53 +4739,6 @@ async function controlIdUserImageExists(device, session, userId) {
   }
 }
 
-async function uploadControlIdUserImage(device, session, userId, photo = {}) {
-  const attempts = [];
-  const timestamp = Math.floor(Date.now() / 1000);
-  const contentType = "application/octet-stream";
-  const paths = [
-    `/user_set_image.fcgi?user_id=${encodeURIComponent(userId)}&timestamp=${timestamp}&match=0`
-  ];
-
-  for (const pathName of paths) {
-    try {
-      await controlIdBinaryRequest(device, session, pathName, {
-        body: photo.buffer,
-        contentType,
-        timeoutMs: 20000
-      });
-      for (let index = 0; index < 4; index += 1) {
-        if (await controlIdUserImageExists(device, session, userId)) {
-          return {
-            ok: true,
-            attempts: [
-              ...attempts,
-              { label: "Control iD foto facial", path: pathName, ok: true },
-              { label: "Control iD validar foto facial", path: "/user_list_images.fcgi", ok: true }
-            ]
-          };
-        }
-        await controlIdDelay(500);
-      }
-      attempts.push({
-        label: "Control iD foto facial",
-        path: pathName,
-        ok: false,
-        error: "Equipamento respondeu ao upload, mas a foto nao apareceu no usuario"
-      });
-    } catch (error) {
-      attempts.push({
-        label: "Control iD foto facial",
-        path: pathName,
-        ok: false,
-        error: error instanceof Error ? error.message : "Falha ao enviar foto facial"
-      });
-    }
-  }
-
-  throw new Error(attempts.at(-1)?.error || "Control iD nao confirmou a foto facial");
-}
-
 async function sendControlIdStoredCredential(device, credential = {}) {
   const session = await controlIdLogin(device);
   const person = personForStoredCredential(credential);
@@ -4822,12 +4779,26 @@ async function sendControlIdStoredCredential(device, credential = {}) {
         attempts
       };
     }
-    const photo = await fetchCredentialPhotoBytes(device, photoUrl);
+    const photo = await fetchControlIdFacePhotoBytes({
+      device,
+      credential,
+      person,
+      fetchPhotoBytes: fetchCredentialPhotoBytes,
+      storedPhotoId: storedFacePhotoId
+    });
     const maxBytes = Number(process.env.CONTROL_ID_FACE_UPLOAD_MAX_BYTES || 1900000);
     if (photo.buffer.length > maxBytes) {
       throw new Error(`Foto facial maior que ${maxBytes} bytes para o Control iD`);
     }
-    const upload = await uploadControlIdUserImage(device, session, user.id, photo);
+    const upload = await uploadControlIdUserImage({
+      device,
+      session,
+      userId: user.id,
+      photo,
+      binaryRequest: controlIdBinaryRequest,
+      imageExists: controlIdUserImageExists,
+      delay: controlIdDelay
+    });
     attempts.push(...(upload.attempts || []));
     return {
       ok: true,
@@ -8287,7 +8258,10 @@ async function handleRequest(request, response) {
     if (isUpdate && credentialDevicePayloadChanged(result.previousCredential, result.credential)) {
       cleanupEvent = await emitCredentialEvent("DELETE", result.previousCredential);
     }
-    const event = await emitCredentialEvent(body.id ? "UPDATE" : "CREATE", result.credential);
+    const syncCredential = uploadedPhoto
+      ? { ...result.credential, photoUrl: uploadedPhoto }
+      : result.credential;
+    const event = await emitCredentialEvent(body.id ? "UPDATE" : "CREATE", syncCredential);
     Object.assign(result.credential, {
       syncStatus: event.ok ? "SYNCED" : "ERROR",
       syncMessage: event.message || cleanupEvent?.message || "",
@@ -8322,7 +8296,10 @@ async function handleRequest(request, response) {
     });
     if (result.error) return json(response, result.duplicate ? 409 : 400, { message: result.error, duplicate: result.duplicate });
     if (uploadedPhoto) result.credential.photoUrl = await storeCredentialFacePhoto(result.credential.id, uploadedPhoto);
-    const event = await emitCredentialEvent("CREATE", result.credential);
+    const syncCredential = uploadedPhoto
+      ? { ...result.credential, photoUrl: uploadedPhoto }
+      : result.credential;
+    const event = await emitCredentialEvent("CREATE", syncCredential);
     Object.assign(result.credential, {
       syncStatus: event.ok ? "SYNCED" : "ERROR",
       syncMessage: event.message || "",
