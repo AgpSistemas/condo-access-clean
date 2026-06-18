@@ -7,7 +7,7 @@
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "build": "node --check src/server.js",
-    "test": "node --test src/integrations/access-control/*.test.js src/integrations/controlid/*.test.js src/integrations/nice-linear/gateway.test.js"
+    "test": "node --test src/integrations/access-control/*.test.js src/integrations/controlid/*.test.js src/integrations/hikvision/*.test.js src/integrations/nice-linear/gateway.test.js src/modules/gateway/*.test.js"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",

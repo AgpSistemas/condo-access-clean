@@ -34,6 +34,7 @@ export async function waitForGatewayCommand(command, {
   };
 }
 
+// Converte uma camera cadastrada no cloud em comando executavel pelo gateway local da maquina do condominio.
 export async function requestGatewayCameraSnapshot(camera, device, {
   queueCommand,
   waitForCommands,

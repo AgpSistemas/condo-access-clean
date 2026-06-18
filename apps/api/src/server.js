@@ -12,6 +12,14 @@ import { matchingSingleUseInvite } from "./modules/invites/lifecycle.js";
 import { createCommunityArea, createCommunityEvent } from "./modules/community/records.js";
 import { waitForGatewayCommand, requestGatewayCameraSnapshot } from "./modules/gateway/commandResult.js";
 import {
+  localGatewayConfigForDevice,
+  localGatewayEnabledForDevice,
+  publicLocalGatewayConfig,
+  removeLocalGatewayConfig,
+  stripLocalGatewayDeviceFields,
+  upsertLocalGatewayConfig
+} from "./modules/gateway/localGatewayConfig.js";
+import {
   GATEWAY_WINDOWS_INSTALLER_FILENAME,
   GATEWAY_WINDOWS_ZIP_FILENAME,
   gatewayWindowsInstallerPath,
@@ -312,6 +320,8 @@ const tenant = {
   sipExtensionGroupName: "AGP Sistemas Corp",
   sipExtensionStart: "9100",
   sipExtensionEnd: "9199",
+  inviteGeofenceEnabled: true,
+  inviteGeofenceRadiusMeters: 200,
   updatedAt: now()
 };
 
@@ -331,6 +341,8 @@ const showroomTenant = {
   sipExtensionGroupName: "Condominio Dinamus",
   sipExtensionStart: "9200",
   sipExtensionEnd: "9299",
+  inviteGeofenceEnabled: true,
+  inviteGeofenceRadiusMeters: 200,
   updatedAt: now()
 };
 
@@ -345,6 +357,7 @@ const devices = [];
 const cameras = [];
 
 const gatewayInstallations = [];
+const gatewayDeviceConfigs = [];
 const gatewayCommands = [];
 
 const niceLinearListeners = new Map();
@@ -866,9 +879,10 @@ function extensionStatus(tenantId = "", registrationMap = null) {
 function publicCamera(camera) {
   const { password: _password, ...safeCamera } = camera;
   const linkedDevice = camera.deviceId ? devices.find((device) => device.id === camera.deviceId) : null;
-  const localGatewayPlayback = Boolean(linkedDevice?.useLocalGateway);
+  const localGatewayPlayback = localGatewayEnabledForDevice(gatewayDeviceConfigs, linkedDevice || {});
   return {
     ...safeCamera,
+    connectionMode: localGatewayPlayback ? "LOCAL_GATEWAY" : safeCamera.connectionMode || "DIRECT_API",
     localGatewayPlayback,
     playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : safeCamera.playbackMode || safeCamera.loadMethod || "HLS_GATEWAY"
   };
@@ -876,9 +890,18 @@ function publicCamera(camera) {
 
 function publicDevice(device) {
   const { password: _password, ...safeDevice } = device;
+  const gatewayConfig = localGatewayConfigForDevice(gatewayDeviceConfigs, device);
+  const useLocalGateway = localGatewayEnabledForDevice(gatewayDeviceConfigs, device);
   return {
     ...safeDevice,
     adapter: deviceAdapter(device),
+    useLocalGateway,
+    gatewayConfig: publicLocalGatewayConfig({
+      ...(gatewayConfig || {}),
+      enabled: useLocalGateway,
+      tenantId: device.tenantId,
+      deviceId: device.id
+    }),
     passwordSet: Boolean(device.password || device.passwordSet)
   };
 }
@@ -906,6 +929,7 @@ function bootstrap() {
     devices: devices.map(publicDevice),
     cameras: cameras.map(publicCamera),
     gateways: gatewayInstallations.map(publicGatewayInstallation),
+    gatewayDeviceConfigs: gatewayDeviceConfigs.map(publicLocalGatewayConfig),
     actions,
     credentials,
     credentialSyncJobs,
@@ -1227,7 +1251,7 @@ async function authenticatedDeviceRequest(device, targetPath, {
     throw new Error("Senha de integracao nao cadastrada para este equipamento");
   }
 
-  if (device.useLocalGateway) {
+  if (deviceUsesLocalGateway(device)) {
     const command = queueGatewayCommand(device, 1, {
       request: { path: targetPath, method, body, bodyBase64, contentType, timeoutMs, responseType }
     }, "DEVICE_HTTP");
@@ -1488,6 +1512,10 @@ function publicGatewayInstallation(item) {
   };
 }
 
+function deviceUsesLocalGateway(device = {}) {
+  return localGatewayEnabledForDevice(gatewayDeviceConfigs, device);
+}
+
 function gatewayRequestInstallation(request) {
   const tenantId = String(request.headers["x-tenant-id"] || "").trim();
   const token = String(request.headers["x-gateway-token"] || "").trim();
@@ -1583,6 +1611,12 @@ function numericCoordinate(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function booleanSetting(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  return ["true", "1", "yes", "on", "sim"].includes(String(value).trim().toLowerCase());
+}
+
 // Calcula distancia em metros entre condominio e convidado para liberar ou bloquear o QR do convite.
 function distanceMetersBetween(left = {}, right = {}) {
   const earthRadiusMeters = 6371000;
@@ -1606,11 +1640,13 @@ function inviteGeofence(invite = {}) {
   const tenantData = findTenant(invite.tenantId);
   const latitude = numericCoordinate(tenantData.latitude);
   const longitude = numericCoordinate(tenantData.longitude);
+  const enabled = booleanSetting(tenantData.inviteGeofenceEnabled, true);
   const radiusMeters = Math.max(
     20,
     Number(invite.geofenceRadiusMeters || tenantData.inviteGeofenceRadiusMeters || tenantData.geofenceRadiusMeters || process.env.INVITE_GEOFENCE_RADIUS_METERS || 200) || 200
   );
   return {
+    enabled,
     configured: latitude !== null && longitude !== null,
     latitude,
     longitude,
@@ -1622,6 +1658,14 @@ function inviteGeofence(invite = {}) {
 // Decide se a localizacao informada pelo navegador esta dentro da area permitida do condominio.
 function verifyInviteLocation(invite = {}, coordinates = {}) {
   const geofence = inviteGeofence(invite);
+  if (!geofence.enabled) {
+    return {
+      ...geofence,
+      allowed: true,
+      distanceMeters: null,
+      message: "Validacao de localizacao desativada. QR Code liberado."
+    };
+  }
   if (!geofence.configured) {
     return {
       ...geofence,
@@ -2318,9 +2362,10 @@ function findPersonForCredential(body = {}) {
 function saveCredential(body = {}) {
   const person = findPersonForCredential(body);
   const unit = units.get(body.unitId || person?.unitId) || units.get("unit-101");
-  const tenantId = body.tenantId || person?.tenantId || unit?.tenantId || tenant.id;
-  const type = normalizeCredentialType(body.type || body.credentialType || person?.credentialType || "APP");
-  const value = String(body.value || body.credentialValue || generatedCredentialValue(type, person || body)).trim();
+  const existing = body.id ? credentials.find((credential) => credential.id === body.id) : null;
+  const tenantId = body.tenantId || person?.tenantId || existing?.tenantId || unit?.tenantId || tenant.id;
+  const type = normalizeCredentialType(body.type || body.credentialType || existing?.type || person?.credentialType || "APP");
+  const value = String(body.value || body.credentialValue || existing?.value || generatedCredentialValue(type, person || body)).trim();
   if (!value) {
     return { error: "Valor da credencial vazio" };
   }
@@ -2336,25 +2381,26 @@ function saveCredential(body = {}) {
   const credential = {
     id: body.id || makeId("credential"),
     tenantId,
-    unitId: body.unitId || person?.unitId || unit?.unitId || "",
-    personId: body.personId || person?.id || "",
-    personName: body.personName || person?.name || "",
+    unitId: body.unitId || person?.unitId || existing?.unitId || unit?.unitId || "",
+    personId: body.personId || person?.id || existing?.personId || "",
+    personName: body.personName || person?.name || existing?.personName || "",
     type,
     value,
-    valueLabel: body.valueLabel || credentialDisplayValue(type, value, person || body),
-    syncStatus: body.syncStatus || "PENDING",
-    deviceId: body.deviceId || "",
-    source: body.source || "MANUAL",
-    personExternalId: body.personExternalId || body.externalId || "",
-    devicePath: body.devicePath || "",
-    photoUrl: body.photoUrl || "",
-    validFrom: body.validFrom || "",
-    validUntil: body.validUntil || "",
-    createdAt: body.createdAt || now(),
+    valueLabel: body.valueLabel || existing?.valueLabel || credentialDisplayValue(type, value, person || body),
+    syncStatus: body.syncStatus || existing?.syncStatus || "PENDING",
+    syncMessage: body.syncMessage || existing?.syncMessage || "",
+    deviceId: body.deviceId || existing?.deviceId || "",
+    source: body.source || existing?.source || "MANUAL",
+    personExternalId: body.personExternalId || body.externalId || existing?.personExternalId || "",
+    devicePath: body.devicePath || existing?.devicePath || "",
+    photoUrl: body.photoUrl || existing?.photoUrl || "",
+    validFrom: body.validFrom || existing?.validFrom || "",
+    validUntil: body.validUntil || existing?.validUntil || "",
+    createdAt: body.createdAt || existing?.createdAt || now(),
     updatedAt: now()
   };
 
-  const updated = body.id ? updateById(credentials, body.id, credential) : null;
+  const updated = existing ? updateById(credentials, body.id, credential) : null;
   if (!updated) credentials.unshift(credential);
   return { credential: updated || credential, duplicate: null };
 }
@@ -2450,7 +2496,7 @@ async function hikvisionFetchImageAsDataUrl(device, photoRef = "") {
 
   const maxBytes = Number(process.env.HIKVISION_FACE_IMAGE_MAX_BYTES || 350000);
   const targetUrl = absoluteDeviceImageUrl(device, clean);
-  if (device.useLocalGateway) {
+  if (deviceUsesLocalGateway(device)) {
     const parsed = new URL(targetUrl);
     const result = await authenticatedDeviceRequest(device, `${parsed.pathname}${parsed.search}`, {
       method: "GET",
@@ -3845,6 +3891,26 @@ async function ensureHikvisionCredentialUser(device, credential = {}, person = n
   ]);
 }
 
+async function deleteHikvisionFaceByEmployeeNo(device, employeeNo = "") {
+  if (!employeeNo) {
+    return { ok: true, attempts: [] };
+  }
+  return hikvisionTryJsonWrites(device, [
+    {
+      label: "Hikvision excluir face EmployeeNoList",
+      path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
+      method: "PUT",
+      body: { FaceInfoDelCond: { EmployeeNoList: [{ employeeNo }] } }
+    },
+    {
+      label: "Hikvision excluir face employeeNoList",
+      path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
+      method: "PUT",
+      body: { FaceInfoDelCond: { employeeNoList: [{ employeeNo }] } }
+    }
+  ]);
+}
+
 function dataUrlImageBuffer(dataUrl = "") {
   const match = String(dataUrl).match(/^data:([^;,]+)?;base64,(.+)$/i);
   if (!match) return null;
@@ -3932,7 +3998,7 @@ async function fetchCredentialPhotoBytes(device, photoUrl = "") {
   if (dataImage?.buffer?.length) return dataImage;
   const targetUrl = absoluteDeviceImageUrl(device, clean);
   const sameDeviceOrigin = new URL(targetUrl).origin === new URL(deviceBaseUrl(device)).origin;
-  if (device.useLocalGateway && sameDeviceOrigin && deviceAdapter(device) === "HIKVISION_ISAPI") {
+  if (deviceUsesLocalGateway(device) && sameDeviceOrigin && deviceAdapter(device) === "HIKVISION_ISAPI") {
     const parsed = new URL(targetUrl);
     const result = await authenticatedDeviceRequest(device, `${parsed.pathname}${parsed.search}`, {
       method: "GET",
@@ -4152,6 +4218,7 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
       faceURL: photoUrl,
       URL: photoUrl
     };
+    const cleanupResult = await deleteHikvisionFaceByEmployeeNo(device, employeeNo);
     const multipartResult = await hikvisionTryMultipartFaceWrite(device, faceInfo, photoUrl);
     if (multipartResult.ok) {
       return {
@@ -4159,7 +4226,7 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
         deviceId: device.id,
         adapter: "HIKVISION_ISAPI",
         message: `Face de ${employeeNo} enviada`,
-        attempts: [...(userResult.attempts || []), ...(multipartResult.attempts || [])]
+        attempts: [...(userResult.attempts || []), ...(cleanupResult.attempts || []), ...(multipartResult.attempts || [])]
       };
     }
     const requiresBinaryUpload = Boolean(storedFacePhotoId(photoUrl) || dataUrlImageBuffer(photoUrl));
@@ -4169,7 +4236,7 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
         deviceId: device.id,
         adapter: "HIKVISION_ISAPI",
         message: `Usuario ${employeeNo} cadastrado, mas a foto nao foi aceita pela Hikvision: ${multipartResult.message}`,
-        attempts: [...(userResult.attempts || []), ...(multipartResult.attempts || [])]
+        attempts: [...(userResult.attempts || []), ...(cleanupResult.attempts || []), ...(multipartResult.attempts || [])]
       };
     }
     const faceResult = await hikvisionTryJsonWrites(device, [
@@ -4191,7 +4258,7 @@ async function sendHikvisionStoredCredential(device, credential = {}) {
       deviceId: device.id,
       adapter: "HIKVISION_ISAPI",
       message: faceResult.ok ? `Face de ${employeeNo} enviada` : faceResult.message,
-      attempts: [...(userResult.attempts || []), ...(multipartResult.attempts || []), ...(faceResult.attempts || [])]
+      attempts: [...(userResult.attempts || []), ...(cleanupResult.attempts || []), ...(multipartResult.attempts || []), ...(faceResult.attempts || [])]
     };
   }
 
@@ -4576,12 +4643,20 @@ async function deleteStoredCredentialFromDevice(device, credential = {}) {
   const employeeNo = hikvisionEmployeeNoForCredential(credential, person, { unitForId });
   const type = normalizeCredentialType(credential.type);
   const attempts = type === "FACE"
-    ? [{
-        label: "Hikvision excluir face",
+    ? [
+      {
+        label: "Hikvision excluir face EmployeeNoList",
+        path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
+        method: "PUT",
+        body: { FaceInfoDelCond: { EmployeeNoList: [{ employeeNo }] } }
+      },
+      {
+        label: "Hikvision excluir face employeeNoList",
         path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
         method: "PUT",
         body: { FaceInfoDelCond: { employeeNoList: [{ employeeNo }] } }
-      }]
+      }
+    ]
     : type === "RFID"
       ? [{
           label: "Hikvision excluir cartao",
@@ -4923,6 +4998,7 @@ function toMobileDevice(device) {
     passwordSet: Boolean(device.password || device.passwordSet),
     apiPort: device.apiPort,
     category: device.category,
+    useLocalGateway: deviceUsesLocalGateway(device),
     intercomEnabled: device.intercomEnabled,
     intercomType: device.intercomType,
     intercomExtension: device.intercomExtension,
@@ -4964,8 +5040,8 @@ function checkTcpDevice(device, timeoutMs = 2500) {
 
 async function refreshDeviceStatuses(tenantId) {
   const targetDevices = devices.filter((device) => !tenantId || device.tenantId === tenantId);
-  const directDevices = targetDevices.filter((device) => !device.useLocalGateway);
-  const localDevices = targetDevices.filter((device) => device.useLocalGateway);
+  const directDevices = targetDevices.filter((device) => !deviceUsesLocalGateway(device));
+  const localDevices = targetDevices.filter((device) => deviceUsesLocalGateway(device));
   await Promise.all(directDevices.map(async (device) => {
     const result = await checkTcpDevice(device);
     device.status = result.online ? "ONLINE" : "OFFLINE";
@@ -5001,10 +5077,14 @@ function cameraUsesGatewayPlayback(camera = {}) {
 
 function cameraPlaybackRecord(camera = {}) {
   const linkedDevice = camera.deviceId ? devices.find((device) => device.id === camera.deviceId) : null;
+  const localGatewayPlayback = deviceUsesLocalGateway(linkedDevice || {});
   const profiledCamera = applyCameraProfileDefaults(camera);
   const deviceBackedCamera = linkedDevice
     ? {
       ...profiledCamera,
+      connectionMode: localGatewayPlayback ? "LOCAL_GATEWAY" : profiledCamera.connectionMode || "DIRECT_API",
+      localGatewayPlayback,
+      playbackMode: localGatewayPlayback ? "SNAPSHOT_GATEWAY" : profiledCamera.playbackMode || profiledCamera.loadMethod || "HLS_GATEWAY",
       host: profiledCamera.host || linkedDevice.ipAddress || linkedDevice.apiHost || "",
       ipAddress: profiledCamera.ipAddress || linkedDevice.ipAddress || linkedDevice.apiHost || "",
       rtspPort: Number(profiledCamera.rtspPort || linkedDevice.rtspPort || 554),
@@ -5012,7 +5092,12 @@ function cameraPlaybackRecord(camera = {}) {
       password: linkedDevice.password || profiledCamera.password || "",
       passwordSet: Boolean(linkedDevice.password || profiledCamera.password || profiledCamera.passwordSet)
     }
-    : profiledCamera;
+    : {
+      ...profiledCamera,
+      connectionMode: profiledCamera.connectionMode || "DIRECT_API",
+      localGatewayPlayback: Boolean(profiledCamera.localGatewayPlayback),
+      playbackMode: profiledCamera.playbackMode || profiledCamera.loadMethod || "HLS_GATEWAY"
+    };
   if (cameraUsesGatewayPlayback(deviceBackedCamera) && !deviceBackedCamera.rtspPath) {
     return { ...deviceBackedCamera, stream: "SUB" };
   }
@@ -5430,7 +5515,7 @@ function toMobileCamera(camera, origin) {
   const streamKey = cameraStreamKey(camera, channel);
   const hlsUrl = `${origin}/streams/${streamKey}/index.m3u8`;
   const snapshotUrl = `${origin}/api/cameras/${camera.id}/snapshot.jpg?channel=${channel}`;
-  const localGatewayPlayback = Boolean(device?.useLocalGateway);
+  const localGatewayPlayback = deviceUsesLocalGateway(device || {});
   const exposeDirectRtsp = process.env.EXPOSE_CAMERA_RTSP === "true";
   const directRtspUrl = exposeDirectRtsp && camera.password ? cameraRtspUrl(camera) : "";
   const playbackUrl = localGatewayPlayback ? snapshotUrl : hlsUrl;
@@ -5491,8 +5576,9 @@ function persistentState() {
     units: unitList(),
     residents,
     vehicles,
-    devices,
+    devices: devices.map(stripLocalGatewayDeviceFields),
     gatewayInstallations,
+    gatewayDeviceConfigs,
     cameras,
     actions,
     credentials,
@@ -5523,8 +5609,12 @@ function applyPersistentState(state = {}) {
   (state.units || []).forEach((unit) => units.set(unit.unitId || unit.id, unit));
   replaceCollection(residents, state.residents);
   replaceCollection(vehicles, state.vehicles);
-  replaceCollection(devices, state.devices);
+  replaceCollection(devices, (state.devices || []).map(stripLocalGatewayDeviceFields));
   replaceCollection(gatewayInstallations, state.gatewayInstallations);
+  replaceCollection(gatewayDeviceConfigs, state.gatewayDeviceConfigs);
+  (state.devices || [])
+    .filter((device) => device.useLocalGateway)
+    .forEach((device) => upsertLocalGatewayConfig(gatewayDeviceConfigs, device, true, now));
   replaceCollection(cameras, state.cameras);
   replaceCollection(actions, state.actions);
   replaceCollection(credentials, state.credentials);
@@ -5714,7 +5804,7 @@ function toMobileCameraFileRecord(camera) {
   const device = devices.find((item) => item.id === camera.deviceId);
   const channel = Number(camera.channel || camera.activeChannels?.[0]?.channel || 1);
   const streamKey = cameraStreamKey(camera, channel);
-  const localGatewayPlayback = Boolean(device?.useLocalGateway);
+  const localGatewayPlayback = deviceUsesLocalGateway(device || {});
   const hlsUrl = `/streams/${streamKey}/index.m3u8`;
   const snapshotUrl = `/api/cameras/${camera.id}/snapshot.jpg?channel=${channel}`;
   const playbackUrl = localGatewayPlayback ? snapshotUrl : hlsUrl;
@@ -6318,7 +6408,7 @@ async function handleRequest(request, response) {
     if (!device) return json(response, 404, { message: "Equipamento nao encontrado" });
 
     try {
-      if (device.useLocalGateway) {
+      if (deviceUsesLocalGateway(device)) {
         const command = queueGatewayCommand(device, 1, {}, "TEST_DEVICE");
         if (!command) return json(response, 409, { message: "Gateway local nao configurado para este condominio" });
         await waitForGatewayCommands([command]);
@@ -6773,7 +6863,7 @@ async function handleRequest(request, response) {
     let gatewayMessage = "";
 
     const adapter = device ? deviceAdapter(device) : "GENERIC_TCP";
-    if (device?.useLocalGateway && action?.status !== "DISABLED") {
+    if (deviceUsesLocalGateway(device || {}) && action?.status !== "DISABLED") {
       const command = queueGatewayCommand(device, action.relay || device.doorRelay || 1, action);
       const outcome = await waitForGatewayCommand(command, { waitForCommands: waitForGatewayCommands });
       delivered = outcome.delivered;
@@ -6917,6 +7007,20 @@ async function handleRequest(request, response) {
     if (!invite) return sendText(response, 404, "text/plain; charset=utf-8", "Convite nao encontrado");
     const geofence = inviteGeofence(invite);
     const locationToken = url.searchParams.get("locationToken") || "";
+    if (!geofence.enabled) {
+      const buffer = await QRCode.toBuffer(invite.qrPayload || code, {
+        type: "png",
+        width: 512,
+        margin: 1,
+        errorCorrectionLevel: "M"
+      });
+      response.writeHead(200, {
+        "Content-Type": "image/png",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*"
+      });
+      return response.end(buffer);
+    }
     if (!geofence.configured) {
       return sendText(response, 403, "text/plain; charset=utf-8", "Localizacao do condominio nao configurada");
     }
@@ -7273,7 +7377,7 @@ async function handleRequest(request, response) {
 
     try {
       const linkedDevice = devices.find((item) => item.id === camera.deviceId);
-      if (linkedDevice?.useLocalGateway) {
+      if (deviceUsesLocalGateway(linkedDevice || {})) {
         const snapshot = await requestGatewayCameraSnapshot(streamCamera, linkedDevice, {
           queueCommand: queueGatewayCommand,
           waitForCommands: waitForGatewayCommands
@@ -7330,7 +7434,7 @@ async function handleRequest(request, response) {
       return response.end("Segmento nao encontrado");
     }
     const linkedDevice = camera.deviceId ? devices.find((item) => item.id === camera.deviceId) : null;
-    if (linkedDevice?.useLocalGateway && filename === "index.m3u8") {
+    if (deviceUsesLocalGateway(linkedDevice || {}) && filename === "index.m3u8") {
       const snapshotPath = `/api/cameras/${encodeURIComponent(camera.id)}/snapshot.jpg?channel=${requestedChannel || camera.channel || 1}`;
       response.writeHead(302, {
         Location: snapshotPath,
@@ -7430,6 +7534,8 @@ async function handleRequest(request, response) {
       state: body.state || "",
       latitude: body.latitude || "",
       longitude: body.longitude || "",
+      inviteGeofenceEnabled: booleanSetting(body.inviteGeofenceEnabled, true),
+      inviteGeofenceRadiusMeters: parsePositiveInteger(body.inviteGeofenceRadiusMeters ?? body.geofenceRadiusMeters, 200),
       telephonyEnabled: true,
       telephonyProvider: body.telephonyProvider || "DIRECT_SIP",
       sipDomain: normalizeSipDomain(body.sipDomain || asteriskHost),
@@ -7456,6 +7562,12 @@ async function handleRequest(request, response) {
     targetTenant.state = body.state ?? targetTenant.state ?? "";
     targetTenant.latitude = body.latitude ?? targetTenant.latitude ?? "";
     targetTenant.longitude = body.longitude ?? targetTenant.longitude ?? "";
+    targetTenant.inviteGeofenceEnabled = booleanSetting(body.inviteGeofenceEnabled, targetTenant.inviteGeofenceEnabled ?? true);
+    targetTenant.inviteGeofenceRadiusMeters = parsePositiveInteger(
+      body.inviteGeofenceRadiusMeters ?? body.geofenceRadiusMeters,
+      targetTenant.inviteGeofenceRadiusMeters || targetTenant.geofenceRadiusMeters || 200
+    );
+    targetTenant.geofenceRadiusMeters = targetTenant.inviteGeofenceRadiusMeters;
     targetTenant.companyId = requestedCompanyId;
     const currentTenantLicense = tenantLicense(targetTenant.id);
     if (currentTenantLicense) {
@@ -7567,15 +7679,13 @@ async function handleRequest(request, response) {
     const result = saveCredential({ ...body, photoUrl: uploadedPhoto ? "" : body.photoUrl });
     if (result.error) return json(response, result.duplicate ? 409 : 400, { message: result.error, duplicate: result.duplicate });
     if (uploadedPhoto) result.credential.photoUrl = await storeCredentialFacePhoto(result.credential.id, uploadedPhoto);
-    if (!body.id) {
-      const event = await emitCredentialEvent("CREATE", result.credential);
-      Object.assign(result.credential, {
-        syncStatus: event.ok ? "SYNCED" : "ERROR",
-        syncMessage: event.message || "",
-        deviceId: event.deviceId || result.credential.deviceId || "",
-        lastSyncedAt: event.ok ? now() : result.credential.lastSyncedAt
-      });
-    }
+    const event = await emitCredentialEvent(body.id ? "UPDATE" : "CREATE", result.credential);
+    Object.assign(result.credential, {
+      syncStatus: event.ok ? "SYNCED" : "ERROR",
+      syncMessage: event.message || "",
+      deviceId: event.deviceId || result.credential.deviceId || "",
+      lastSyncedAt: event.ok ? now() : result.credential.lastSyncedAt
+    });
     savePersistentState("credential-saved");
     return json(response, body.id ? 200 : 201, result.credential);
   }
@@ -7852,7 +7962,6 @@ async function handleRequest(request, response) {
       password: body.password || existingDevice?.password || "",
       passwordSet: Boolean(body.password || existingDevice?.password || body.passwordSet),
       authMode: body.authMode || existingDevice?.authMode || "DIGEST",
-      useLocalGateway: body.useLocalGateway === undefined ? Boolean(existingDevice?.useLocalGateway) : Boolean(body.useLocalGateway),
       integrationMode: deviceProfile.integrationMode || body.integrationMode || existingDevice?.integrationMode || "DIRECT_DEVICE",
       doorToken: deviceProfile.doorToken ?? body.doorToken ?? existingDevice?.doorToken ?? "",
       controlIdAction: deviceProfile.controlIdAction || body.controlIdAction || existingDevice?.controlIdAction || "door",
@@ -7868,15 +7977,21 @@ async function handleRequest(request, response) {
       intercomExtension: body.intercomExtension || "",
       status: body.status || "OFFLINE"
     };
-    const updated = body.id ? updateById(devices, body.id, device) : null;
-    if (!updated) devices.unshift(device);
-    if (deviceAdapter(updated || device) === NICE_LINEAR_ADAPTER &&
-        normalizeNiceLinearMode((updated || device).niceConnectionMode) === NICE_LINEAR_DEVICE_TCP_MODE) {
-      ensureNiceLinearTcpListener((updated || device).apiPort);
+    const cleanDevice = stripLocalGatewayDeviceFields(device);
+    const updated = body.id ? updateById(devices, body.id, cleanDevice) : null;
+    if (!updated) devices.unshift(cleanDevice);
+    const savedDevice = updated || cleanDevice;
+    const requestedGateway = body.useLocalGateway === undefined
+      ? deviceUsesLocalGateway(existingDevice || {})
+      : Boolean(body.useLocalGateway);
+    upsertLocalGatewayConfig(gatewayDeviceConfigs, savedDevice, requestedGateway, now);
+    if (deviceAdapter(savedDevice) === NICE_LINEAR_ADAPTER &&
+        normalizeNiceLinearMode(savedDevice.niceConnectionMode) === NICE_LINEAR_DEVICE_TCP_MODE) {
+      ensureNiceLinearTcpListener(savedDevice.apiPort);
     }
-    if (cameras.some((camera) => camera.deviceId === device.id)) syncMobileCameraStreamsFile();
+    if (cameras.some((camera) => camera.deviceId === savedDevice.id)) syncMobileCameraStreamsFile();
     savePersistentState("device-saved");
-    return json(response, body.id ? 200 : 201, publicDevice(updated || device));
+    return json(response, body.id ? 200 : 201, publicDevice(savedDevice));
   }
 
   const deleteDeviceMatch = url.pathname.match(/^\/api\/devices\/([^/]+)$/);
@@ -7885,6 +8000,7 @@ async function handleRequest(request, response) {
     const index = devices.findIndex((item) => item.id === deviceId);
     if (index === -1) return json(response, 404, { message: "Equipamento nao encontrado" });
     const [removed] = devices.splice(index, 1);
+    const removedGatewayConfigs = removeLocalGatewayConfig(gatewayDeviceConfigs, deviceId);
     const removedCameras = [];
     const removedActions = [];
 
@@ -7907,6 +8023,7 @@ async function handleRequest(request, response) {
     return json(response, 200, {
       ok: true,
       removed: publicDevice(removed),
+      removedGatewayConfigs: removedGatewayConfigs.map(publicLocalGatewayConfig),
       removedCameras: removedCameras.map(publicCamera),
       removedActions
     });
@@ -8056,7 +8173,7 @@ async function handleRequest(request, response) {
       accessLogs.unshift(log);
       return log;
     };
-    if (device?.useLocalGateway && action.status !== "DISABLED") {
+    if (deviceUsesLocalGateway(device || {}) && action.status !== "DISABLED") {
       const command = queueGatewayCommand(device, action.relay || device.doorRelay || 1, action);
       const outcome = await waitForGatewayCommand(command, { waitForCommands: waitForGatewayCommands });
       const log = actionLog(outcome.delivered ? "ALLOW" : outcome.queued ? "PENDING" : "DENY", outcome.message);

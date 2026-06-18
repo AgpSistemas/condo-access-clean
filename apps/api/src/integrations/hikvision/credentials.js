@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 
+// Hikvision rejeita employeeNo vazio, alfabetico ou grande demais; sempre geramos um identificador numerico estavel.
 function hikvisionEmployeeNoForCredential(credential = {}, person = null, { unitForId = () => null } = {}) {
+  const fallbackUnit = credential.unitId && unitForId(credential.unitId)?.unitNumber;
   const source = String(
     credential.personExternalId ||
     credential.externalId ||
@@ -9,11 +11,11 @@ function hikvisionEmployeeNoForCredential(credential = {}, person = null, { unit
     person?.cpf ||
     person?.rg ||
     person?.phone ||
-    credential.unitId && unitForId(credential.unitId)?.unitNumber ||
     person?.id ||
     credential.personId ||
     credential.id ||
     credential.value ||
+    fallbackUnit ||
     randomBytes(4).toString("hex")
   ).trim();
   const numeric = source.replace(/\D+/g, "");
@@ -26,6 +28,7 @@ function hikvisionUserNameForCredential(credential = {}, person = null) {
   return String(person?.name || credential.personName || credential.valueLabel || credential.value || "Usuario").trim().slice(0, 96);
 }
 
+// ISAPI espera data local sem fuso explicito; convertemos para o fuso configurado do equipamento/condominio.
 function hikvisionLocalDateTime(value = "", fallback = "") {
   const parsed = Date.parse(String(value || ""));
   if (!Number.isFinite(parsed)) return fallback;
@@ -43,6 +46,7 @@ function hikvisionLocalDateTime(value = "", fallback = "") {
   return `${valueFor("year")}-${valueFor("month")}-${valueFor("day")}T${valueFor("hour")}:${valueFor("minute")}:${valueFor("second")}`;
 }
 
+// Payload minimo aceito pela ISAPI para criar/atualizar usuario antes de enviar FACE/PIN/cartao.
 function hikvisionUserPayload(credential = {}, person = null, employeeNo = "") {
   const payload = {
     employeeNo,

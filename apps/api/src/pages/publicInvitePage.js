@@ -7,6 +7,7 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+// Renderiza o convite publico sem expor o QR ate a API validar a geolocalizacao real do convidado.
 export function renderPublicInvitePage({
   invite,
   origin,
@@ -25,13 +26,19 @@ export function renderPublicInvitePage({
   const validFrom = mobileInvite.validFrom ? new Date(mobileInvite.validFrom).toLocaleString("pt-BR", dateOptions) : "";
   const validUntil = mobileInvite.validUntil ? new Date(mobileInvite.validUntil).toLocaleString("pt-BR", dateOptions) : "";
   const baseQrUrl = mobileInvite.qrCodeUrl || `${invitePublicUrl(origin, mobileInvite.code)}/qr.png`;
+  const qrInitiallyVisible = !geofence.enabled;
   const unitLabel = inviteUnit
     ? `${inviteUnit.blockName ? `${inviteUnit.blockName} - ` : ""}Unidade ${inviteUnit.unitNumber || inviteUnit.unitId}`
     : mobileInvite.unit?.id || "-";
   const statusClass = normalizeLookup(mobileInvite.status || "Ativo").includes("ativ") ? "active" : "inactive";
-  const initialLocationText = geofence.configured
+  const initialLocationText = !geofence.enabled
+    ? "Validacao de localizacao desativada. QR Code liberado."
+    : geofence.configured
     ? `Para liberar o QR Code, permita a localizacao. Raio autorizado: ${Math.round(geofence.radiusMeters)} m.`
     : "Localizacao do condominio nao configurada. O QR Code nao pode ser liberado.";
+  const instructionText = geofence.enabled
+    ? "O QR Code sera liberado somente quando o convidado estiver nas proximidades do condominio."
+    : "Aproxime este QR Code da camera do leitor facial para liberar o acesso.";
 
   return `<!doctype html>
 <html lang="pt-BR">
@@ -106,18 +113,18 @@ export function renderPublicInvitePage({
         <span class="status ${statusClass}">${escapeHtml(mobileInvite.status || "Ativo")}</span>
       </header>
       <div class="content">
-        <p class="instruction">O QR Code sera liberado somente quando o convidado estiver nas proximidades do condominio.</p>
+        <p class="instruction">${escapeHtml(instructionText)}</p>
         <p class="gate-message" id="gate-message">${escapeHtml(initialLocationText)}</p>
-        <div class="qr-shell hidden" id="qr-shell"><img class="qr" id="qr-image" alt="QR Code do convite"></div>
-        <p class="scan-label hidden" id="scan-label">Apresente no leitor</p>
+        <div class="qr-shell${qrInitiallyVisible ? "" : " hidden"}" id="qr-shell"><img class="qr" id="qr-image" ${qrInitiallyVisible ? `src="${escapeHtml(baseQrUrl)}"` : ""} alt="QR Code do convite"></div>
+        <p class="scan-label${qrInitiallyVisible ? "" : " hidden"}" id="scan-label">Apresente no leitor</p>
         <div class="details">
           <div class="detail wide"><span>Destino</span><strong>${escapeHtml(unitLabel)}</strong></div>
           <div class="detail"><span>Entrada</span><strong>${escapeHtml(mobileInvite.door?.name || "Entrada")}</strong></div>
           ${validFrom ? `<div class="detail"><span>Inicio</span><strong>${escapeHtml(validFrom)}</strong></div>` : ""}
           ${validUntil ? `<div class="detail wide"><span>Valido ate</span><strong>${escapeHtml(validUntil)}</strong></div>` : ""}
         </div>
-        <div class="actions hidden" id="qr-actions">
-          <a class="button primary" id="save-qr" href="#" download="convite-condo-access.png">Salvar QR Code</a>
+        <div class="actions${qrInitiallyVisible ? "" : " hidden"}" id="qr-actions">
+          <a class="button primary" id="save-qr" href="${qrInitiallyVisible ? escapeHtml(baseQrUrl) : "#"}" download="convite-condo-access.png">Salvar QR Code</a>
           <button class="button" type="button" onclick="window.print()">Imprimir convite</button>
         </div>
         <p class="location-result" id="location-result">${escapeHtml(initialLocationText)}</p>
@@ -127,6 +134,7 @@ export function renderPublicInvitePage({
     <p class="footer">Convite pessoal e intransferivel. Utilize somente dentro do periodo autorizado.</p>
   </main>
   <script>
+    const geofenceEnabled = ${geofence.enabled ? "true" : "false"};
     const geofenceConfigured = ${geofence.configured ? "true" : "false"};
     const qrBaseUrl = ${JSON.stringify(baseQrUrl)};
     const qrShell = document.getElementById("qr-shell");
@@ -144,7 +152,7 @@ export function renderPublicInvitePage({
     }
 
     function showQr(token) {
-      const qrUrl = qrBaseUrl + "?locationToken=" + encodeURIComponent(token);
+      const qrUrl = token ? qrBaseUrl + "?locationToken=" + encodeURIComponent(token) : qrBaseUrl;
       qrImage.src = qrUrl;
       saveQr.href = qrUrl;
       qrShell.classList.remove("hidden");
@@ -153,6 +161,11 @@ export function renderPublicInvitePage({
     }
 
     function validateLocation() {
+      if (!geofenceEnabled) {
+        setGateMessage("Validacao de localizacao desativada. QR Code liberado.", "ok");
+        showQr("");
+        return;
+      }
       if (!geofenceConfigured) {
         setGateMessage("Localizacao do condominio nao configurada. Procure a portaria.", "error");
         return;
