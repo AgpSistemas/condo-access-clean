@@ -5,6 +5,7 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import cors from "cors";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import pg from "pg";
 import QRCode from "qrcode";
@@ -185,6 +186,33 @@ const asaasWebhookTokenConfigured = Boolean(asaasWebhookToken);
 const asaasApiBaseUrl = asaasEnvironment === "production" ? "https://api.asaas.com/v3" : "https://api-sandbox.asaas.com/v3";
 const defaultCompanyPassword = "123456";
 const masterAdminEmail = String(process.env.MASTER_ADMIN_EMAIL || "agpsistemascorp@gmail.com").trim().toLowerCase();
+const corsAllowedMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+const corsAllowedHeaders = ["content-type", "authorization", "x-tenant-id", "x-gateway-id", "x-gateway-token"];
+const apiCors = cors({
+  origin: "*",
+  methods: corsAllowedMethods,
+  allowedHeaders: corsAllowedHeaders,
+  preflightContinue: true,
+  optionsSuccessStatus: 204
+});
+
+function applyCors(request, response) {
+  return new Promise((resolve, reject) => {
+    apiCors(request, response, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function corsHeaders(extraHeaders = {}) {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": corsAllowedHeaders.join(", "),
+    "Access-Control-Allow-Methods": corsAllowedMethods.join(", "),
+    ...extraHeaders
+  };
+}
 
 function resolvePostgresSslMode(connectionString) {
   const explicitSslMode = String(process.env.PGSSLMODE || "").trim().toLowerCase();
@@ -879,15 +907,16 @@ function extensionStatus(tenantId = "", registrationMap = null) {
 function publicCamera(camera) {
   const { password: _password, ...safeCamera } = camera;
   const linkedDevice = camera.deviceId ? devices.find((device) => device.id === camera.deviceId) : null;
-  const localGatewayPlayback = localGatewayEnabledForDevice(gatewayDeviceConfigs, linkedDevice || {});
+  const localGatewayConnection = localGatewayEnabledForDevice(gatewayDeviceConfigs, linkedDevice || {});
+  const playbackMode = safeCamera.playbackMode || safeCamera.loadMethod || "HLS_GATEWAY";
   return {
     ...safeCamera,
-    connectionMode: localGatewayPlayback ? "LOCAL_GATEWAY" : safeCamera.connectionMode || "DIRECT_API",
-    localGatewayConnection: localGatewayPlayback,
+    connectionMode: localGatewayConnection ? "LOCAL_GATEWAY" : safeCamera.connectionMode || "DIRECT_API",
+    localGatewayConnection,
     localGatewayPlayback: false,
-    playbackMode: safeCamera.playbackMode || safeCamera.loadMethod || "HLS_GATEWAY",
-    webPlaybackMode: safeCamera.playbackMode || safeCamera.loadMethod || "HLS_GATEWAY",
-    mobilePlaybackMode: safeCamera.mobilePlaybackMode || "HLS_GATEWAY"
+    playbackMode,
+    webPlaybackMode: playbackMode,
+    mobilePlaybackMode: safeCamera.mobilePlaybackMode || playbackMode
   };
 }
 
@@ -966,9 +995,7 @@ function bootstrap() {
 function json(response, statusCode, body) {
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "content-type, authorization",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    ...corsHeaders()
   });
   response.end(JSON.stringify(body));
 }
@@ -976,10 +1003,7 @@ function json(response, statusCode, body) {
 function sendText(response, statusCode, contentType, body, extraHeaders = {}) {
   response.writeHead(statusCode, {
     "Content-Type": contentType,
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "content-type, authorization",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    ...extraHeaders
+    ...corsHeaders(extraHeaders)
   });
   response.end(body);
 }
@@ -1729,6 +1753,28 @@ function publicGatewayInstallation(item) {
   };
 }
 
+function gatewayInstallationOnline(item = {}) {
+  return Boolean(item.lastSeenAt && Date.now() - Date.parse(item.lastSeenAt) < 45000);
+}
+
+function gatewayInstallationSortValue(item = {}) {
+  return Math.max(
+    Date.parse(item.lastSeenAt || 0) || 0,
+    Date.parse(item.claimedAt || 0) || 0,
+    Date.parse(item.createdAt || 0) || 0
+  );
+}
+
+function activeGatewayInstallationForTenant(tenantId = "") {
+  return gatewayInstallations
+    .filter((item) => item.tenantId === tenantId)
+    .sort((left, right) => {
+      const onlineDelta = Number(gatewayInstallationOnline(right)) - Number(gatewayInstallationOnline(left));
+      if (onlineDelta) return onlineDelta;
+      return gatewayInstallationSortValue(right) - gatewayInstallationSortValue(left);
+    })[0] || null;
+}
+
 function deviceUsesLocalGateway(device = {}) {
   return localGatewayEnabledForDevice(gatewayDeviceConfigs, device);
 }
@@ -1745,7 +1791,7 @@ function gatewayRequestInstallation(request) {
 }
 
 function queueGatewayCommand(device, relay = 1, action = {}, type = "OPEN_DOOR") {
-  const installation = gatewayInstallations.find((item) => item.tenantId === device.tenantId);
+  const installation = activeGatewayInstallationForTenant(device.tenantId);
   if (!installation) return null;
   const existingCommand = type === "TEST_DEVICE"
     ? gatewayCommands.find((item) =>
@@ -5652,6 +5698,7 @@ function toMobileCamera(camera, origin) {
   const localGatewayPlayback = deviceUsesLocalGateway(device || {});
   const exposeDirectRtsp = process.env.EXPOSE_CAMERA_RTSP === "true";
   const directRtspUrl = exposeDirectRtsp && camera.password ? cameraRtspUrl(camera) : "";
+  const playbackMode = directRtspUrl ? "RTSP_NATIVE" : "HLS_GATEWAY";
   const videoPlaybackUrl = directRtspUrl || hlsUrl;
   return {
     id: camera.id,
@@ -5673,9 +5720,9 @@ function toMobileCamera(camera, origin) {
     hlsUrl,
     snapshotUrl,
     directRtspUrl,
-    playbackMode: directRtspUrl ? "RTSP_NATIVE" : "HLS_GATEWAY",
+    playbackMode,
     webPlaybackMode: "HLS_GATEWAY",
-    mobilePlaybackMode: directRtspUrl ? "RTSP_NATIVE" : "HLS_GATEWAY",
+    mobilePlaybackMode: playbackMode,
     localGatewayConnection: localGatewayPlayback,
     localGatewayPlayback: false,
     deviceType: camera.deviceType || camera.type,
@@ -6175,7 +6222,12 @@ const server = http.createServer((request, response) => {
 });
 
 async function handleRequest(request, response) {
-  if (request.method === "OPTIONS") return json(response, 204, {});
+  await applyCors(request, response);
+  if (request.method === "OPTIONS") {
+    response.writeHead(204, corsHeaders({ "Content-Length": "0" }));
+    response.end();
+    return;
+  }
 
   const url = new URL(request.url || "/", `http://${request.headers.host}`);
 
