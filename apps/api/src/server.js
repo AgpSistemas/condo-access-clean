@@ -78,6 +78,7 @@ import {
 } from "./integrations/intelbras/ss3532Mfw.js";
 import { createHikvisionParsers } from "./integrations/hikvision/parsers.js";
 import { DEFAULT_SNAPSHOT_OBJECTS, createControlIdClient } from "./integrations/controlid/client.js";
+import { deleteControlIdStoredCredential } from "./integrations/controlid/credentials.js";
 import {
   fetchControlIdFacePhotoBytes,
   uploadControlIdUserImage
@@ -4865,120 +4866,6 @@ async function sendControlIdStoredCredential(device, credential = {}) {
   };
 }
 
-async function deleteControlIdStoredCredential(device, credential = {}) {
-  const session = await controlIdLogin(device);
-  const person = personForStoredCredential(credential);
-  const type = normalizeCredentialType(credential.type);
-  const registration = controlIdUserRegistration(credential, person);
-  const users = await controlIdLoadObjects(device, session, "users", { limit: 1000 });
-  const user = users.find((item) =>
-    String(item.registration || "").trim() === registration ||
-    String(item.id) === String(person?.controlIdUserId || credential.personExternalId || "")
-  );
-
-  if (type === "FACE") {
-    if (!user?.id) throw new Error(`Usuario Control iD ${registration} nao encontrado para excluir a foto`);
-    await controlIdPost(device, session, "/user_destroy_image.fcgi", { user_id: user.id });
-    return {
-      ok: true,
-      deviceId: device.id,
-      adapter: CONTROL_ID_ACCESS_ADAPTER,
-      message: `Face de ${user.name || registration} excluida do Control iD`,
-      attempts: [{ label: "Control iD excluir foto", path: "/user_destroy_image.fcgi", ok: true }]
-    };
-  }
-
-  const candidateObjects = type === "QR_CODE"
-    ? await controlIdQrCredentialObjects(device, session)
-    : [controlIdCredentialObject(type)];
-  const objects = candidateObjects.filter(Boolean);
-  if (objects.length) {
-    const removedObjects = [];
-    for (const object of objects) {
-      try {
-        const value = controlIdObjectValue(type, credential.value, object);
-        await controlIdPost(device, session, "/destroy_objects.fcgi", {
-          object,
-          where: {
-            [object]: object === "pins" && user?.id
-              ? { user_id: user.id }
-              : { value }
-          }
-        });
-        removedObjects.push(object);
-      } catch {
-        // QR can exist in only one mode; deleting the alternate object is best-effort.
-      }
-    }
-    const attempts = objects.map((object) => ({
-      label: `Control iD excluir ${object}`,
-      path: `/destroy_objects.fcgi:${object}`,
-      ok: removedObjects.includes(object)
-    }));
-    if (String(credential.source || "").toUpperCase() === "INVITE" && user?.id) {
-      try {
-        await controlIdPost(device, session, "/destroy_objects.fcgi", {
-          object: "user_groups",
-          where: { user_groups: { user_id: user.id } }
-        });
-        attempts.push({ label: "Control iD excluir grupo temporario", path: "/destroy_objects.fcgi:user_groups", ok: true });
-      } catch (error) {
-        attempts.push({
-          label: "Control iD excluir grupo temporario",
-          path: "/destroy_objects.fcgi:user_groups",
-          ok: false,
-          error: error instanceof Error ? error.message : "Falha ao excluir grupo temporario"
-        });
-      }
-      try {
-        await controlIdPost(device, session, "/destroy_objects.fcgi", {
-          object: "users",
-          where: { users: { id: user.id } }
-        });
-        attempts.push({ label: "Control iD excluir usuario temporario", path: "/destroy_objects.fcgi:users", ok: true });
-      } catch (error) {
-        attempts.push({
-          label: "Control iD excluir usuario temporario",
-          path: "/destroy_objects.fcgi:users",
-          ok: false,
-          error: error instanceof Error ? error.message : "Falha ao excluir usuario temporario"
-        });
-      }
-    }
-    return {
-      ok: true,
-      deviceId: device.id,
-      adapter: CONTROL_ID_ACCESS_ADAPTER,
-      message: removedObjects.length
-        ? `${type} excluido do Control iD em ${removedObjects.join(" + ")}`
-        : `${type} nao foi localizado nos modos de QR do Control iD`,
-      attempts
-    };
-  }
-
-  if (type === "APP" && user?.id) {
-    await controlIdPost(device, session, "/destroy_objects.fcgi", {
-      object: "users",
-      where: { users: { id: user.id } }
-    });
-    return {
-      ok: true,
-      deviceId: device.id,
-      adapter: CONTROL_ID_ACCESS_ADAPTER,
-      message: `Usuario ${user.name || registration} excluido do Control iD`,
-      attempts: [{ label: "Control iD excluir usuario", path: "/destroy_objects.fcgi:users", ok: true }]
-    };
-  }
-
-  return {
-    ok: true,
-    deviceId: device.id,
-    adapter: CONTROL_ID_ACCESS_ADAPTER,
-    message: `Nenhum registro ${type} encontrado para excluir do Control iD`,
-    attempts: []
-  };
-}
-
 async function sendStoredCredentialToDevice(device, credential = {}) {
   const adapter = deviceAdapter(device);
   if (adapter === "HIKVISION_ISAPI") return sendHikvisionStoredCredential(device, credential);
@@ -5004,7 +4891,20 @@ async function sendStoredCredentialToDevice(device, credential = {}) {
 async function deleteStoredCredentialFromDevice(device, credential = {}) {
   const adapter = deviceAdapter(device);
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) {
-    return deleteControlIdStoredCredential(device, credential);
+    return deleteControlIdStoredCredential({
+      device,
+      credential,
+      adapter,
+      login: controlIdLogin,
+      loadObjects: controlIdLoadObjects,
+      post: controlIdPost,
+      personForCredential: personForStoredCredential,
+      normalizeType: normalizeCredentialType,
+      userRegistration: controlIdUserRegistration,
+      qrCredentialObjects: controlIdQrCredentialObjects,
+      credentialObject: controlIdCredentialObject,
+      objectValue: controlIdObjectValue
+    });
   }
   if (adapter !== "HIKVISION_ISAPI") {
     return {
@@ -5140,6 +5040,18 @@ async function deleteCredentialRecord(credential = {}) {
   const index = credentials.findIndex((item) => item.id === credential.id);
   if (index === -1) return { ok: false, message: "Credencial nao encontrada", credential };
   const event = await emitCredentialEvent("DELETE", credentials[index]);
+  if (!event.ok) {
+    credentials[index].syncStatus = "ERROR";
+    credentials[index].syncMessage = event.message || "Falha ao excluir credencial do equipamento";
+    credentials[index].syncResults = event.results || [];
+    credentials[index].updatedAt = now();
+    return {
+      ok: false,
+      credential: credentials[index],
+      event,
+      message: credentials[index].syncMessage
+    };
+  }
   const [removed] = credentials.splice(index, 1);
   await deleteCredentialFacePhoto(removed.id);
   return { ok: true, removed, event };
@@ -5154,6 +5066,15 @@ async function deletePersonRecord(person = {}) {
   const personCredentials = credentials.filter((credential) => credential.personId === currentPerson.id);
   for (const credential of personCredentials) {
     credentialResults.push(await deleteCredentialRecord(credential));
+  }
+  const failedCredential = credentialResults.find((result) => !result.ok);
+  if (failedCredential) {
+    return {
+      ok: false,
+      person: currentPerson,
+      credentialResults,
+      message: failedCredential.message || "Falha ao excluir credenciais do equipamento"
+    };
   }
   const [removed] = residents.splice(index, 1);
   vehicles.forEach((vehicle) => {
@@ -8420,9 +8341,17 @@ async function handleRequest(request, response) {
     const credentialId = decodeURIComponent(deleteCredentialMatch[1]);
     const credential = credentials.find((item) => item.id === credentialId);
     if (!credential) return json(response, 404, { message: "Credencial nao encontrada" });
-    const { removed, event } = await deleteCredentialRecord(credential);
+    const result = await deleteCredentialRecord(credential);
     await savePersistentStateAndWait("credential-deleted");
-    return json(response, 200, { ok: true, removed, event });
+    if (!result.ok) {
+      return json(response, 502, {
+        ok: false,
+        message: result.message || "Falha ao excluir credencial do equipamento",
+        credential: result.credential,
+        event: result.event
+      });
+    }
+    return json(response, 200, { ok: true, removed: result.removed, event: result.event });
   }
 
   if (request.method === "GET" && url.pathname === "/api/permissions") {
@@ -9100,6 +9029,7 @@ async function handleRequest(request, response) {
     if (!person) return json(response, 404, { message: "Pessoa nao encontrada" });
     const result = await deletePersonRecord(person);
     await savePersistentStateAndWait("person-deleted");
+    if (!result.ok) return json(response, 502, result);
     return json(response, 200, result);
   }
 

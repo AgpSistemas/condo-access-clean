@@ -7,6 +7,7 @@ equipamentos de controle de acesso da Control iD.
 
 - `client.js`: login, sessao, requisicoes JSON/binarias, paginacao de objetos,
   snapshot, diagnostico e abertura remota.
+- `credentials.js`: exclusao de credenciais Control iD via `destroy_objects.fcgi`.
 - `profiles.js`: modelos suportados, recursos, defaults, validacao e formato
   das acoes por equipamento.
 - `faces.js`: recuperacao, fallback e upload oficial de fotos faciais.
