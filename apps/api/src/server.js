@@ -56,11 +56,10 @@ import {
   testHikvisionIsapi
 } from "./integrations/hikvision/isapi.js";
 import {
-  hikvisionEmployeeNoForCredential,
-  hikvisionLocalDateTime,
-  hikvisionUserNameForCredential,
-  hikvisionUserPayload
-} from "./integrations/hikvision/credentials.js";
+  deleteHikvisionStoredCredential,
+  sendHikvisionStoredCredential
+} from "./integrations/hikvision/credentialCrud.js";
+import { hikvisionLocalDateTime } from "./integrations/hikvision/credentials.js";
 import {
   INTELBRAS_MHDX_3116C_ADAPTER,
   matchesMhdx3116c,
@@ -76,6 +75,10 @@ import {
   ss3532MfwEventToAccessLog,
   testSs3532Mfw
 } from "./integrations/intelbras/ss3532Mfw.js";
+import {
+  deleteIntelbrasStoredCredential,
+  sendIntelbrasStoredCredential
+} from "./integrations/intelbras/credentials.js";
 import { createHikvisionParsers } from "./integrations/hikvision/parsers.js";
 import { DEFAULT_SNAPSHOT_OBJECTS, createControlIdClient } from "./integrations/controlid/client.js";
 import { deleteControlIdStoredCredential } from "./integrations/controlid/credentials.js";
@@ -4111,78 +4114,6 @@ function personForStoredCredential(credential = {}) {
   ) || null;
 }
 
-async function hikvisionTryJsonWrites(device, attempts = []) {
-  const errors = [];
-  for (const attempt of attempts) {
-    try {
-      const result = await authenticatedDeviceRequest(device, attempt.path, {
-        method: attempt.method || "POST",
-        body: JSON.stringify(attempt.body),
-        contentType: "application/json",
-        timeoutMs: attempt.timeoutMs || 12000
-      });
-      return {
-        ok: true,
-        status: result.status,
-        path: attempt.path,
-        label: attempt.label,
-        message: `${attempt.label} respondeu ${result.status}`,
-        attempts: [{ label: attempt.label, path: attempt.path, ok: true, status: result.status }]
-      };
-    } catch (error) {
-      errors.push({
-        label: attempt.label,
-        path: attempt.path,
-        ok: false,
-        error: error instanceof Error ? error.message : "Falha ao enviar para Hikvision"
-      });
-    }
-  }
-  return {
-    ok: false,
-    message: errors.at(-1)?.error || "Nenhum endpoint Hikvision aceitou a credencial",
-    attempts: errors
-  };
-}
-
-async function ensureHikvisionCredentialUser(device, credential = {}, person = null, employeeNo = "") {
-  const userInfo = hikvisionUserPayload(credential, person, employeeNo);
-  return hikvisionTryJsonWrites(device, [
-    {
-      label: "Hikvision usuario Record",
-      path: "/ISAPI/AccessControl/UserInfo/Record?format=json",
-      method: "POST",
-      body: { UserInfo: userInfo }
-    },
-    {
-      label: "Hikvision usuario SetUp",
-      path: "/ISAPI/AccessControl/UserInfo/SetUp?format=json",
-      method: "PUT",
-      body: { UserInfo: userInfo }
-    }
-  ]);
-}
-
-async function deleteHikvisionFaceByEmployeeNo(device, employeeNo = "") {
-  if (!employeeNo) {
-    return { ok: true, attempts: [] };
-  }
-  return hikvisionTryJsonWrites(device, [
-    {
-      label: "Hikvision excluir face EmployeeNoList",
-      path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
-      method: "PUT",
-      body: { FaceInfoDelCond: { EmployeeNoList: [{ employeeNo }] } }
-    },
-    {
-      label: "Hikvision excluir face employeeNoList",
-      path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
-      method: "PUT",
-      body: { FaceInfoDelCond: { employeeNoList: [{ employeeNo }] } }
-    }
-  ]);
-}
-
 function dataUrlImageBuffer(dataUrl = "") {
   const match = String(dataUrl).match(/^data:([^;,]+)?;base64,(.+)$/i);
   if (!match) return null;
@@ -4315,232 +4246,6 @@ function devicePhotoReferenceAllowed(device, photoUrl = "") {
   } catch {
     return false;
   }
-}
-
-function multipartPartHeader(name, filename = "", contentType = "") {
-  const lines = [`Content-Disposition: form-data; name="${name}"${filename ? `; filename="${filename}"` : ""}`];
-  if (contentType) lines.push(`Content-Type: ${contentType}`);
-  return `${lines.join("\r\n")}\r\n\r\n`;
-}
-
-function hikvisionFaceMultipartBody(faceInfo = {}, photo = {}, imageField = "FaceImage") {
-  const boundary = `----CondoAccessFace${randomBytes(8).toString("hex")}`;
-  const faceRecord = JSON.stringify({
-    faceLibType: faceInfo.faceLibType || "blackFD",
-    FDID: faceInfo.FDID || "1",
-    FPID: faceInfo.FPID,
-    name: faceInfo.name
-  });
-  const chunks = [
-    Buffer.from(`--${boundary}\r\n${multipartPartHeader("FaceDataRecord", "FaceDataRecord.json", "application/json")}`, "utf8"),
-    Buffer.from(faceRecord, "utf8"),
-    Buffer.from(`\r\n--${boundary}\r\n${multipartPartHeader(imageField, "face.jpg", photo.mimeType || "image/jpeg")}`, "utf8"),
-    photo.buffer,
-    Buffer.from(`\r\n--${boundary}--\r\n`, "utf8")
-  ];
-  return {
-    boundary,
-    buffer: Buffer.concat(chunks)
-  };
-}
-
-async function hikvisionMultipartFaceWrite(device, faceInfo = {}, photo = {}, imageField = "FaceImage") {
-  const pathName = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
-  const label = `Hikvision FDLib multipart (${imageField})`;
-  const multipart = hikvisionFaceMultipartBody(faceInfo, photo, imageField);
-  const result = await authenticatedDeviceRequest(device, pathName, {
-    method: "POST",
-    bodyBase64: multipart.buffer.toString("base64"),
-    contentType: `multipart/form-data; boundary=${multipart.boundary}`,
-    timeoutMs: 15000
-  });
-  return {
-    ok: true,
-    status: result.status,
-    message: `Upload facial multipart respondeu ${result.status}`,
-    attempts: [{ label, path: pathName, ok: true, status: result.status }]
-  };
-}
-
-async function hikvisionTryMultipartFaceWrite(device, faceInfo = {}, photoUrl = "") {
-  const pathName = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
-  const attempts = [];
-  try {
-    const photo = await fetchCredentialPhotoBytes(device, photoUrl);
-    const maxBytes = Number(process.env.HIKVISION_FACE_UPLOAD_MAX_BYTES || 900000);
-    if (photo.buffer.length > maxBytes) throw new Error(`Foto facial maior que ${maxBytes} bytes`);
-    for (const imageField of ["FaceImage", "img"]) {
-      try {
-        const result = await hikvisionMultipartFaceWrite(device, faceInfo, photo, imageField);
-        return { ...result, attempts: [...attempts, ...(result.attempts || [])] };
-      } catch (error) {
-        attempts.push({
-          label: `Hikvision FDLib multipart (${imageField})`,
-          path: pathName,
-          ok: false,
-          error: error instanceof Error ? error.message : "Falha no upload facial multipart"
-        });
-      }
-    }
-  } catch (error) {
-    attempts.push({
-      label: "Hikvision carregar foto para multipart",
-      path: pathName,
-      ok: false,
-      error: error instanceof Error ? error.message : "Falha no upload facial multipart"
-    });
-  }
-  return {
-    ok: false,
-    message: attempts.at(-1)?.error || "Falha no upload facial multipart",
-    attempts
-  };
-}
-
-async function sendHikvisionStoredCredential(device, credential = {}) {
-  const person = personForStoredCredential(credential);
-  const employeeNo = hikvisionEmployeeNoForCredential(credential, person, { unitForId });
-  const userResult = await ensureHikvisionCredentialUser(device, credential, person, employeeNo);
-  if (!userResult.ok) {
-    return {
-      ok: false,
-      deviceId: device.id,
-      adapter: "HIKVISION_ISAPI",
-      message: `Usuario Hikvision ${employeeNo}: ${userResult.message}`,
-      attempts: userResult.attempts || []
-    };
-  }
-
-  const type = normalizeCredentialType(credential.type);
-  if (type === "APP") {
-    return {
-      ok: true,
-      deviceId: device.id,
-      adapter: "HIKVISION_ISAPI",
-      message: `Usuario Hikvision ${employeeNo} enviado`,
-      attempts: userResult.attempts || []
-    };
-  }
-
-  if (type === "PIN") {
-    return {
-      ok: true,
-      deviceId: device.id,
-      adapter: "HIKVISION_ISAPI",
-      message: `PIN do usuario Hikvision ${employeeNo} enviado`,
-      attempts: userResult.attempts || []
-    };
-  }
-
-  if (["RFID", "QR_CODE"].includes(type)) {
-    const cardInfo = {
-      employeeNo,
-      employeeNoString: employeeNo,
-      cardNo: String(credential.value || "").trim(),
-      cardType: "normalCard"
-    };
-    const cardResult = await hikvisionTryJsonWrites(device, [
-      {
-        label: "Hikvision cartao Record",
-        path: "/ISAPI/AccessControl/CardInfo/Record?format=json",
-        method: "POST",
-        body: { CardInfo: cardInfo }
-      },
-      {
-        label: "Hikvision cartao SetUp",
-        path: "/ISAPI/AccessControl/CardInfo/SetUp?format=json",
-        method: "PUT",
-        body: { CardInfo: cardInfo }
-      },
-      {
-        label: "Hikvision cartao SetUp lista",
-        path: "/ISAPI/AccessControl/CardInfo/SetUp?format=json",
-        method: "PUT",
-        body: { CardInfo: [cardInfo] }
-      }
-    ]);
-    return {
-      ...cardResult,
-      deviceId: device.id,
-      adapter: "HIKVISION_ISAPI",
-      message: cardResult.ok
-        ? `${type === "QR_CODE" ? "QR Code" : "Cartao"} ${cardInfo.cardNo} enviado para ${employeeNo}`
-        : cardResult.message,
-      attempts: [...(userResult.attempts || []), ...(cardResult.attempts || [])]
-    };
-  }
-
-  if (type === "FACE") {
-    const photoUrl = String(credential.photoUrl || person?.photoUrl || "").trim();
-    if (!photoUrl) {
-      return {
-        ok: false,
-        deviceId: device.id,
-        adapter: "HIKVISION_ISAPI",
-        message: "Facial sem foto vinculada para enviar ao Hikvision",
-        attempts: userResult.attempts || []
-      };
-    }
-    const faceInfo = {
-      employeeNo,
-      employeeNoString: employeeNo,
-      FPID: employeeNo,
-      name: hikvisionUserNameForCredential(credential, person),
-      faceLibType: "blackFD",
-      faceURL: photoUrl,
-      URL: photoUrl
-    };
-    const cleanupResult = await deleteHikvisionFaceByEmployeeNo(device, employeeNo);
-    const multipartResult = await hikvisionTryMultipartFaceWrite(device, faceInfo, photoUrl);
-    if (multipartResult.ok) {
-      return {
-        ...multipartResult,
-        deviceId: device.id,
-        adapter: "HIKVISION_ISAPI",
-        message: `Face de ${employeeNo} enviada`,
-        attempts: [...(userResult.attempts || []), ...(cleanupResult.attempts || []), ...(multipartResult.attempts || [])]
-      };
-    }
-    const requiresBinaryUpload = Boolean(storedFacePhotoId(photoUrl) || dataUrlImageBuffer(photoUrl));
-    if (requiresBinaryUpload) {
-      return {
-        ...multipartResult,
-        deviceId: device.id,
-        adapter: "HIKVISION_ISAPI",
-        message: `Usuario ${employeeNo} cadastrado, mas a foto nao foi aceita pela Hikvision: ${multipartResult.message}`,
-        attempts: [...(userResult.attempts || []), ...(cleanupResult.attempts || []), ...(multipartResult.attempts || [])]
-      };
-    }
-    const faceResult = await hikvisionTryJsonWrites(device, [
-      {
-        label: "Hikvision face Record",
-        path: "/ISAPI/AccessControl/FaceInfo/Record?format=json",
-        method: "POST",
-        body: { FaceInfo: faceInfo }
-      },
-      {
-        label: "Hikvision FDLib FaceDataRecord",
-        path: "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json",
-        method: "POST",
-        body: { FaceDataRecord: faceInfo }
-      }
-    ]);
-    return {
-      ...faceResult,
-      deviceId: device.id,
-      adapter: "HIKVISION_ISAPI",
-      message: faceResult.ok ? `Face de ${employeeNo} enviada` : faceResult.message,
-      attempts: [...(userResult.attempts || []), ...(cleanupResult.attempts || []), ...(multipartResult.attempts || []), ...(faceResult.attempts || [])]
-    };
-  }
-
-  return {
-    ok: false,
-    deviceId: device.id,
-    adapter: "HIKVISION_ISAPI",
-    message: `Tipo ${type} ainda nao possui envio Hikvision homologado`,
-    attempts: userResult.attempts || []
-  };
 }
 
 function controlIdUnixTimestamp(value = "") {
@@ -4868,16 +4573,21 @@ async function sendControlIdStoredCredential(device, credential = {}) {
 
 async function sendStoredCredentialToDevice(device, credential = {}) {
   const adapter = deviceAdapter(device);
-  if (adapter === "HIKVISION_ISAPI") return sendHikvisionStoredCredential(device, credential);
+  if (adapter === "HIKVISION_ISAPI") {
+    return sendHikvisionStoredCredential(device, credential, {
+      requestDevice: authenticatedDeviceRequest,
+      fetchPhotoBytes: fetchCredentialPhotoBytes,
+      personForCredential: personForStoredCredential,
+      unitForId,
+      normalizeType: normalizeCredentialType
+    });
+  }
   if (adapter === CONTROL_ID_ACCESS_ADAPTER) return sendControlIdStoredCredential(device, credential);
-  if (adapter === INTELBRAS_SS_3532_MF_W_ADAPTER && normalizeCredentialType(credential.type) === "QR_CODE") {
-    return {
-      ok: false,
-      deviceId: device.id,
+  if (adapter === INTELBRAS_SS_3532_MF_W_ADAPTER) {
+    return sendIntelbrasStoredCredential(device, credential, {
       adapter,
-      message: "QR Code Intelbras Bio-T ainda depende do conector CACO/API autorizado para cadastro fisico",
-      attempts: []
-    };
+      normalizeType: normalizeCredentialType
+    });
   }
   return {
     ok: true,
@@ -4906,53 +4616,26 @@ async function deleteStoredCredentialFromDevice(device, credential = {}) {
       objectValue: controlIdObjectValue
     });
   }
-  if (adapter !== "HIKVISION_ISAPI") {
-    return {
-      ok: true,
-      deviceId: device.id,
-      adapter,
-      message: "Evento de exclusao registrado; exclusao fisica depende do conector do fabricante",
-      attempts: []
-    };
+  if (adapter === "HIKVISION_ISAPI") {
+    return deleteHikvisionStoredCredential(device, credential, {
+      requestDevice: authenticatedDeviceRequest,
+      personForCredential: personForStoredCredential,
+      unitForId,
+      normalizeType: normalizeCredentialType
+    });
   }
-
-  const person = personForStoredCredential(credential);
-  const employeeNo = hikvisionEmployeeNoForCredential(credential, person, { unitForId });
-  const type = normalizeCredentialType(credential.type);
-  const attempts = type === "FACE"
-    ? [
-      {
-        label: "Hikvision excluir face EmployeeNoList",
-        path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
-        method: "PUT",
-        body: { FaceInfoDelCond: { EmployeeNoList: [{ employeeNo }] } }
-      },
-      {
-        label: "Hikvision excluir face employeeNoList",
-        path: "/ISAPI/AccessControl/FaceInfo/Delete?format=json",
-        method: "PUT",
-        body: { FaceInfoDelCond: { employeeNoList: [{ employeeNo }] } }
-      }
-    ]
-    : type === "RFID"
-      ? [{
-          label: "Hikvision excluir cartao",
-          path: "/ISAPI/AccessControl/CardInfo/Delete?format=json",
-          method: "PUT",
-          body: { CardInfoDelCond: { CardNoList: [{ cardNo: String(credential.value || "").trim() }] } }
-        }]
-      : [{
-          label: "Hikvision excluir usuario",
-          path: "/ISAPI/AccessControl/UserInfo/Delete?format=json",
-          method: "PUT",
-          body: { UserInfoDelCond: { EmployeeNoList: [{ employeeNo }] } }
-        }];
-  const result = await hikvisionTryJsonWrites(device, attempts);
+  if (adapter === INTELBRAS_SS_3532_MF_W_ADAPTER) {
+    return deleteIntelbrasStoredCredential(device, credential, {
+      adapter,
+      normalizeType: normalizeCredentialType
+    });
+  }
   return {
-    ...result,
+    ok: true,
     deviceId: device.id,
     adapter,
-    message: result.ok ? `Credencial ${type} excluida do equipamento` : result.message
+    message: "Evento de exclusao registrado; exclusao fisica depende do conector do fabricante",
+    attempts: []
   };
 }
 
