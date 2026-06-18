@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { upsertControlIdVehicleTag } from "./vehicleTags.js";
 
-test("atualiza tag Control iD existente usando modify_objects", async () => {
+test("atualiza tag Control iD existente usando create_or_modify_objects", async () => {
   const calls = [];
   const tag = await upsertControlIdVehicleTag({
     device: { controlIdUhfMode: "EXTENDED" },
@@ -17,10 +17,9 @@ test("atualiza tag Control iD existente usando modify_objects", async () => {
     }
   });
 
-  assert.equal(calls[0].pathName, "/modify_objects.fcgi");
+  assert.equal(calls[0].pathName, "/create_or_modify_objects.fcgi");
   assert.equal(calls[0].body.object, "uhf_tags");
-  assert.deepEqual(calls[0].body.values, { value: "ABCD1234", user_id: 123 });
-  assert.deepEqual(calls[0].body.where, { uhf_tags: { id: 77 } });
+  assert.deepEqual(calls[0].body.values, [{ id: 77, value: "ABCD1234", user_id: 123 }]);
   assert.equal(tag.id, 77);
 });
 

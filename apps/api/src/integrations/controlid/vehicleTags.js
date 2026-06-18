@@ -47,11 +47,13 @@ function normalizeControlIdVehicleTag(value = "", mode = CONTROL_ID_UHF_EXTENDED
   };
 }
 
-function controlIdModifyBody(object = "", id, value = {}) {
+function controlIdCreateOrModifyBody(object = "", id, value = {}) {
   return {
     object,
-    values: value,
-    where: { [object]: { id } }
+    values: [{
+      ...(id ? { id } : {}),
+      ...value
+    }]
   };
 }
 
@@ -104,13 +106,13 @@ async function upsertControlIdVehicleTag({
     throw new Error(`A tag ${value} ja pertence a outro usuario no Control iD`);
   }
 
-  const pathName = existing?.id ? "/modify_objects.fcgi" : "/create_objects.fcgi";
+  const pathName = existing?.id ? "/create_or_modify_objects.fcgi" : "/create_objects.fcgi";
   const objectValue = {
     value: normalized.value,
     user_id: userId
   };
   const result = await post(device, session, pathName, existing?.id
-    ? controlIdModifyBody(normalized.object, existing.id, objectValue)
+    ? controlIdCreateOrModifyBody(normalized.object, existing.id, objectValue)
     : { object: normalized.object, values: [objectValue] });
 
   return {

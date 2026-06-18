@@ -4575,12 +4575,14 @@ function controlIdCardValue(value = "") {
   return Number(parsed);
 }
 
-function controlIdModifyBody(object = "", id, value = {}) {
+function controlIdCreateOrModifyBody(object = "", id, value = {}) {
   const { id: _id, ...fields } = value || {};
   return {
     object,
-    values: fields,
-    where: { [object]: { id } }
+    values: [{
+      ...(id ? { id } : {}),
+      ...fields
+    }]
   };
 }
 
@@ -4600,7 +4602,7 @@ async function ensureControlIdCredentialUser(device, session, credential = {}, p
     end_time: controlIdUnixTimestamp(credential.validUntil)
   };
   if (existing?.id) {
-    await controlIdPost(device, session, "/modify_objects.fcgi", controlIdModifyBody("users", existing.id, value));
+    await controlIdPost(device, session, "/create_or_modify_objects.fcgi", controlIdCreateOrModifyBody("users", existing.id, value));
     return { ...existing, ...value };
   }
 
@@ -4642,10 +4644,10 @@ async function upsertControlIdCredentialObject(device, session, object, userId, 
   const existing = records.find((record) =>
     String(record.value) === String(value) || (object === "pins" && String(record.user_id) === String(userId))
   );
-  const pathName = existing?.id ? "/modify_objects.fcgi" : "/create_objects.fcgi";
+  const pathName = existing?.id ? "/create_or_modify_objects.fcgi" : "/create_objects.fcgi";
   const objectValue = { value, user_id: userId };
   await controlIdPost(device, session, pathName, existing?.id
-    ? controlIdModifyBody(object, existing.id, objectValue)
+    ? controlIdCreateOrModifyBody(object, existing.id, objectValue)
     : { object, values: [objectValue] });
   return existing;
 }
@@ -4767,7 +4769,7 @@ async function sendControlIdStoredCredential(device, credential = {}) {
   const type = normalizeCredentialType(credential.type);
   const attempts = [{
     label: "Control iD usuario",
-    path: "/create_objects.fcgi|/modify_objects.fcgi:users",
+    path: "/create_objects.fcgi|/create_or_modify_objects.fcgi:users",
     ok: true
   }];
   if (groupId) {
@@ -4800,7 +4802,7 @@ async function sendControlIdStoredCredential(device, credential = {}) {
       };
     }
     const photo = await fetchCredentialPhotoBytes(device, photoUrl);
-    const maxBytes = Number(process.env.CONTROL_ID_FACE_UPLOAD_MAX_BYTES || 999000);
+    const maxBytes = Number(process.env.CONTROL_ID_FACE_UPLOAD_MAX_BYTES || 1900000);
     if (photo.buffer.length > maxBytes) {
       throw new Error(`Foto facial maior que ${maxBytes} bytes para o Control iD`);
     }
@@ -4846,14 +4848,14 @@ async function sendControlIdStoredCredential(device, credential = {}) {
       acceptedObjects.push(candidateObject);
       attempts.push({
         label: `Control iD ${candidateObject}`,
-        path: `/create_objects.fcgi|/modify_objects.fcgi:${candidateObject}`,
+        path: `/create_objects.fcgi|/create_or_modify_objects.fcgi:${candidateObject}`,
         ok: true
       });
     } catch (error) {
       objectErrors.push(`${candidateObject}: ${error instanceof Error ? error.message : "falha"}`);
       attempts.push({
         label: `Control iD ${candidateObject}`,
-        path: `/create_objects.fcgi|/modify_objects.fcgi:${candidateObject}`,
+        path: `/create_objects.fcgi|/create_or_modify_objects.fcgi:${candidateObject}`,
         ok: false,
         error: error instanceof Error ? error.message : "Falha ao gravar credencial"
       });
