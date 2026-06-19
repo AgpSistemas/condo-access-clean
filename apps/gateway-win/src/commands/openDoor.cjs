@@ -1,4 +1,4 @@
-const { deviceBaseUrl, digestHeader, postJson } = require("../lib/deviceHttp.cjs");
+const { deviceBaseUrl, deviceHttp, postJson } = require("../lib/deviceHttp.cjs");
 
 async function openDoor(command) {
   const device = command.device || {};
@@ -22,25 +22,28 @@ async function openDoor(command) {
   }
 
   if (manufacturer.includes("hikvision")) {
-    const url = `${baseUrl}/ISAPI/AccessControl/RemoteControl/door/${relay}`;
-    const headers = await digestHeader(url, "PUT", device.username || "admin", device.password || "");
-    const response = await fetch(url, {
-      method: "PUT",
-      headers: { "Content-Type": "application/xml", ...headers },
-      body: "<RemoteControlDoor><cmd>open</cmd></RemoteControlDoor>",
-      signal: AbortSignal.timeout(12000)
+    await deviceHttp({
+      device,
+      request: {
+        method: "PUT",
+        path: `/ISAPI/AccessControl/RemoteControl/door/${relay}`,
+        contentType: "application/xml",
+        body: "<RemoteControlDoor><cmd>open</cmd></RemoteControlDoor>",
+        timeoutMs: 12000
+      }
     });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`Hikvision respondeu ${response.status}: ${text.slice(0, 300)}`);
     return { ok: true, message: `Hikvision acionada no rele ${relay}` };
   }
 
   if (manufacturer.includes("intelbras")) {
-    const url = `${baseUrl}/cgi-bin/accessControl.cgi?action=openDoor&channel=${relay}`;
-    const headers = await digestHeader(url, "GET", device.username || "admin", device.password || "");
-    const response = await fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(12000) });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`Intelbras respondeu ${response.status}: ${text.slice(0, 300)}`);
+    await deviceHttp({
+      device,
+      request: {
+        method: "GET",
+        path: `/cgi-bin/accessControl.cgi?action=openDoor&channel=${relay}`,
+        timeoutMs: 12000
+      }
+    });
     return { ok: true, message: `Intelbras acionada no rele ${relay}` };
   }
 

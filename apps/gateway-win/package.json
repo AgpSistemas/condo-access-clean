@@ -1,6 +1,6 @@
 {
   "name": "@condo-clean/gateway-win",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "private": true,
   "type": "commonjs",
   "bin": "src/gateway.cjs",

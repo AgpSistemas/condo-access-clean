@@ -2307,6 +2307,7 @@ async function sendOneSignalPushToUnit(unit, payload = {}) {
 
   const tenantData = findTenant(unit.tenantId);
   const messageBody = payload.body || `${tenantData.name} - Unidade ${unit.unitNumber || unit.unitId}`;
+  const notificationType = payload.type || "PORTER_CALL";
   const body = {
     app_id: oneSignalAppId,
     target_channel: "push",
@@ -2316,13 +2317,14 @@ async function sendOneSignalPushToUnit(unit, payload = {}) {
     priority: 10,
     ttl: 60,
     data: {
-      type: "PORTER_CALL",
+      type: notificationType,
       tenantId: unit.tenantId,
       unitId: unit.unitId,
       unitNumber: unit.unitNumber || "",
       callId: payload.callId || "",
       sourceExtension: payload.sourceExtension || "",
-      targetExtension: payload.targetExtension || ""
+      targetExtension: payload.targetExtension || "",
+      ...(payload.data || {})
     }
   };
 
@@ -3302,7 +3304,54 @@ async function consumeSingleUseInviteFromEvent(device, event = {}) {
   invite.updatedAt = now();
   if (!invite.deviceId && device?.id) invite.deviceId = device.id;
   await revokeInviteCredential(invite, "Convite consumido e removido do equipamento");
+  await notifyInviteAccepted(invite, normalizedEvent, device);
   return invite;
+}
+
+async function notifyInviteAccepted(invite = {}, event = {}, device = {}) {
+  const inviteUnit = unitForId(invite.unitId || "");
+  const accessLog = {
+    id: makeId("access"),
+    tenantId: invite.tenantId || inviteUnit?.tenantId || device.tenantId || "",
+    unitId: invite.unitId || inviteUnit?.unitId || "",
+    decision: "ALLOW",
+    reason: `Convite aceito: ${invite.guestName || invite.guest || "Visitante"}`,
+    createdAt: event.createdAt || now(),
+    user: {
+      id: invite.id,
+      name: invite.guestName || invite.guest || "Visitante"
+    },
+    door: {
+      id: invite.doorId || invite.door?.id || "",
+      name: invite.doorName || invite.door?.name || device.name || "Porta",
+      deviceId: device.id || invite.deviceId || "",
+      manufacturer: device.manufacturer || ""
+    },
+    rawEvent: {
+      source: "INVITE_ACCEPTED",
+      inviteId: invite.id,
+      consumedEventId: event.id || "",
+      credentialId: invite.credentialId || "",
+      deviceId: device.id || invite.deviceId || "",
+      deviceEvent: event.rawEvent || event
+    }
+  };
+  accessLogs.unshift(accessLog);
+
+  if (inviteUnit) {
+    void sendOneSignalPushToUnit(inviteUnit, {
+      type: "INVITE_ACCEPTED",
+      title: "Convite aceito",
+      body: `${accessLog.user.name} acessou ${accessLog.door.name}`,
+      data: {
+        inviteId: invite.id,
+        accessLogId: accessLog.id,
+        doorId: accessLog.door.id,
+        deviceId: accessLog.door.deviceId
+      }
+    }).catch(() => undefined);
+  }
+  return accessLog;
 }
 
 async function consumeSingleUseInvitesFromEvents(device, events = []) {
